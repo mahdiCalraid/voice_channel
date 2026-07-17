@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend and frontend source files
 COPY app/ ./app/
 COPY frontend/ ./frontend/
+COPY workers/ ./workers/
 COPY *.md ./
 
 # Expose port 6891

@@ -741,105 +741,155 @@ async def generate_digest(req: DigestRequest):
     prior_summaries = read_prior_summaries(room_id)
     prior_summary_used = len(prior_summaries) > 0
     
-    # Format updates log
-    updates_lines = []
-    for m in lane_b_c:
-        username = m.get("name") or m.get("username", "Unknown")
-        text = m.get("text", "")
-        # Strip markdown quote blocks for cleaner TTS parsing
-        clean_text = "\n".join([line for line in text.split("\n") if not line.strip().startswith(">")])
-        role_label = "Ed (User Instruction)" if m.get("lane") == "user" else "Agent Response"
-        updates_lines.append(f"[{role_label}] {username}: {clean_text}")
-    updates_str = "\n".join(updates_lines)
+    # Filter system messages for Stage 1 Operational Stats
+    system_msgs = [m for m in req.messages if m.get("lane") == "system"]
     
-    if openai_client:
-        try:
-            # Format prior summaries
-            prior_summaries_str = ""
-            if prior_summaries:
-                prior_lines = []
-                for idx, s in enumerate(prior_summaries):
-                    prior_lines.append(f"Prior summary {idx+1} ({s.get('timestamp')}): {s.get('digest')}")
-                prior_summaries_str = "\n".join(prior_lines)
-            else:
-                prior_summaries_str = "No prior summaries recorded."
-
-            prompt = (
-                "You are an expert audio narrator and workspace supervisor for Ed.\n"
-                "Your job is to read the project goals, the history of prior summaries, and the latest chat log of agent work, "
-                "and produce a concise, professional spoken-word digest.\n"
-                "Ed will listen to this read aloud via Text-to-Speech (TTS).\n\n"
-                
-                "=== PROJECT OBJECTIVES & CONTEXT ===\n"
-                f"{matter_docs}\n\n"
-                
-                "=== PRIOR SUMMARIES ===\n"
-                f"{prior_summaries_str}\n\n"
-                
-                "=== NEW UPDATES ===\n"
-                f"{updates_str}\n\n"
-                
-                "Rules:\n"
-                "1. Speak directly to Ed. Refer to him as 'Ed' or 'you'.\n"
-                "2. Summarize what changed, what was completed, and what is currently blocked, relative to the project objectives.\n"
-                "3. Explain how the recent chat relates to the prior summaries and the overall project goals (e.g. 'You asked Codex to do X, and it is now done. Next step is Y.').\n"
-                "4. Keep it extremely crisp and concise (under 200 words). Skip all greeting/intro boilerplate (e.g., do not say 'Here is your digest').\n"
-                "5. Do NOT include Markdown formatting like asterisks or hashtags since they will be read literally by the browser's TTS engine.\n\n"
-                "Digest:"
-            )
+    # --- STEP 2: Job Builder ---
+    import subprocess
+    import sys
+    import time
+    import uuid
+    
+    job_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    job_dir = os.path.join("tmp", "jobs", job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    
+    # Write inputs
+    messages_path = os.path.join(job_dir, "messages_for_llm.json")
+    system_events_path = os.path.join(job_dir, "system_events.json")
+    matter_context_path = os.path.join(job_dir, "matter_context.md")
+    task_instructions_path = os.path.join(job_dir, "task_instructions.md")
+    room_context_path = os.path.join(job_dir, "room_context.json")
+    job_path = os.path.join(job_dir, "job.json")
+    
+    with open(messages_path, "w", encoding="utf-8") as f:
+        json.dump(lane_b_c, f, indent=2)
+        
+    with open(system_events_path, "w", encoding="utf-8") as f:
+        json.dump(system_msgs, f, indent=2)
+        
+    with open(matter_context_path, "w", encoding="utf-8") as f:
+        f.write(matter_docs)
+        
+    rules = (
+        "1. Speak directly to Ed. Refer to him as 'Ed' or 'you'.\n"
+        "2. Summarize what changed, what was completed, and what is currently blocked, relative to the project objectives.\n"
+        "3. Explain how the recent chat relates to the prior summaries and the overall project goals (e.g. 'You asked Codex to do X, and it is now done. Next step is Y.').\n"
+        "4. Keep it extremely crisp and concise (under 200 words). Skip all greeting/intro boilerplate.\n"
+        "5. Do NOT include Markdown formatting like asterisks or hashtags since they will be read literally by the browser's TTS engine."
+    )
+    with open(task_instructions_path, "w", encoding="utf-8") as f:
+        f.write(rules)
+        
+    room_ctx = {
+        "room_id": room_id,
+        "prior_summaries": prior_summaries
+    }
+    with open(room_context_path, "w", encoding="utf-8") as f:
+        json.dump(room_ctx, f, indent=2)
+        
+    # Create job.json referencing relative paths inside job directory
+    job_cfg = {
+        "room_id": room_id,
+        "model": None,
+        "effort": "low",
+        "input_files": {
+            "messages": "messages_for_llm.json",
+            "system_events": "system_events.json",
+            "matter_context": "matter_context.md",
+            "task_instructions": "task_instructions.md",
+            "room_context": "room_context.json"
+        }
+    }
+    with open(job_path, "w", encoding="utf-8") as f:
+        json.dump(job_cfg, f, indent=2)
+        
+    # --- STEP 3: Wire to run_worker.py ---
+    worker_name = os.environ.get("VC_WORKER", "openai")
+    
+    # Run the worker script
+    cmd = [
+        sys.executable,
+        "workers/run_worker.py",
+        "digest",
+        "--worker", worker_name,
+        "--job", job_path
+    ]
+    
+    success = False
+    digest_text = None
+    
+    try:
+        # Run worker with 30s timeout
+        env = os.environ.copy()
+        env["PYTHONPATH"] = env.get("PYTHONPATH", "") + ":" + os.getcwd()
+        
+        result_proc = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result_proc.returncode == 0:
+            result_json_path = os.path.join(job_dir, "result.json")
+            if os.path.exists(result_json_path):
+                with open(result_json_path, "r", encoding="utf-8") as f:
+                    job_result = json.load(f)
+                if job_result.get("ok"):
+                    digest_text = job_result.get("output")
+                    success = True
+                    logger.info(f"Worker '{worker_name}' successfully generated digest.")
+        else:
+            logger.error(f"Worker execution failed: {result_proc.stderr}")
             
-            completion = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a concise channel narrator summarizing agent workspaces."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=300,
-                temperature=0.3
-            )
-            
-            digest_text = completion.choices[0].message.content.strip()
-            
-            # Persist summary
-            save_summary(room_id, digest_text)
-            
-            return {
-                "digest": digest_text,
-                "included_message_ids": included_message_ids,
-                "prior_summary_used": prior_summary_used
-            }
-            
-        except Exception as e:
-            logger.exception("Error calling OpenAI for digest")
-            
-    # Rule-based fallback summary
+    except Exception as e:
+        logger.exception("Error executing worker process")
+        
+    if success and digest_text:
+        # Persist summary
+        save_summary(room_id, digest_text)
+        return {
+            "digest": digest_text,
+            "included_message_ids": included_message_ids,
+            "prior_summary_used": prior_summary_used
+        }
+        
+    # Rule-based fallback summary with agent attribution
+    logger.warning("Worker failed or returned error. Falling back to rule-based summary.")
     summary_parts = ["Here is a quick summary of the recent updates:"]
     user_counts = {}
-    for msg in lane_b_c:
-        username = msg.get("name") or msg.get("username", "Unknown")
-        user_counts[username] = user_counts.get(username, 0) + 1
+    for m in lane_b_c:
+        # Prefer event.agent for Lane B
+        agent_name = m.get("event", {}).get("agent") if m.get("lane") == "agent" else None
+        author = agent_name or m.get("name") or m.get("username") or "Unknown"
+        user_counts[author] = user_counts.get(author, 0) + 1
         
     for user, count in user_counts.items():
         summary_parts.append(f"{user} worked on {count} updates.")
         
     if lane_b_c:
         last_msg = lane_b_c[-1]
-        last_user = last_msg.get("name") or last_msg.get("username", "Unknown")
+        agent_name = last_msg.get("event", {}).get("agent") if last_msg.get("lane") == "agent" else None
+        last_user = agent_name or last_msg.get("name") or last_msg.get("username") or "Unknown"
         last_text = last_msg.get("text", "")
         if len(last_text) > 100:
             last_text = last_text[:100] + "..."
         summary_parts.append(f"The last update was from {last_user}, saying: {last_text}")
+    else:
+        summary_parts.append("No active agent replies or user requests in the current window.")
         
-    digest_text = " ".join(summary_parts)
+    fallback_digest = " ".join(summary_parts)
     
-    # Persist fallback summary as well
+    # Persist fallback summary
     try:
-        save_summary(room_id, digest_text)
+        save_summary(room_id, fallback_digest)
     except Exception:
         pass
         
     return {
-        "digest": digest_text,
+        "digest": fallback_digest,
         "included_message_ids": included_message_ids,
         "prior_summary_used": prior_summary_used
     }

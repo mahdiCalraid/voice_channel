@@ -19,6 +19,8 @@ services:
       - ./app:/app/app
       - ./frontend:/app/frontend
       - ./acli:/app/acli
+      - ./workers:/app/workers
+      - ./tmp:/app/tmp
       - ./NORTH_STAR.md:/app/NORTH_STAR.md
       - ./OBJECTIVES.md:/app/OBJECTIVES.md
       - ./PROJECT_HANDOFF.md:/app/PROJECT_HANDOFF.md

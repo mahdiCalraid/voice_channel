@@ -1,8 +1,13 @@
 # Implementation Plan: Message Classification, Transcript, and Summarization
 
-Status: design finalized for next build round. Supersedes the informal staging notes in
-the 2026-07-16 channel discussion. Written against the current running code in
-`app/main.py` and `frontend/index.js` (Docker console on port 6891).
+Status (updated 2026-07-17): Steps 1–3 shipped and verified; Steps 4–5 shipped in
+structure (lane-filtered digest, matter docs, prior-summary memory, `included_message_ids`,
+sources UI) but the AI narrator is **not yet delivering plan-quality digests in
+production** — the digest currently calls OpenAI directly and falls back to post-counting
+when that key is invalid (live `401 Unauthorized`). Section 7 below adds the next major
+piece of work: an **independent CLI worker layer** to become the AI brain for the Voice
+Channel, replacing the hard-coded OpenAI call inside `/api/digest`. Written against the
+current running code in `app/main.py` and `frontend/index.js` (Docker console on port 6891).
 
 ## 1. Why this exists
 
@@ -157,3 +162,152 @@ foundation rather than trying to do it in one leap.
 - No multi-room cross-summarization yet — one room's context bundle at a time.
 - No new persistence system beyond a flat JSON file per room for summary history; not a
   database migration.
+
+---
+
+# Part II — Voice Channel Worker Layer (the AI brain)
+
+Added 2026-07-17, incorporating Ed's directive, Codex's architecture reply, and this
+agent's independent review. This supersedes Section 4's "Stage 2 = rewrite the OpenAI call
+inside `generate_digest()`" approach: the AI stage no longer lives inline in the FastAPI
+process. It moves to a separate, modular, CLI-first worker layer.
+
+## 7. Why a separate worker layer (the problem it solves)
+
+Today `/api/digest` hard-codes one path: build a prompt, call `openai_client` with
+`gpt-4o-mini`, and on any failure drop to rule-based post-counting. Grok's live review
+found this path is currently broken in production (`401 Unauthorized` → the "goal-aware"
+narrator never runs; the user hears "ACLI Dispatcher worked on N updates"). That single
+failure exposes three structural problems worth fixing properly, not patching:
+
+1. **Provider lock-in.** The AI brain is welded to one SDK, one key, one model. Ed wants
+   `agy` (a separate, cheaper CLI worker — *not* an ACLI room agent) as an option, and
+   wants the choice of worker/provider to be config, not code.
+2. **Single-purpose.** The AI call only knows how to make a digest. Ed explicitly asked
+   that the engine not be limited to summarization — reply drafting, room status, and
+   progress-vs-objectives reviews are coming.
+3. **Untestable inline logic.** We have repeatedly shipped tests that re-implement
+   production loops instead of exercising them (caught in Steps 1, 3). A file-bundle
+   worker contract fixes this structurally: a job directory is a snapshot you can replay
+   and assert on.
+
+The design target: **the backend prepares a job (files on disk), invokes a selected
+worker, and consumes structured output.** The worker is swappable; the task is a
+parameter; credentials are passed by environment/config, never embedded in prompt files.
+
+### Important distinction (Ed stated this explicitly)
+- `ACLI` is the Rocket.Chat agent *execution/dispatch* system. The Voice Channel reads
+  from RC but must **not** couple to ACLI's dispatch loop.
+- This new worker layer is the Voice Channel's *own* AI task runner. It borrows ACLI's
+  good ideas (worker registry, model/effort selection, session/transcript artifacts) but
+  runs independently.
+- The `agy` worker referenced here is a standalone CLI worker Ed can invoke with
+  credentials — a different CLI worker from the ACLI room agent that happens to share the
+  name.
+
+## 8. Architecture (modular, learn-from-ACLI, don't-couple-to-ACLI)
+
+Four layers, mirroring Codex's proposal, kept deliberately small for the first build:
+
+```
+backend (/api/digest, later /api/worker/*)
+      │  builds a job bundle on disk, shells out
+      ▼
+Job Builder ──► tmp/jobs/<job_id>/   (transcript.json, messages_for_llm.json,
+      │                               system_events.json, matter_context.md,
+      │                               task_instructions.md, room_context.json, job.json)
+      ▼
+Worker Runner (workers/run_worker.py)
+      │  reads job.json, resolves worker from registry, injects creds via env,
+      │  runs the selected CLI/provider, writes result.json + stdout.log + stderr.log
+      ▼
+Provider Adapter Layer (workers/providers/*)   one adapter per worker style: agy,
+      │                                          openai, claude, gemini
+      ▼
+Task Layer (workers/tasks/*)   digest, reply_draft, room_status, progress_review
+```
+
+**8.1 Worker registry** — `workers/registry.json`. Learn directly from ACLI's
+`acli/acli_settings.json → agent_models` shape (default_model, available_models, aliases,
+effort levels). One entry per worker declares: provider adapter to use, default model,
+available models, default effort, and the name of the env var holding its credential
+(e.g. `"credential_env": "AGY_API_KEY"`). Nothing here is a secret — only the *name* of
+where the secret lives.
+
+**8.2 Job bundle (`job.json`)** — the stable contract between backend and worker. Carries:
+`task` (e.g. `"digest"`), `worker` (e.g. `"agy"`), `model`/`effort` overrides, `room_id`,
+and **paths** to the input files — never raw secrets, never raw auth in transcript text.
+The backend chooses `worker`/`task`; everything else is data.
+
+**8.3 Result contract (`result.json`)** — stable regardless of task or worker so the
+backend consumes it uniformly:
+```json
+{
+  "ok": true,
+  "task": "digest",
+  "worker": "agy",
+  "room": "production_repo",
+  "output": "…the digest / draft / analysis text…",
+  "included_message_ids": ["…"],
+  "used_context_files": ["NORTH_STAR.md", "OBJECTIVES.md", "PROJECT_HANDOFF.md"],
+  "error": null
+}
+```
+`output` is generic (not `summary`) precisely because the engine is not summarization-only.
+
+**8.4 Auth handling** — credentials reach the worker as **environment variables passed to
+the subprocess**, or a local config file *outside* prompt content, referenced by name in
+`job.json`. Never in `transcript.json`, `task_instructions.md`, or any file the model
+reads as content. `tmp/jobs/` and any credential file must be gitignored (the repo already
+commits `acli/summary_history/*` — worker job dirs must not follow that pattern with
+secrets in them).
+
+## 9. Integration + failure semantics
+
+- **Backend call site.** `/api/digest` becomes a thin caller: build the bundle, run
+  `workers/run_worker.py digest --worker <configured> --job <path>`, read `result.json`,
+  return `{digest: output, included_message_ids, prior_summary_used}`. The existing
+  Lane-B/C filtering, matter-doc loading, and prior-summary persistence (already in
+  `app/main.py`) move into the Job Builder / task layer largely unchanged.
+- **Invocation model.** Start with Codex's option 1 (backend shells out to a local CLI,
+  synchronous) — simplest, matches the project's "small working loop" preference. Design
+  `result.json` so a later async job-queue variant (option 2) is a drop-in.
+- **Graceful degradation is mandatory** (this is the recurring lesson — a bad key must
+  never 500 or go silent). Worker non-zero exit, timeout, or malformed `result.json` →
+  backend logs it and returns the deterministic rule-based fallback, but attributed by
+  `event.agent` (fixing Grok's "counts under ACLI Dispatcher" bug), not the RC display
+  name. `openai_available`/worker-available flags must reflect a real successful call, not
+  merely "a key string is present."
+- **Stage 1 stays deterministic and feeds Stage 2.** The compact Lane-A stats summary
+  from Section 4 (e.g. "codex 3 runs, avg 38s, no stops") — which today's digest bundle
+  omits — should be written into the job as `system_events.json` / folded into
+  `task_instructions.md` so the worker's narration can reference operational reality, not
+  just prose.
+
+## 10. Build order for Part II (smallest useful increment first)
+
+1. **Registry + one-shot digest runner.** `workers/registry.json` (with an `agy` entry
+   and an `openai` entry) and `workers/run_worker.py` that handles exactly `task=digest`
+   for one worker, reading a job bundle and writing `result.json`. Prove it from the CLI
+   alone: `python workers/run_worker.py digest --worker agy --job tmp/jobs/<id>/job.json`.
+2. **Job Builder.** A backend helper that turns the current room history + matter docs +
+   prior summaries into a job bundle directory. Reuses the Lane-B/C filtering already in
+   `/api/digest`.
+3. **Wire `/api/digest` to the runner** behind the same response shape, with the
+   graceful-fallback + `event.agent` attribution fixes. UI unchanged.
+4. **Generalize the task layer** once digest is good: add `reply_draft`, `room_status`,
+   `progress_review` as additional `task` values reusing the same bundle/runner/result
+   contract. No new plumbing per task.
+
+Deliverable 1 is CLI-only and touches no browser code — matching the standing project
+preference (Codex's staging notes, and the earlier "validate summarization usefulness
+outside the browser first" guidance) to prove the AI pipeline on the terminal before the
+UI depends on it.
+
+## 11. Non-goals for Part II
+- Not rebuilding ACLI's dispatcher, poller, or room-routing — the Voice Channel worker
+  runs on demand from the backend only.
+- No multi-worker orchestration/chaining in the first build — one task, one worker, one
+  job at a time.
+- No secrets in the repo, in job bundles, or in prompt files — env/config reference only.
+- Realtime voice transport remains out of scope until this text/worker loop is dependable.
