@@ -18,4 +18,8 @@ services:
     volumes:
       - ./app:/app/app
       - ./frontend:/app/frontend
+      - ./acli:/app/acli
+      - ./NORTH_STAR.md:/app/NORTH_STAR.md
+      - ./OBJECTIVES.md:/app/OBJECTIVES.md
+      - ./PROJECT_HANDOFF.md:/app/PROJECT_HANDOFF.md
     restart: unless-stopped

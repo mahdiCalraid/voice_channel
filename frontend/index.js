@@ -31,6 +31,11 @@ const btnCancelSend = document.getElementById("btn-cancel-send");
 const btnConfirmSend = document.getElementById("btn-confirm-send");
 const roomSelect = document.getElementById("room-select");
 const statsBar = document.getElementById("stats-bar");
+const digestSourcesContainer = document.getElementById("digest-sources-container");
+const sourcesToggle = document.getElementById("sources-toggle");
+const sourcesToggleText = document.getElementById("sources-toggle-text");
+const sourcesArrow = document.getElementById("sources-arrow");
+const sourcesList = document.getElementById("sources-list");
 
 // Initialize application
 function init() {
@@ -59,6 +64,20 @@ function init() {
     btnConfirmSend.addEventListener("click", sendDraftedMessage);
     
     roomSelect.addEventListener("change", handleRoomChange);
+    
+    // Setup sources toggle listener
+    if (sourcesToggle) {
+        sourcesToggle.addEventListener("click", () => {
+            const isHidden = sourcesList.classList.contains("hidden");
+            if (isHidden) {
+                sourcesList.classList.remove("hidden");
+                sourcesArrow.classList.add("rotated");
+            } else {
+                sourcesList.classList.add("hidden");
+                sourcesArrow.classList.remove("rotated");
+            }
+        });
+    }
     
     // Agent buttons click handlers
     document.querySelectorAll(".agent-btn").forEach(btn => {
@@ -536,7 +555,10 @@ async function handleGenerateDigest() {
         const digestResponse = await fetch("/api/digest", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ messages: histData.messages })
+            body: JSON.stringify({ 
+                messages: histData.messages,
+                roomId: activeRoomId
+            })
         });
         
         if (!digestResponse.ok) throw new Error("Failed to generate digest");
@@ -544,6 +566,47 @@ async function handleGenerateDigest() {
         
         currentDigestText = digestData.digest;
         digestContent.innerText = currentDigestText;
+        
+        // Render Auditable Sources List (Step 5)
+        const sourceIds = digestData.included_message_ids || [];
+        if (sourceIds.length > 0) {
+            const sourceMsgs = histData.messages.filter(m => sourceIds.includes(m.id));
+            
+            sourcesToggleText.innerText = `Show Sources (${sourceMsgs.length})`;
+            
+            sourcesList.innerHTML = sourceMsgs.map(m => {
+                const author = m.name || m.username;
+                let textSnippet = m.text || "";
+                if (textSnippet.length > 85) {
+                    textSnippet = textSnippet.substring(0, 85) + "...";
+                }
+                return `
+                    <div class="source-item" data-source-id="${m.id}">
+                        <span class="source-author">@${escapeHTML(author)}:</span>
+                        <span class="source-snippet">${escapeHTML(textSnippet)}</span>
+                    </div>
+                `;
+            }).join("");
+            
+            // Add click listeners to source items
+            sourcesList.querySelectorAll(".source-item").forEach(item => {
+                item.addEventListener("click", () => {
+                    const msgId = item.dataset.sourceId;
+                    const msgElem = document.querySelector(`[data-id="${msgId}"]`);
+                    if (msgElem) {
+                        msgElem.scrollIntoView({ behavior: "smooth", block: "center" });
+                        msgElem.classList.remove("highlight-pulse");
+                        void msgElem.offsetWidth; // Trigger browser reflow for CSS keyframe animation restart
+                        msgElem.classList.add("highlight-pulse");
+                    }
+                });
+            });
+            
+            digestSourcesContainer.style.display = "block";
+        } else {
+            digestSourcesContainer.style.display = "none";
+            sourcesList.innerHTML = "";
+        }
         
         // Stop current speaking and play new digest
         handleStop();

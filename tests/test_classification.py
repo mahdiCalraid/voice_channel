@@ -13,7 +13,9 @@ from app.main import (
     parse_model_selected, 
     parse_attachment,
     parse_datetime,
-    process_history_messages
+    process_history_messages,
+    generate_digest,
+    DigestRequest
 )
 
 class TestMessageClassification(unittest.TestCase):
@@ -235,6 +237,54 @@ class TestMessageClassification(unittest.TestCase):
         # Second routing should be marked completed
         self.assertEqual(cleaned_messages[1]["event"]["status"], "completed")
         self.assertEqual(cleaned_messages[1]["event"]["response_time_seconds"], 30.0)
+
+    def test_digest_filtering_and_saving(self):
+        import asyncio
+        
+        # Simulate messages with mixture of system, agent, user
+        messages = [
+            {
+                "id": "msg-routing-1",
+                "username": "acli_bot",
+                "text": "🔄 Routing to **grok**...",
+                "lane": "system",
+                "event": {"kind": "routing", "agent": "grok"}
+            },
+            {
+                "id": "msg-heartbeat-1",
+                "username": "acli_bot",
+                "text": "⏱️ **@grok** working...",
+                "lane": "system",
+                "event": {"kind": "heartbeat", "agent": "grok"}
+            },
+            {
+                "id": "msg-agent-reply-1",
+                "username": "grok",
+                "text": "**@grok**: Task completed.",
+                "lane": "agent",
+                "event": {"kind": "agent_response", "agent": "grok"}
+            },
+            {
+                "id": "msg-user-1",
+                "username": "ed",
+                "text": "Great job, what is next?",
+                "lane": "user",
+                "event": {"kind": "user_message"}
+            }
+        ]
+        
+        req = DigestRequest(messages=messages, roomId="test-room-123")
+        
+        # Run generate_digest asynchronously
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(generate_digest(req))
+        
+        # Validate that system messages were excluded
+        self.assertIn("grok worked on 1 updates", res["digest"])
+        self.assertIn("The last update was from ed", res["digest"])
+        
+        # Validate that included_message_ids only contains msg-agent-reply-1 and msg-user-1
+        self.assertEqual(res["included_message_ids"], ["msg-agent-reply-1", "msg-user-1"])
 
 if __name__ == '__main__':
     unittest.main()

@@ -59,6 +59,15 @@
 
                 <div class="digest-text-container">
                     <p id="digest-content">No digest loaded. Click "Generate Digest" below to fetch the latest updates from the channel and read them aloud.</p>
+                    
+                    <div class="digest-sources-container" id="digest-sources-container" style="display: none;">
+                        <button class="sources-toggle" id="sources-toggle">
+                            <span class="material-symbols-rounded" style="font-size: 1.1rem !important;">list_alt</span>
+                            <span id="sources-toggle-text">Show Sources (0)</span>
+                            <span class="material-symbols-rounded toggle-arrow" id="sources-arrow">expand_more</span>
+                        </button>
+                        <div class="sources-list hidden" id="sources-list"></div>
+                    </div>
                 </div>
 
                 <div class="playback-controls">

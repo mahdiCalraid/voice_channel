@@ -985,3 +985,84 @@ body {
     font-weight: 500;
 }
 
+/* Collapsible Digest Sources Styling */
+.digest-sources-container {
+    margin-top: 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    padding-top: 0.8rem;
+}
+
+.sources-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.2s;
+}
+
+.sources-toggle:hover {
+    color: var(--accent);
+}
+
+.sources-toggle .toggle-arrow {
+    font-size: 1.1rem !important;
+    transition: transform 0.2s;
+}
+
+.sources-toggle .toggle-arrow.rotated {
+    transform: rotate(180deg);
+}
+
+.sources-list {
+    margin-top: 0.5rem;
+    max-height: 150px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding-right: 0.2rem;
+    transition: all 0.3s ease;
+}
+
+.sources-list.hidden {
+    display: none;
+}
+
+.source-item {
+    font-size: 0.72rem;
+    background: rgba(255, 255, 255, 0.015);
+    border: 1px solid rgba(255, 255, 255, 0.03);
+    padding: 0.35rem 0.6rem;
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.source-item:hover {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: rgba(99, 102, 241, 0.2);
+}
+
+.source-item .source-author {
+    font-weight: 600;
+    color: var(--text-main);
+    margin-right: 0.3rem;
+}
+
+/* Auditable Highlight Pulse Animation */
+@keyframes pulseHighlight {
+    0% { background: rgba(99, 102, 241, 0.4); }
+    100% { background: transparent; }
+}
+.chat-msg.highlight-pulse {
+    animation: pulseHighlight 2.5s ease-out;
+}
+

@@ -545,6 +545,7 @@ class MessageSendRequest(BaseModel):
 class DigestRequest(BaseModel):
     messages: List[dict]
     style: Optional[str] = "narrator" # e.g. "narrator", "brief", "detailed"
+    roomId: Optional[str] = None
 
 @app.get("/api/status")
 async def get_status():
@@ -681,41 +682,114 @@ async def get_history(roomId: Optional[str] = None, count: int = 50):
         logger.exception("Error fetching history")
         raise HTTPException(status_code=500, detail=str(e))
 
+def read_matter_docs() -> str:
+    docs = []
+    for name in ("NORTH_STAR.md", "OBJECTIVES.md", "PROJECT_HANDOFF.md"):
+        path = name
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    docs.append(f"=== {name} ===\n{f.read()}")
+            except Exception as e:
+                logger.error(f"Error reading {name}: {e}")
+    return "\n\n".join(docs)
+
+def read_prior_summaries(room_id: str) -> List[dict]:
+    os.makedirs("acli/summary_history", exist_ok=True)
+    path = f"acli/summary_history/{room_id}.json"
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error reading summaries for {room_id}: {e}")
+    return []
+
+def save_summary(room_id: str, digest: str):
+    os.makedirs("acli/summary_history", exist_ok=True)
+    path = f"acli/summary_history/{room_id}.json"
+    summaries = read_prior_summaries(room_id)
+    summaries.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "digest": digest
+    })
+    # Cap to last 3 summaries
+    summaries = summaries[-3:]
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(summaries, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving summary for {room_id}: {e}")
+
 @app.post("/api/digest")
 async def generate_digest(req: DigestRequest):
-    if not req.messages:
-        return {"digest": "No new updates in the channel."}
+    room_id = req.roomId or RC_ROOM_ID
+    
+    # Filter messages to only include Lane B (agent) and Lane C (user)
+    lane_b_c = [m for m in req.messages if m.get("lane") in ("agent", "user")]
+    included_message_ids = [m.get("id") for m in lane_b_c if m.get("id")]
+    
+    if not lane_b_c:
+        return {
+            "digest": "No new agent updates or user instructions in the channel.",
+            "included_message_ids": [],
+            "prior_summary_used": False
+        }
         
-    # Format messages into a text log for the LLM
-    log_lines = []
-    for msg in req.messages:
-        username = msg.get("name") or msg.get("username", "Unknown")
-        text = msg.get("text", "")
-        # Remove markdown quote blocks/routing details for cleaner parsing
+    # Read matter documents and prior summary history
+    matter_docs = read_matter_docs()
+    prior_summaries = read_prior_summaries(room_id)
+    prior_summary_used = len(prior_summaries) > 0
+    
+    # Format updates log
+    updates_lines = []
+    for m in lane_b_c:
+        username = m.get("name") or m.get("username", "Unknown")
+        text = m.get("text", "")
+        # Strip markdown quote blocks for cleaner TTS parsing
         clean_text = "\n".join([line for line in text.split("\n") if not line.strip().startswith(">")])
-        log_lines.append(f"{username}: {clean_text}")
-        
-    conversation_log = "\n".join(log_lines)
+        role_label = "Ed (User Instruction)" if m.get("lane") == "user" else "Agent Response"
+        updates_lines.append(f"[{role_label}] {username}: {clean_text}")
+    updates_str = "\n".join(updates_lines)
     
     if openai_client:
         try:
+            # Format prior summaries
+            prior_summaries_str = ""
+            if prior_summaries:
+                prior_lines = []
+                for idx, s in enumerate(prior_summaries):
+                    prior_lines.append(f"Prior summary {idx+1} ({s.get('timestamp')}): {s.get('digest')}")
+                prior_summaries_str = "\n".join(prior_lines)
+            else:
+                prior_summaries_str = "No prior summaries recorded."
+
             prompt = (
-                "You are an expert audio narrator and supervisor assistant for Ed.\n"
-                "Your job is to read the following Rocket.Chat channel transcript log and produce a natural, conversational spoken-word digest.\n"
+                "You are an expert audio narrator and workspace supervisor for Ed.\n"
+                "Your job is to read the project goals, the history of prior summaries, and the latest chat log of agent work, "
+                "and produce a concise, professional spoken-word digest.\n"
                 "Ed will listen to this read aloud via Text-to-Speech (TTS).\n\n"
+                
+                "=== PROJECT OBJECTIVES & CONTEXT ===\n"
+                f"{matter_docs}\n\n"
+                
+                "=== PRIOR SUMMARIES ===\n"
+                f"{prior_summaries_str}\n\n"
+                
+                "=== NEW UPDATES ===\n"
+                f"{updates_str}\n\n"
+                
                 "Rules:\n"
-                "1. Keep it extremely concise and focused on high-signal updates (who did what, results, blocks, or questions).\n"
-                "2. Speak directly to Ed. Refer to him as 'Ed' or 'you'.\n"
-                "3. Convert technical notation or long logs into summary summaries (e.g. instead of reading code, say 'Codex updated the server start command').\n"
-                "4. Make the tone professional, crisp, and direct. Skip greeting boilerplate.\n"
-                "5. Do NOT include Markdown formatting like asterisks or hashtags since this will be read literally by the browser's TTS engine. Use plain text only.\n"
-                f"6. Style is '{req.style}'.\n\n"
-                f"Transcript Log:\n{conversation_log}\n\n"
+                "1. Speak directly to Ed. Refer to him as 'Ed' or 'you'.\n"
+                "2. Summarize what changed, what was completed, and what is currently blocked, relative to the project objectives.\n"
+                "3. Explain how the recent chat relates to the prior summaries and the overall project goals (e.g. 'You asked Codex to do X, and it is now done. Next step is Y.').\n"
+                "4. Keep it extremely crisp and concise (under 200 words). Skip all greeting/intro boilerplate (e.g., do not say 'Here is your digest').\n"
+                "5. Do NOT include Markdown formatting like asterisks or hashtags since they will be read literally by the browser's TTS engine.\n\n"
                 "Digest:"
             )
             
             completion = openai_client.chat.completions.create(
-                model="gpt-4o-mini", # Standard lightweight, fast model
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a concise channel narrator summarizing agent workspaces."},
                     {"role": "user", "content": prompt}
@@ -725,32 +799,50 @@ async def generate_digest(req: DigestRequest):
             )
             
             digest_text = completion.choices[0].message.content.strip()
-            return {"digest": digest_text}
+            
+            # Persist summary
+            save_summary(room_id, digest_text)
+            
+            return {
+                "digest": digest_text,
+                "included_message_ids": included_message_ids,
+                "prior_summary_used": prior_summary_used
+            }
             
         except Exception as e:
             logger.exception("Error calling OpenAI for digest")
-            # Fallback to rule-based summary
-    
-    # Rule-based fallback summary (if OpenAI fails or key is missing)
-    summary_parts = ["Here is a quick summary of the recent messages:"]
+            
+    # Rule-based fallback summary
+    summary_parts = ["Here is a quick summary of the recent updates:"]
     user_counts = {}
-    for msg in req.messages:
+    for msg in lane_b_c:
         username = msg.get("name") or msg.get("username", "Unknown")
         user_counts[username] = user_counts.get(username, 0) + 1
         
     for user, count in user_counts.items():
-        summary_parts.append(f"{user} posted {count} times.")
+        summary_parts.append(f"{user} worked on {count} updates.")
         
-    if req.messages:
-        last_msg = req.messages[-1]
+    if lane_b_c:
+        last_msg = lane_b_c[-1]
         last_user = last_msg.get("name") or last_msg.get("username", "Unknown")
         last_text = last_msg.get("text", "")
-        # truncate
         if len(last_text) > 100:
             last_text = last_text[:100] + "..."
-        summary_parts.append(f"The last message was from {last_user}, saying: {last_text}")
+        summary_parts.append(f"The last update was from {last_user}, saying: {last_text}")
         
-    return {"digest": " ".join(summary_parts)}
+    digest_text = " ".join(summary_parts)
+    
+    # Persist fallback summary as well
+    try:
+        save_summary(room_id, digest_text)
+    except Exception:
+        pass
+        
+    return {
+        "digest": digest_text,
+        "included_message_ids": included_message_ids,
+        "prior_summary_used": prior_summary_used
+    }
 
 @app.post("/api/send")
 async def send_message(req: MessageSendRequest):
