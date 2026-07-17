@@ -1,0 +1,22 @@
+{
+  "matter_id": "voice_channel",
+  "workspace": "/Users/ed/King/clawd_2/voice_channel",
+  "channel": {
+    "name": "voice_channel",
+    "room_id": "6a54579eb53b70a1d1b5bb94"
+  },
+  "default_agent": "codex",
+  "agent_timeout_seconds": 600,
+  "active_agents": [
+    "gemini",
+    "agy",
+    "codex",
+    "claude",
+    "pplx",
+    "cursor",
+    "grok"
+  ],
+  "allowed_read_dirs": [],
+  "allowed_write_dirs": [],
+  "local_conventions": {}
+}
