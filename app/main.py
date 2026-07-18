@@ -577,9 +577,35 @@ async def get_status():
         rc_status = "disconnected"
         rc_error = str(e)
         
+    # Check if codex is available
+    codex_available = False
+    try:
+        import shutil
+        from pathlib import Path
+        codex_bin = None
+        for candidate in ["codex", "/usr/local/bin/codex"]:
+            if "/" in candidate:
+                if Path(candidate).exists():
+                    codex_bin = candidate
+                    break
+            else:
+                if shutil.which(candidate):
+                    codex_bin = candidate
+                    break
+        if codex_bin:
+            auth_paths = ["/root/.codex/auth.json", os.path.expanduser("~/.codex/auth.json")]
+            if any(os.path.exists(p) for p in auth_paths):
+                codex_available = True
+    except Exception:
+        pass
+        
+    active_worker = os.environ.get("VC_WORKER", "codex")
+        
     return {
         "status": "online",
         "openai_available": openai_client is not None,
+        "codex_available": codex_available,
+        "active_worker": active_worker,
         "rocket_chat": {
             "url": base_url,
             "status": rc_status,
@@ -805,7 +831,7 @@ async def generate_digest(req: DigestRequest):
         json.dump(job_cfg, f, indent=2)
         
     # --- STEP 3: Wire to run_worker.py ---
-    worker_name = os.environ.get("VC_WORKER", "openai")
+    worker_name = os.environ.get("VC_WORKER", "codex")
     
     # Run the worker script
     cmd = [
@@ -829,6 +855,7 @@ async def generate_digest(req: DigestRequest):
             env=env,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
             timeout=30
         )
         

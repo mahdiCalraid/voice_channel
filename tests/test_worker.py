@@ -23,8 +23,10 @@ class TestWorkerRunner(unittest.TestCase):
             registry = json.load(f)
         self.assertIn("openai", registry)
         self.assertIn("agy", registry)
+        self.assertIn("codex", registry)
         self.assertEqual(registry["openai"]["adapter"], "openai")
         self.assertEqual(registry["agy"]["adapter"], "agy")
+        self.assertEqual(registry["codex"]["adapter"], "codex")
 
     @patch("workers.providers.openai_provider.OpenAIProvider.execute")
     def test_run_worker_digest_openai(self, mock_openai_execute):
@@ -141,6 +143,77 @@ class TestWorkerRunner(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["worker"], "agy")
         self.assertEqual(res["output"], "This is a mock agy CLI summary.")
+
+    @patch("workers.providers.codex_provider.subprocess.run")
+    @patch("workers.providers.codex_provider.shutil.which")
+    def test_run_worker_digest_codex_cli(self, mock_which, mock_run):
+        mock_which.return_value = "/usr/local/bin/codex"
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "\n".join([
+            json.dumps({
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "Codex digest output"
+                }
+            }),
+            json.dumps({
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "last_agent_message": "Codex digest output"
+                }
+            }),
+        ])
+        mock_proc.stderr = ""
+        mock_run.return_value = mock_proc
+
+        job_dir = os.path.join(self.temp_dir, "job_3")
+        os.makedirs(job_dir, exist_ok=True)
+
+        with open(os.path.join(job_dir, "messages.json"), "w") as f:
+            json.dump([{"id": "m1", "lane": "agent", "text": "done", "event": {"agent": "codex"}}], f)
+        with open(os.path.join(job_dir, "system_events.json"), "w") as f:
+            json.dump([], f)
+        with open(os.path.join(job_dir, "matter.md"), "w") as f:
+            f.write("NORTH_STAR.md")
+        with open(os.path.join(job_dir, "instructions.md"), "w") as f:
+            f.write("Keep it short.")
+        with open(os.path.join(job_dir, "room.json"), "w") as f:
+            json.dump({"prior_summaries": []}, f)
+
+        job_cfg = {
+            "room_id": "test_room",
+            "model": "gpt-5.6-terra",
+            "input_files": {
+                "messages": "messages.json",
+                "system_events": "system_events.json",
+                "matter_context": "matter.md",
+                "task_instructions": "instructions.md",
+                "room_context": "room.json"
+            }
+        }
+        job_path = os.path.join(job_dir, "job.json")
+        with open(job_path, "w") as f:
+            json.dump(job_cfg, f)
+
+        from workers.run_worker import main
+        test_argv = ["run_worker.py", "digest", "--worker", "codex", "--job", job_path]
+        with patch.object(sys, "argv", test_argv):
+            with self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 0)
+
+        res_path = os.path.join(job_dir, "result.json")
+        self.assertTrue(os.path.exists(res_path))
+        with open(res_path, "r") as f:
+            res = json.load(f)
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["worker"], "codex")
+        self.assertEqual(res["output"], "Codex digest output")
 
 if __name__ == '__main__':
     unittest.main()

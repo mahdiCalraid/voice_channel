@@ -6,6 +6,11 @@ import argparse
 import traceback
 from datetime import datetime, timezone
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 def main():
     parser = argparse.ArgumentParser(description="Voice Channel CLI Worker Runner")
     parser.add_argument("task", choices=["digest", "reply_draft", "room_status", "progress_review"], help="The AI task to run")
@@ -15,7 +20,7 @@ def main():
     args = parser.parse_args()
     
     # 1. Load registry
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = SCRIPT_DIR
     registry_path = os.path.join(script_dir, "registry.json")
     if not os.path.exists(registry_path):
         print(f"Error: registry.json not found at {registry_path}", file=sys.stderr)
@@ -190,6 +195,9 @@ def main():
         elif adapter_name == "agy":
             from workers.providers.agy_provider import AgyProvider
             provider = AgyProvider()
+        elif adapter_name == "codex":
+            from workers.providers.codex_provider import CodexProvider
+            provider = CodexProvider()
         else:
             raise ValueError(f"Unknown provider adapter '{adapter_name}' for worker '{args.worker}'.")
 

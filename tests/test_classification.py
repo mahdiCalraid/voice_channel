@@ -1,6 +1,8 @@
 import unittest
 import sys
 import os
+import json
+from unittest.mock import patch, MagicMock
 
 # Add parent directory to path so we can import app.main
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -238,8 +240,32 @@ class TestMessageClassification(unittest.TestCase):
         self.assertEqual(cleaned_messages[1]["event"]["status"], "completed")
         self.assertEqual(cleaned_messages[1]["event"]["response_time_seconds"], 30.0)
 
-    def test_digest_filtering_and_saving(self):
+    @patch("subprocess.run")
+    def test_digest_filtering_and_saving(self, mock_run):
         import asyncio
+        
+        # Mock subprocess to write result.json in the job directory
+        def mock_subprocess_run(cmd, **kwargs):
+            job_path = cmd[-1]
+            job_dir = os.path.dirname(job_path)
+            res_data = {
+                "ok": True,
+                "task": "digest",
+                "worker": "codex",
+                "output": "Mocked Codex summary showing grok worked on 1 updates. The last update was from ed.",
+                "included_message_ids": ["msg-agent-reply-1", "msg-user-1"],
+                "error": None
+            }
+            with open(os.path.join(job_dir, "result.json"), "w", encoding="utf-8") as f:
+                json.dump(res_data, f)
+            
+            m_res = MagicMock()
+            m_res.returncode = 0
+            m_res.stdout = ""
+            m_res.stderr = ""
+            return m_res
+            
+        mock_run.side_effect = mock_subprocess_run
         
         # Simulate messages with mixture of system, agent, user
         messages = [

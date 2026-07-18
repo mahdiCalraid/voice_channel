@@ -16,7 +16,7 @@
     "cursor",
     "grok"
   ],
-  "allowed_read_dirs": [],
+  "allowed_read_dirs": ["/Users/ed/King/clawd_2/development_channel"],
   "allowed_write_dirs": [],
   "local_conventions": {}
 }

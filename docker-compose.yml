@@ -13,6 +13,7 @@ services:
       - RC_AUTH_TOKEN=${ACLI_RC_AUTH_TOKEN:-gC4OcTZR4d4e94_OSdUVysTIg3XS9BH9ifUn37JgnYqn_3FEJ9qtmFJa51GYVPY4}
       - RC_ROOM_ID=${RC_ROOM_ID:-6a32407ea294f44649684786}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - VC_WORKER=${VC_WORKER:-codex}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -24,4 +25,5 @@ services:
       - ./NORTH_STAR.md:/app/NORTH_STAR.md
       - ./OBJECTIVES.md:/app/OBJECTIVES.md
       - ./PROJECT_HANDOFF.md:/app/PROJECT_HANDOFF.md
+      - ${HOME}/.codex:/codex-host-auth:ro
     restart: unless-stopped

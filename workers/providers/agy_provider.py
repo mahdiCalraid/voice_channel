@@ -41,7 +41,8 @@ class AgyProvider(BaseProvider):
             cmd,
             env=process_env,
             capture_output=True,
-            text=True
+            text=True,
+            stdin=subprocess.DEVNULL
         )
         
         if result.returncode != 0:

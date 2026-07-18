@@ -1,0 +1,6 @@
+[
+  {
+    "timestamp": "2026-07-18T15:58:28.135607+00:00",
+    "digest": "Ed, Codex reports that the real Codex CLI provider is now implemented, with shared authentication wired into Docker. This is a supporting infrastructure step rather than a direct voice-console milestone.\n\nThe core Voice Channel objectives remain unchanged: build the Rocket.Chat history reader, generate concise channel digests, add simple local TTS, and keep all reply posting confirmation-gated.\n\nNothing is currently reported as blocked. The practical next step is to verify the provider integration works in the local environment, then continue the first useful loop: fetch recent voice_channel messages, summarize them, and read the digest aloud."
+  }
+]

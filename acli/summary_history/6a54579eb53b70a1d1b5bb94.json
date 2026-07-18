@@ -1,14 +1,14 @@
 [
   {
-    "timestamp": "2026-07-17T06:45:25.783112+00:00",
-    "digest": "Here is a quick summary of the recent updates: ACLI Dispatcher worked on 9 updates. Ed worked on 9 updates. The last update was from Ed, saying: @grok please review  the code and implementation and check versus the implemention plan."
-  },
-  {
-    "timestamp": "2026-07-17T06:45:37.383173+00:00",
-    "digest": "Here is a quick summary of the recent updates: ACLI Dispatcher worked on 2 updates. Ed worked on 2 updates. The last update was from Ed, saying: @grok please review  the code and implementation and check versus the implemention plan."
-  },
-  {
     "timestamp": "2026-07-17T21:46:26.406314+00:00",
     "digest": "Here is a quick summary of the recent updates: Ed worked on 4 updates. claude worked on 1 updates. agy worked on 1 updates. The last update was from Ed, saying: @grok please give it an independent  review"
+  },
+  {
+    "timestamp": "2026-07-17T22:22:49.020998+00:00",
+    "digest": "Here is a quick summary of the recent updates: agy worked on 2 updates. Ed worked on 3 updates. grok worked on 1 updates. The last update was from Ed, saying: @grok please review again. \\"
+  },
+  {
+    "timestamp": "2026-07-18T17:22:14.229274+00:00",
+    "digest": "Codex has replaced the placeholder summarizer path with a real Codex CLI worker. The voice console now defaults to Codex for digest generation, and the Docker setup includes a workable Codex authentication bootstrap.\n\nThe implementation was tested locally, in the container, and through the live digest endpoint. A real Codex-generated digest was returned successfully.\n\nYes: the intended expectation is a standard, reliable Codex-generated summary as the default narration content. Rocket.Chat remains the source transcript; Codex turns recent channel history into the concise digest that the console can read aloud.\n\nOne small cleanup remains: the status endpoint still reports OpenAI availability based on environment settings, although the active digest path now uses Codex.\n\nThis follows your earlier requests for independent review. Grok is currently reviewing the implementation. The next practical step is to address any review findings, then connect this stable digest path to simple TTS playback and controls."
   }
 ]
