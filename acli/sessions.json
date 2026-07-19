@@ -28,18 +28,19 @@
       "tool": "codex",
       "rc_username": "codex",
       "active_session_id": "019f75ed-0ee0-7331-9c29-b7faf698be94",
-      "current_model": "",
+      "current_model": "gpt-5.6-sol",
       "status": "busy",
-      "last_routed_at": "2026-07-19T05:58:20.795736+00:00",
-      "current_effort": ""
+      "last_routed_at": "2026-07-19T07:36:52.342929+00:00",
+      "current_effort": "high",
+      "queue": []
     },
     "claude": {
       "tool": "claude",
       "rc_username": "claude",
       "active_session_id": "06c02bb0-c1c9-4503-9b2c-14c968e7931e",
-      "current_model": "claude-opus-4-8",
+      "current_model": "claude-fable-5",
       "status": "idle",
-      "last_routed_at": "2026-07-17T21:03:23.316528+00:00",
+      "last_routed_at": "2026-07-19T06:08:16.266928+00:00",
       "current_effort": "low"
     },
     "pplx": {

@@ -1,13 +1,13 @@
-# Implementation Plan: Message Classification, Transcript, and Summarization
+# Comprehensive Implementation Plan: Voice Channel
 
-Status (updated 2026-07-17): Steps 1–3 shipped and verified; Steps 4–5 shipped in
-structure (lane-filtered digest, matter docs, prior-summary memory, `included_message_ids`,
-sources UI) but the AI narrator is **not yet delivering plan-quality digests in
-production** — the digest currently calls OpenAI directly and falls back to post-counting
-when that key is invalid (live `401 Unauthorized`). Section 7 below adds the next major
-piece of work: an **independent CLI worker layer** to become the AI brain for the Voice
-Channel, replacing the hard-coded OpenAI call inside `/api/digest`. Written against the
-current running code in `app/main.py` and `frontend/index.js` (Docker console on port 6891).
+Status (updated 2026-07-19): The technical foundation is working end to end. Message
+classification, lane-aware transcript rendering, routing statistics, auditable sources,
+summary memory, and the independent worker layer have shipped. The default narrator now
+uses the real Codex CLI with shared host authentication; live `/api/digest` calls produce
+Codex-written summaries and the test suite passes. Parts I and II below preserve the
+design and implementation history. Part III defines the next chapter: a full-screen,
+three-pane supervision app with a channel-aware narrator, durable private AI sessions,
+guided reply suggestions, explicit read-only matter-folder context, and high-quality TTS.
 
 ## 1. Why this exists
 
@@ -311,3 +311,349 @@ UI depends on it.
   job at a time.
 - No secrets in the repo, in job bundles, or in prompt files — env/config reference only.
 - Realtime voice transport remains out of scope until this text/worker loop is dependable.
+
+---
+
+# Part III — Full-Screen Channel Supervision App
+
+Added 2026-07-19 after the narrator, Rocket.Chat integration, and Codex worker path were
+proven live. This is deliberately different from the failed `video_call` direction: the
+core read, classify, summarize, source-audit, and voice loop already works. The next
+chapter reshapes those working capabilities into a daily-use application and adds new AI
+tasks incrementally. It does not introduce video, avatars, LiveKit, or a media-room
+illusion.
+
+## 12. Product definition and interaction contract
+
+The app is a **voice-enabled supervision console for Rocket.Chat-backed agent work**. Its
+visual model combines:
+
+- Telegram-style channel navigation on the left.
+- A large, editorial transcript in the center.
+- A Gemini-in-Gmail-style narrator workspace on the right.
+
+The most important UX rule is a hard boundary between private AI work and durable channel
+communication:
+
+| Surface | Purpose | Can post to Rocket.Chat? |
+| --- | --- | --- |
+| Narrator bar | Ask questions, request summaries, compare opinions, inspect project state, generate drafts | No |
+| Bottom composer | Edit, target, confirm, and send a message to the selected channel | Yes, after explicit confirmation |
+
+The narrator may offer a draft or suggestion, but it can only **promote** that text into
+the composer. It never sends directly. The composer remains the single confirmation gate
+and Rocket.Chat remains the durable transcript and source of truth.
+
+## 13. Information architecture and layout
+
+Desktop uses a full-height application shell with three independent panes:
+
+```text
+┌──────────────────┬───────────────────────────────────────┬──────────────────────┐
+│ Channels         │ #voice_channel              AI  Info │ Narrator             │
+│ Search           ├───────────────────────────────────────┤ Context: 50 messages │
+│                  │                                       │ + project files      │
+│ ● voice_channel  │  Ed                                   │                      │
+│   coding · 2     │  Please review the implementation…    │ What is happening?   │
+│                  │                                       │ What did Grok mean?  │
+│ ○ planning       │  ┌ Codex · completed in 38s ───────┐ │ What should I do?    │
+│   planning       │  │ Structured, readable agent reply │ │                      │
+│                  │  └───────────────────────────────────┘ │ [private answer]     │
+│ ○ research       │                                       │ [Use as reply]       │
+│                  │  [routing/status event card]           │                      │
+│                  ├───────────────────────────────────────┤ ──────────────────── │
+│                  │ Suggested starts: Review · Ask · Plan │ Ask about this room… │
+│                  │ [agent target]  Write a message… Send │ [mic]          [ask] │
+└──────────────────┴───────────────────────────────────────┴──────────────────────┘
+```
+
+The narrator bar is collapsible. Closing it gives the transcript the full working width.
+Pane widths should be resizable within sensible bounds and remembered locally. On narrow
+screens, the channel list and narrator become drawers so the transcript and composer
+remain usable; the interaction contract does not change.
+
+### 13.1 Left channel rail
+
+The channel rail is driven by the existing Rocket.Chat room list, not a second channel
+database. Each row should show the room name, channel type, unread or changed state, a
+short last-activity preview, and optional narrator attention state. It should support:
+
+- Fast search and keyboard navigation.
+- Pinned/recent ordering without altering Rocket.Chat membership.
+- Unread count and a jump-to-unread action.
+- A quiet status indicator when an agent is working or when a meaningful update arrived.
+- Config-driven channel icons/initials, with no hard-coded assumption about room count.
+
+Selecting a room switches the transcript, composer target, narrator session, summary
+memory, and channel configuration as one atomic context change.
+
+### 13.2 Center transcript
+
+The transcript is the primary surface and must be useful with the narrator closed. It is
+not a raw Rocket.Chat clone. Existing lane and event metadata drives an opinionated,
+readable hierarchy:
+
+- Ed's messages are visually direct and easy to find.
+- Agent results use generous typography, sanitized Markdown, strong headings, readable
+  code blocks, tables, citations, and restrained width for comfortable reading.
+- Long replies initially show a useful lead section with **Expand** / **Collapse** and
+  preserve full-text search and source linking.
+- System messages become compact graphic event cards: routing, model/effort, heartbeat,
+  elapsed time, completion, failure, stop, superseded run, and attachment.
+- Date separators, unread markers, current-working state, and jump-to-latest maintain
+  orientation in long rooms.
+- Source links from the narrator scroll to and highlight the exact transcript item.
+
+Formatting should improve comprehension without changing the underlying message text.
+The raw message remains inspectable for troubleshooting.
+
+### 13.3 Channel header and settings
+
+Clicking the channel header opens a settings sheet, similar to Telegram channel details.
+Settings are persisted per Rocket.Chat room and contain:
+
+- Display metadata: label, icon/accent, optional description.
+- Channel type: `coding`, `planning`, `consultation`, `research`, `execution`, or custom.
+- Narrator instructions: what the room is for, what matters, what to ignore, desired
+  summary style, and any known agent workflow.
+- Linked ACLI matter directory: an explicit, verified path; never guessed from room name.
+- Context policy: recent-message count, summary-memory depth, relevant matter documents,
+  and whether project-file reading is enabled.
+- Assistant permission tier: transcript only; transcript + approved project files; or
+  transcript + files + reply/command suggestions.
+- Narration preferences: voice, speed, verbosity, auto-read policy, and interruption.
+
+Channel settings are operational context for the AI engine, not merely visual
+preferences. Changes must flow into future worker job bundles.
+
+## 14. Narrator bar: private room intelligence
+
+The narrator bar owns every **ask the AI** interaction. It is always scoped to the
+selected room and clearly displays what context it can currently see: message window,
+summary history, channel instructions, and approved matter directory.
+
+Initial task set:
+
+- Summarize important changes since a time or unread marker.
+- Explain a specific message or review finding.
+- Answer "where are we?", "what is blocked?", and "what should happen next?"
+- Compare named agent positions and identify agreement or conflict.
+- Relate current discussion to objectives, plans, and actual project files.
+- Draft a reply on explicit request.
+- Generate a small set of humble, distinct reply starters.
+
+Answers retain `included_message_ids` and add `used_context_files`, allowing a sources
+drawer to distinguish transcript evidence from project-file evidence. Every answer should
+make uncertainty visible when the available context is incomplete.
+
+The bar supports text and speech input, stop/interruption, replay, speed control, and
+follow-up questions. It is private by default. **Use as reply** copies an answer or
+suggestion into the bottom composer for editing; it does not send.
+
+## 15. Bottom composer and guided suggestions
+
+The composer is for outward communication only. It should feel like a capable chat
+composer, not a second AI chat box:
+
+- Multiline Markdown editor with attachments and keyboard send controls.
+- Config-driven agent targeting using recognizable brand-inspired icons plus accessible
+  labels/tooltips and a neutral fallback icon for unknown workers.
+- Explicit target preview before sending, especially for `@agent` messages.
+- Existing confirmation gate immediately before the Rocket.Chat write.
+- Draft persistence per channel so switching rooms never loses work.
+
+Above an empty composer, the AI engine may generate two to four short starter actions
+based on recent messages, room type, objectives, and the declared agent workflow. Examples
+might be "Ask Grok to review", "Have Codex fix the two verified issues", or "Request a
+status comparison". These are suggestions, not autonomous actions. Clicking one inserts
+editable text into the composer. Suggestions should be:
+
+- Concise and materially different from each other.
+- Labeled by intent where useful (`Review`, `Implement`, `Clarify`, `Plan`).
+- Regenerated only on request or after meaningful channel changes, not continuously.
+- Traceable to the context version used to create them.
+- Never posted, targeted, or executed until Ed edits/accepts and confirms.
+
+Start pull-based and conservative. Proactive recommendation banners are a later option
+only after suggestion quality is demonstrably trustworthy.
+
+## 16. Per-channel context and read-only matter access
+
+The narrator needs ACLI-level situational context without becoming part of ACLI's
+dispatcher. Each room configuration explicitly maps `room_id` to one approved matter
+directory. The mapping may be initially imported from ACLI's registry, but Voice Channel
+stores and validates its own configuration and does not infer paths from names.
+
+Access rules:
+
+1. Matter access is opt-in per channel and read-only for narrator tasks.
+2. The resolved path must exist, be allowlisted, and remain inside configured roots.
+3. The worker receives only that room's approved directory for that job.
+4. Job metadata records which files were read; secrets, credential files, VCS internals,
+   generated artifacts, and configured ignore patterns are excluded.
+5. Transcript-only questions do not mount or scan the matter directory unnecessarily.
+6. Any future write-capable command task requires a separate design and explicit
+   authorization; it is not implied by narrator read access.
+
+The first implementation should use a bounded context builder rather than dumping an
+entire repository into every prompt. It should combine pinned project documents,
+task-specific file search, current git/status metadata where relevant, and compact file
+excerpts. Codex CLI continues in a read-only sandbox for narrator work.
+
+Container deployment requires a deliberate path bridge: approved host matter roots are
+mounted read-only and translated to stable container paths. This mapping belongs in
+configuration and must be covered by path-validation tests.
+
+## 17. Persistence model
+
+The redesigned app must survive refreshes and channel switches without losing its mental
+state. Keep storage simple and replayable for this phase, but separate different kinds of
+state:
+
+```text
+data/
+  channel_config/<room_id>.json       channel type, prompt, path, permissions, voice
+  narrator_sessions/<room_id>.json    private Q&A turns and source metadata
+  composer_drafts/<room_id>.json      unsent editable draft and selected targets
+  ui_state/<user_id>.json             pins, pane widths, collapsed state, last room
+acli/
+  summary_history/<room_id>.json      existing digest memory
+```
+
+Narrator turns should store timestamp, task, question, answer, worker/model, included
+message IDs, used files, context version, and error state. Store bounded histories with a
+clear retention setting; do not silently feed every old turn back into every request.
+Session context uses the latest relevant turns plus summaries, while the full local log
+remains available for review.
+
+Writes should be atomic (temporary file then replace) and serialized per room. Define the
+JSON contracts and migration/version field before building the settings UI so future
+schema changes do not strand existing channels. If concurrent use outgrows flat files,
+the same contracts can move behind SQLite without changing frontend behavior.
+
+## 18. Worker-engine expansion
+
+Reuse the independent engine from Part II; do not create a second AI stack. Add real task
+implementations with dedicated instructions and output contracts:
+
+| Task | Purpose | Primary output |
+| --- | --- | --- |
+| `digest` | Existing narrator summary | prose + sources |
+| `narrator_qa` | Private grounded room questions | answer + transcript/file sources |
+| `reply_draft` | Explicitly requested editable reply | draft + rationale/source metadata |
+| `reply_suggestions` | Two to four conservative composer starters | structured suggestion array |
+| `room_status` | Stage, completed work, blockers, next step | structured status + prose |
+| `compare_agents` | Contrast named agent positions | agreements, differences, recommendation |
+
+Create one shared Job Builder that accepts task, room configuration, user input, selected
+messages, narrator-session context, and approved matter path. Task modules decide which
+inputs they need. The provider registry remains swappable; Codex is the default, not a
+hard-coded dependency in endpoints or UI.
+
+Structured tasks must return JSON validated against a task-specific schema. Free-form
+Codex prose must not be parsed heuristically into sendable actions. Worker errors, timeout,
+or malformed output should be visible in the narrator bar and must never trigger a write.
+
+## 19. High-quality voice layer
+
+Browser `speechSynthesis` remains an offline fallback, not the target voice. Add a
+provider-neutral TTS service behind `/api/tts` with a small registry separate from the
+text worker registry. This matters because Codex CLI authentication covers Codex text
+work, while hosted speech providers may require their own credentials and billing.
+
+The first quality TTS integration should support:
+
+- Several natural voices with an in-app preview and per-channel/default selection.
+- Speed and narration-style controls (briefing, calm reader, fast monitor).
+- Streaming or low-latency playback when supported, with immediate stop/interruption.
+- Paragraph-level chunking so long digests can start quickly and resume reliably.
+- Local cache keyed by content, voice, speed, and provider to avoid repeated charges.
+- Text normalization that does not read Markdown symbols, raw URLs, code blocks, source
+  IDs, or system metadata aloud unless requested.
+- Browser TTS fallback when the provider is unavailable.
+
+Auto-read remains opt-in and should initially apply only to explicit digests or important
+updates, not every Rocket.Chat event.
+
+## 20. Backend and API changes
+
+Keep Rocket.Chat as the source of truth and expose application state through narrow APIs:
+
+- `GET /api/rooms`: enrich existing room data with local config, unread/activity state,
+  and narrator attention metadata.
+- `GET /api/history`: preserve lane/event data and add pagination/unread anchors needed by
+  the new transcript.
+- `GET|PUT /api/channels/{room_id}/config`: validate and persist typed-workspace settings.
+- `GET /api/channels/{room_id}/narrator/session`: load bounded private AI history.
+- `POST /api/channels/{room_id}/narrator/ask`: execute `narrator_qa` and persist result.
+- `POST /api/channels/{room_id}/narrator/suggestions`: return structured reply starters.
+- `POST /api/channels/{room_id}/narrator/draft`: execute an explicit `reply_draft` task.
+- `POST /api/channels/{room_id}/composer/promote`: optional local draft operation only;
+  no Rocket.Chat write.
+- Existing confirmed send endpoint: remain the only channel-write boundary.
+- `POST /api/tts`: synthesize/cache audio with no coupling to narrator task execution.
+
+All room-scoped endpoints must verify Rocket.Chat membership and local matter permissions.
+Long-running AI/TTS requests should gain cancellation and request IDs; synchronous calls
+are acceptable for the first shell milestone if the UI shows honest progress and can stop
+playback/work.
+
+## 21. Delivery sequence
+
+The overhaul should proceed as independently usable milestones:
+
+1. **Application shell.** Build the full-screen three-pane layout using current room,
+   history, digest, sources, and composer capabilities. Move current narrator features
+   into the collapsible right bar. Add responsive drawers and preserve all existing flows.
+2. **Transcript quality.** Add editorial message hierarchy, long-message collapse,
+   graphical system cards, date/unread navigation, source highlighting, and raw-message
+   inspection.
+3. **Channel configuration.** Define versioned persistence and build the settings sheet
+   for room type, narrator instructions, message window, permissions, and voice settings.
+4. **Matter context.** Import/confirm ACLI room mappings, implement read-only path
+   validation and container mounts, then expose file sources in narrator results.
+5. **Durable narrator Q&A.** Implement `narrator_qa`, per-room sessions, source display,
+   cancellation, and private text/voice interaction in the right bar.
+6. **Guided replies.** Implement explicit drafts and humble structured suggestions, then
+   promotion into persistent composer drafts with the existing confirmation gate.
+7. **Voice quality.** Add provider-based TTS, voice selection, streaming/chunking, cache,
+   interruption, and browser fallback.
+8. **Hardening.** Add integration tests for room switching, persistence, path isolation,
+   worker failure, confirmation safety, and an end-to-end live smoke test.
+
+Each milestone must preserve a usable application. The shell must remain valuable with
+the narrator closed; the narrator must remain useful if voice synthesis is unavailable;
+and no AI failure may prevent reading or posting through Rocket.Chat.
+
+## 22. Acceptance criteria for the new chapter
+
+The overhaul is successful when Ed can:
+
+- Switch among real Rocket.Chat rooms from a fast, readable channel rail.
+- Read long ACLI conversations with clear agent, user, and system hierarchy.
+- Open a room's settings and define its purpose, narrator behavior, approved matter
+  folder, context depth, and voice.
+- Ask privately "what is happening?", "what did Grok mean?", or "where are we on this
+  feature?" and receive an answer grounded in messages and approved project files.
+- Return later and continue the room-specific narrator conversation after a refresh.
+- Request or click a conservative AI suggestion, edit it in the composer, choose an agent,
+  and explicitly confirm before anything is posted.
+- Hear a natural, interruptible narration voice while retaining browser TTS fallback.
+- Inspect the transcript messages and project files used for an AI answer.
+
+The product is not successful merely because the three panes look polished. It is
+successful when the combination of readable transcript, grounded narrator, safe guided
+composer, and high-quality audio materially reduces the time and cognitive load required
+to supervise agent channels.
+
+## 23. Non-goals and guardrails for Part III
+
+- No video, avatars, virtual conference room, or LiveKit dependency.
+- No autonomous posting or execution from narrator answers or suggestions.
+- No implicit repository access based on a room name; every matter path is explicit and
+  read-only.
+- No cross-channel AI memory by default; sessions and context are room-scoped.
+- No proactive suggestion spam; start with explicit requests and empty-composer starters.
+- No replacement of Rocket.Chat as the durable coordination transcript.
+- No wholesale frontend framework migration in the first shell milestone unless the
+  current implementation proves unable to support the layout and state model.
