@@ -1,14 +1,14 @@
 [
   {
-    "timestamp": "2026-07-17T21:46:26.406314+00:00",
-    "digest": "Here is a quick summary of the recent updates: Ed worked on 4 updates. claude worked on 1 updates. agy worked on 1 updates. The last update was from Ed, saying: @grok please give it an independent  review"
-  },
-  {
     "timestamp": "2026-07-17T22:22:49.020998+00:00",
     "digest": "Here is a quick summary of the recent updates: agy worked on 2 updates. Ed worked on 3 updates. grok worked on 1 updates. The last update was from Ed, saying: @grok please review again. \\"
   },
   {
     "timestamp": "2026-07-18T17:22:14.229274+00:00",
     "digest": "Codex has replaced the placeholder summarizer path with a real Codex CLI worker. The voice console now defaults to Codex for digest generation, and the Docker setup includes a workable Codex authentication bootstrap.\n\nThe implementation was tested locally, in the container, and through the live digest endpoint. A real Codex-generated digest was returned successfully.\n\nYes: the intended expectation is a standard, reliable Codex-generated summary as the default narration content. Rocket.Chat remains the source transcript; Codex turns recent channel history into the concise digest that the console can read aloud.\n\nOne small cleanup remains: the status endpoint still reports OpenAI availability based on environment settings, although the active digest path now uses Codex.\n\nThis follows your earlier requests for independent review. Grok is currently reviewing the implementation. The next practical step is to address any review findings, then connect this stable digest path to simple TTS playback and controls."
+  },
+  {
+    "timestamp": "2026-07-19T05:15:49.271650+00:00",
+    "digest": "Ed, the narrator milestone has materially advanced. The console now uses the Codex CLI worker to generate real channel digests, and live status confirms Codex is available and active.\n\nThe remaining reliability issue was fixed: worker subprocesses no longer hang waiting for stdin. The digest test was made deterministic, all 17 tests pass, Docker was rebuilt, and the work was committed.\n\nThis completes the main item from the prior summary: replacing the placeholder path with dependable Codex-generated narration. Rocket.Chat remains the source transcript, and the console can now summarize it in practice.\n\nGrok is currently performing the independent review you requested, so no new blocker has been confirmed yet.\n\nOn your future idea: the current design already has a separate, provider-style AI worker layer rather than hardwiring narration logic into the interface. That is a sound foundation for later AI-authored commands or other agent work, though that capability has not been designed or validated yet."
   }
 ]

@@ -20,7 +20,7 @@
       "rc_username": "agy",
       "active_session_id": "55f19f67-f4c9-4a8a-8c57-3df877ab07eb",
       "current_model": "",
-      "status": "busy",
+      "status": "idle",
       "last_routed_at": "2026-07-18T17:45:07.815362+00:00",
       "current_effort": ""
     },
@@ -29,8 +29,8 @@
       "rc_username": "codex",
       "active_session_id": "019f75ed-0ee0-7331-9c29-b7faf698be94",
       "current_model": "",
-      "status": "idle",
-      "last_routed_at": "2026-07-18T15:51:35.894316+00:00",
+      "status": "busy",
+      "last_routed_at": "2026-07-19T05:58:20.795736+00:00",
       "current_effort": ""
     },
     "claude": {
@@ -66,7 +66,7 @@
       "active_session_id": "019f6431-3dcb-7111-8d82-6c1368779972",
       "current_model": "grok-4.5",
       "status": "idle",
-      "last_routed_at": "2026-07-18T17:21:04.823156+00:00",
+      "last_routed_at": "2026-07-19T05:14:44.615890+00:00",
       "current_effort": "high"
     }
   }
