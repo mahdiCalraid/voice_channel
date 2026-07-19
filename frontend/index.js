@@ -37,10 +37,22 @@ const sourcesToggleText = document.getElementById("sources-toggle-text");
 const sourcesArrow = document.getElementById("sources-arrow");
 const sourcesList = document.getElementById("sources-list");
 
+// New Three-Pane DOM Elements
+const channelsListEl = document.getElementById("channels-list");
+const channelSearchInput = document.getElementById("channel-search-input");
+const currentRoomNameEl = document.getElementById("current-room-name");
+const currentRoomStatusEl = document.getElementById("current-room-status");
+const btnToggleNarrator = document.getElementById("btn-toggle-narrator");
+const btnCloseNarrator = document.getElementById("btn-close-narrator");
+const btnToggleSidebar = document.getElementById("btn-toggle-sidebar");
+const narratorSidebar = document.getElementById("narrator-sidebar");
+const channelsSidebar = document.getElementById("channels-sidebar");
+
 // Initialize application
 function init() {
     activeRoomId = localStorage.getItem("activeRoomId");
 
+    initNarratorSidebarState();
     checkStatus();
     loadRooms().then(() => {
         loadHistory();
@@ -63,7 +75,31 @@ function init() {
     btnCancelSend.addEventListener("click", hideConfirmation);
     btnConfirmSend.addEventListener("click", sendDraftedMessage);
     
-    roomSelect.addEventListener("change", handleRoomChange);
+    if (roomSelect) {
+        roomSelect.addEventListener("change", handleRoomChange);
+    }
+    
+    // Channel Search Filter
+    if (channelSearchInput) {
+        channelSearchInput.addEventListener("input", (e) => {
+            renderChannelsList(e.target.value);
+        });
+    }
+
+    // Narrator Sidebar Toggles
+    if (btnToggleNarrator) {
+        btnToggleNarrator.addEventListener("click", toggleNarratorSidebar);
+    }
+    if (btnCloseNarrator) {
+        btnCloseNarrator.addEventListener("click", closeNarratorSidebar);
+    }
+
+    // Mobile Sidebar Toggle
+    if (btnToggleSidebar) {
+        btnToggleSidebar.addEventListener("click", () => {
+            channelsSidebar.classList.toggle("mobile-open");
+        });
+    }
     
     // Setup sources toggle listener
     if (sourcesToggle) {
@@ -95,6 +131,34 @@ function init() {
             commandInput.focus();
         });
     });
+}
+
+function initNarratorSidebarState() {
+    const isOpen = localStorage.getItem("narratorOpen") !== "false";
+    if (isOpen) {
+        narratorSidebar.classList.remove("collapsed");
+        if (btnToggleNarrator) btnToggleNarrator.classList.add("active");
+    } else {
+        narratorSidebar.classList.add("collapsed");
+        if (btnToggleNarrator) btnToggleNarrator.classList.remove("active");
+    }
+}
+
+function toggleNarratorSidebar() {
+    const isCollapsed = narratorSidebar.classList.contains("collapsed");
+    if (isCollapsed) {
+        narratorSidebar.classList.remove("collapsed");
+        if (btnToggleNarrator) btnToggleNarrator.classList.add("active");
+        localStorage.setItem("narratorOpen", "true");
+    } else {
+        closeNarratorSidebar();
+    }
+}
+
+function closeNarratorSidebar() {
+    narratorSidebar.classList.add("collapsed");
+    if (btnToggleNarrator) btnToggleNarrator.classList.remove("active");
+    localStorage.setItem("narratorOpen", "false");
 }
 
 // Run immediately if DOM is already ready, otherwise wait
@@ -143,19 +207,21 @@ async function loadRooms() {
             roomsList = data.rooms;
             
             // Re-render select options
-            roomSelect.innerHTML = roomsList.map(room => {
-                return `<option value="${room.id}">${escapeHTML(room.name)}</option>`;
-            }).join("");
+            if (roomSelect) {
+                roomSelect.innerHTML = roomsList.map(room => {
+                    return `<option value="${room.id}">${escapeHTML(room.name)}</option>`;
+                }).join("");
+            }
             
             // Determine active room ID
             if (activeRoomId) {
                 // Check if stored room ID is still valid
                 const roomExists = roomsList.some(r => r.id === activeRoomId);
                 if (roomExists) {
-                    roomSelect.value = activeRoomId;
+                    if (roomSelect) roomSelect.value = activeRoomId;
                 } else {
                     activeRoomId = roomsList[0]?.id;
-                    roomSelect.value = activeRoomId;
+                    if (roomSelect) roomSelect.value = activeRoomId;
                     localStorage.setItem("activeRoomId", activeRoomId);
                 }
             } else {
@@ -171,23 +237,84 @@ async function loadRooms() {
                     activeRoomId = roomsList[0]?.id;
                 }
                 
-                roomSelect.value = activeRoomId;
+                if (roomSelect) roomSelect.value = activeRoomId;
                 localStorage.setItem("activeRoomId", activeRoomId);
             }
+
+            renderChannelsList();
+            updateHeaderRoomInfo();
         } else {
-            roomSelect.innerHTML = `<option value="">No rooms found</option>`;
+            if (roomSelect) roomSelect.innerHTML = `<option value="">No rooms found</option>`;
+            if (channelsListEl) channelsListEl.innerHTML = `<div class="empty-channels">No rooms found</div>`;
             showTranscriptError("No channels available from Rocket.Chat.");
         }
     } catch (err) {
         console.error("Failed to load rooms:", err);
-        roomSelect.innerHTML = `<option value="error">Error loading rooms</option>`;
+        if (roomSelect) roomSelect.innerHTML = `<option value="error">Error loading rooms</option>`;
         showTranscriptError("Failed to load rooms: " + err.message);
     }
 }
 
-function handleRoomChange() {
-    activeRoomId = roomSelect.value;
+function selectRoom(roomId) {
+    if (!roomId || roomId === activeRoomId) return;
+    activeRoomId = roomId;
+    if (roomSelect) roomSelect.value = roomId;
     localStorage.setItem("activeRoomId", activeRoomId);
+    renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
+    updateHeaderRoomInfo();
+    handleRoomChange();
+}
+
+function updateHeaderRoomInfo() {
+    const activeRoom = roomsList.find(r => r.id === activeRoomId);
+    if (activeRoom && currentRoomNameEl) {
+        currentRoomNameEl.innerText = `#${activeRoom.name}`;
+    }
+}
+
+function renderChannelsList(filterText = "") {
+    if (!channelsListEl) return;
+    
+    const term = (filterText || "").trim().toLowerCase();
+    const filtered = roomsList.filter(r => (r.name || "").toLowerCase().includes(term));
+    
+    if (filtered.length === 0) {
+        channelsListEl.innerHTML = `
+            <div class="empty-channels">
+                <span class="material-symbols-rounded">search_off</span>
+                <span>No channels found</span>
+            </div>
+        `;
+        return;
+    }
+    
+    channelsListEl.innerHTML = filtered.map(room => {
+        const isActive = room.id === activeRoomId;
+        const activeClass = isActive ? "active" : "";
+        return `
+            <div class="channel-item ${activeClass}" data-room-id="${room.id}">
+                <span class="material-symbols-rounded channel-icon">hashtag</span>
+                <div class="channel-info">
+                    <span class="channel-name">${escapeHTML(room.name)}</span>
+                </div>
+            </div>
+        `;
+    }).join("");
+    
+    channelsListEl.querySelectorAll(".channel-item").forEach(item => {
+        item.addEventListener("click", () => {
+            const rid = item.dataset.roomId;
+            selectRoom(rid);
+            if (channelsSidebar) channelsSidebar.classList.remove("mobile-open");
+        });
+    });
+}
+
+function handleRoomChange() {
+    if (roomSelect) activeRoomId = roomSelect.value;
+    localStorage.setItem("activeRoomId", activeRoomId);
+    renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
+    updateHeaderRoomInfo();
     
     // Clear transcript UI and state
     lastMessageTimestamp = null;
