@@ -10,6 +10,8 @@ let recognition = null;
 let isListening = false;
 let activeRoomId = null;
 let roomsList = [];
+let historyRequestSeq = 0;
+let confirmationTargetRoomId = null;
 
 // DOM Elements
 const rcStatusChip = document.getElementById("rc-status-chip");
@@ -292,8 +294,8 @@ function renderChannelsList(filterText = "") {
         const isActive = room.id === activeRoomId;
         const activeClass = isActive ? "active" : "";
         return `
-            <div class="channel-item ${activeClass}" data-room-id="${room.id}">
-                <span class="material-symbols-rounded channel-icon">hashtag</span>
+            <div class="channel-item ${activeClass}" data-room-id="${room.id}" role="button" tabindex="0">
+                <span class="material-symbols-rounded channel-icon">tag</span>
                 <div class="channel-info">
                     <span class="channel-name">${escapeHTML(room.name)}</span>
                 </div>
@@ -302,10 +304,17 @@ function renderChannelsList(filterText = "") {
     }).join("");
     
     channelsListEl.querySelectorAll(".channel-item").forEach(item => {
-        item.addEventListener("click", () => {
+        const handleSelect = () => {
             const rid = item.dataset.roomId;
             selectRoom(rid);
             if (channelsSidebar) channelsSidebar.classList.remove("mobile-open");
+        };
+        item.addEventListener("click", handleSelect);
+        item.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                handleSelect();
+            }
         });
     });
 }
@@ -316,6 +325,9 @@ function handleRoomChange() {
     renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
     updateHeaderRoomInfo();
     
+    // Always hide/cancel any pending confirmation gate on room switch
+    hideConfirmation();
+    
     // Clear transcript UI and state
     lastMessageTimestamp = null;
     transcriptFeed.innerHTML = `
@@ -325,9 +337,16 @@ function handleRoomChange() {
         </div>
     `;
     
-    // Clear digest Narrator UI
+    // Clear digest & sources Narrator UI completely
     currentDigestText = "";
     digestContent.innerText = 'No digest loaded. Click "Generate Digest" below to fetch the latest updates from the channel and read them aloud.';
+    if (digestSourcesContainer) digestSourcesContainer.style.display = "none";
+    if (sourcesList) {
+        sourcesList.innerHTML = "";
+        sourcesList.classList.add("hidden");
+    }
+    if (sourcesArrow) sourcesArrow.classList.remove("rotated");
+    if (sourcesToggleText) sourcesToggleText.innerText = "Show Sources (0)";
     handleStop();
     
     // Reload
@@ -346,10 +365,19 @@ function showTranscriptError(message) {
 
 async function loadHistory() {
     if (!activeRoomId || activeRoomId === "loading" || activeRoomId === "error") return;
+    
+    const currentSeq = ++historyRequestSeq;
+    const targetRoomId = activeRoomId;
+    
     try {
-        const response = await fetch(`/api/history?roomId=${encodeURIComponent(activeRoomId)}&count=30`);
+        const response = await fetch(`/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=30`);
         if (!response.ok) throw new Error("HTTP error " + response.status);
         const data = await response.json();
+        
+        // Ignore stale async response if active room or sequence changed mid-flight
+        if (currentSeq !== historyRequestSeq || targetRoomId !== activeRoomId) {
+            return;
+        }
         
         if (data.success && data.messages) {
             renderTranscript(data.messages);
@@ -362,8 +390,10 @@ async function loadHistory() {
             showTranscriptError(data.detail || "Failed to load channel history.");
         }
     } catch (err) {
-        console.error("Failed to load transcript history:", err);
-        showTranscriptError("Failed to load transcript: " + err.message);
+        if (currentSeq === historyRequestSeq && targetRoomId === activeRoomId) {
+            console.error("Failed to load transcript history:", err);
+            showTranscriptError("Failed to load transcript: " + err.message);
+        }
     }
 }
 
@@ -378,7 +408,11 @@ function renderTranscript(messages) {
         return;
     }
     
-    // Check if we have new messages since last render to trigger auto-scroll
+    // Check if user is scrolled near bottom before update (within 120px)
+    const isNearBottom = (transcriptFeed.scrollHeight - transcriptFeed.scrollTop - transcriptFeed.clientHeight) < 120;
+    const isInitialLoad = (lastMessageTimestamp === null);
+    
+    // Check if we have new messages since last render
     let shouldScroll = false;
     if (messages.length > 0) {
         const latestMsg = messages[messages.length - 1];
@@ -435,8 +469,8 @@ function renderTranscript(messages) {
         `;
     }).join("");
     
-    // Auto-scroll to bottom if new messages arrived
-    if (shouldScroll) {
+    // Auto-scroll ONLY if it's the initial room load OR user was already near the bottom
+    if (shouldScroll && (isNearBottom || isInitialLoad)) {
         transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
     }
 }
@@ -663,18 +697,23 @@ function initSpeechSynthesis() {
 
 async function handleGenerateDigest() {
     if (!activeRoomId) return;
+    const targetRoomId = activeRoomId;
     btnGenerateDigest.disabled = true;
     digestContent.innerHTML = "<em>Generating new digest from recent updates...</em>";
     
     try {
-        // Fetch current messages
-        const histResponse = await fetch(`/api/history?roomId=${activeRoomId}&count=20`);
+        // Fetch current messages for target room
+        const histResponse = await fetch(`/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=20`);
         if (!histResponse.ok) throw new Error("Failed to fetch messages");
         const histData = await histResponse.json();
         
+        // If room changed while fetching history, ignore stale response
+        if (targetRoomId !== activeRoomId) return;
+        
         if (!histData.success || !histData.messages || histData.messages.length === 0) {
-            digestContent.innerText = "No messages available to summarize.";
-            btnGenerateDigest.disabled = false;
+            if (targetRoomId === activeRoomId) {
+                digestContent.innerText = "No messages available to summarize.";
+            }
             return;
         }
         
@@ -684,17 +723,20 @@ async function handleGenerateDigest() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
                 messages: histData.messages,
-                roomId: activeRoomId
+                roomId: targetRoomId
             })
         });
         
         if (!digestResponse.ok) throw new Error("Failed to generate digest");
         const digestData = await digestResponse.json();
         
+        // If room changed while generating digest, ignore stale response
+        if (targetRoomId !== activeRoomId) return;
+        
         currentDigestText = digestData.digest;
         digestContent.innerText = currentDigestText;
         
-        // Render Auditable Sources List (Step 5)
+        // Render Auditable Sources List
         const sourceIds = digestData.included_message_ids || [];
         if (sourceIds.length > 0) {
             const sourceMsgs = histData.messages.filter(m => sourceIds.includes(m.id));
@@ -740,10 +782,14 @@ async function handleGenerateDigest() {
         speakText(currentDigestText);
         
     } catch (err) {
-        console.error("Digest generation failed:", err);
-        digestContent.innerText = "Error generating digest. Please check console.";
+        if (targetRoomId === activeRoomId) {
+            console.error("Digest generation failed:", err);
+            digestContent.innerText = "Error generating digest. Please check console.";
+        }
     } finally {
-        btnGenerateDigest.disabled = false;
+        if (targetRoomId === activeRoomId) {
+            btnGenerateDigest.disabled = false;
+        }
     }
 }
 
@@ -911,13 +957,15 @@ function stopListening() {
 // 5. Message Composer & Confirmation Workflows
 function showConfirmation() {
     const text = commandInput.value.trim();
-    if (!text) return;
+    if (!text || !activeRoomId) return;
     
+    confirmationTargetRoomId = activeRoomId;
     confirmationGate.classList.remove("hidden");
     btnPreSend.classList.add("hidden");
 }
 
 function hideConfirmation() {
+    confirmationTargetRoomId = null;
     confirmationGate.classList.add("hidden");
     btnPreSend.classList.remove("hidden");
 }
@@ -926,13 +974,21 @@ async function sendDraftedMessage() {
     const text = commandInput.value.trim();
     if (!text || !activeRoomId) return;
     
+    // Safety check: ensure active room hasn't changed since confirmation was opened
+    if (confirmationTargetRoomId && confirmationTargetRoomId !== activeRoomId) {
+        alert("Active channel changed while drafting message. Please review before sending.");
+        hideConfirmation();
+        return;
+    }
+    
+    const targetRoomId = confirmationTargetRoomId || activeRoomId;
     btnConfirmSend.disabled = true;
     
     try {
         const response = await fetch("/api/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ roomId: activeRoomId, text: text })
+            body: JSON.stringify({ roomId: targetRoomId, text: text })
         });
         
         if (!response.ok) throw new Error("Failed to post message");
@@ -951,4 +1007,5 @@ async function sendDraftedMessage() {
     } finally {
         btnConfirmSend.disabled = false;
     }
+}
 }
