@@ -365,8 +365,11 @@ function handleRoomChange() {
 function showTranscriptError(message) {
     transcriptFeed.innerHTML = `
         <div class="empty-state">
-            <span class="material-symbols-rounded">error</span>
+            <span class="material-symbols-rounded">signal_wifi_off</span>
             <p>${escapeHTML(message)}</p>
+            <button class="btn btn-secondary retry-btn" onclick="loadHistory()">
+                <span class="material-symbols-rounded">refresh</span> Retry Connection
+            </button>
         </div>
     `;
 }

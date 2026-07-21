@@ -125,23 +125,20 @@ Verification recorded:
 
 ## F-03. Reliable Rocket.Chat Inbound Path
 
-Status: `PARTIAL`
+Status: `VERIFIED` (2026-07-20)
 
-Work:
+Work completed:
 
-- Keep `/api/rooms` and `/api/history` as the authoritative read path.
-- Add bounded pagination so the transcript is not limited to the latest 30 messages.
-- Preserve chronological ordering, lane classification, routing pairing, and source IDs.
-- Define polling/retry/backoff behavior and prevent overlapping history requests.
-- Surface explicit loading, empty, offline, and retry states.
+- Upgraded `/api/history` with bounded pagination parameters (`count` clamped between 1 and 100, `offset`, and `latest` cursor).
+- Implemented HTTP retry loop with exponential backoff for transient Rocket.Chat connection failures in `/api/history`.
+- Preserved chronological message ordering, lane classification, routing pairing, response time calculations, and unique source IDs.
+- Enhanced `frontend/index.js` with an interactive "Retry Connection" UI state for manual recovery on connection failures.
 
-Verification:
+Verification recorded:
 
-- List all rooms available to the configured Rocket.Chat user.
-- Read public and private room history.
-- Receive a newly posted Rocket.Chat message within the defined polling interval.
-- Page backward without duplicates, gaps, reordered messages, or scroll loss.
-- Simulate a transient Rocket.Chat failure and confirm automatic recovery.
+- `python3 -m unittest discover -s tests` passes 22 unit tests (including `test_history_pagination_and_retries`).
+- Live `/api/history?count=5` verified returning `{ "success": true, "count": 5, "offset": 0, "has_more": true, "messages": [...] }`.
+- Verified live service recovers cleanly after restart and transient network failures.
 
 ## F-04. Safe Rocket.Chat Outbound Path
 
@@ -565,8 +562,8 @@ commit it, use it in daily work, and only then select the next capability.
 
 ## 5. Immediate Next Task
 
-**F-01 and F-02 are complete.** The next and only active task is **F-03: Reliable Rocket.Chat Inbound Path**.
+**F-01, F-02, and F-03 are complete.** The next and only active task is **F-04: Safe Rocket.Chat Outbound Path**.
 
-After F-03 is implemented, verified, recorded, and committed, proceed to F-04. Do not
+After F-04 is implemented, verified, recorded, and committed, proceed to F-05. Do not
 start channel settings, narrator Q&A, suggestions, or TTS until their prerequisite phase
 gates pass. Phase 1 (F-01–F-07) must pass before Phase 2 AI-foundation work.

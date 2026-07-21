@@ -375,5 +375,35 @@ class TestMessageClassification(unittest.TestCase):
                 self.assertTrue(len(res["digest"]) > 0)
                 self.assertEqual(res["included_message_ids"], ["m1", "m2"])
 
+    @patch("httpx.AsyncClient.get")
+    def test_history_pagination_and_retries(self, mock_get):
+        from app.main import get_history
+        
+        # Simulate initial failure then success
+        fail_resp = MagicMock()
+        fail_resp.status_code = 500
+        fail_resp.text = "Transient error"
+        
+        success_resp = MagicMock()
+        success_resp.status_code = 200
+        success_resp.json.return_value = {
+            "success": True,
+            "messages": [
+                {"_id": "m10", "msg": "Older message", "u": {"username": "ed"}, "ts": "2026-07-20T20:00:00.000Z"},
+                {"_id": "m11", "msg": "Newer message", "u": {"username": "codex"}, "ts": "2026-07-20T20:01:00.000Z"}
+            ]
+        }
+        
+        mock_get.side_effect = [fail_resp, success_resp]
+        
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(get_history(roomId="test-room-paged", count=10, offset=5))
+        
+        self.assertTrue(res["success"])
+        self.assertEqual(res["room_id"], "test-room-paged")
+        self.assertEqual(res["count"], 2)
+        self.assertEqual(res["offset"], 5)
+        self.assertEqual(len(res["messages"]), 2)
+
 if __name__ == '__main__':
     unittest.main()

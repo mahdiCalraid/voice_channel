@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import re
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Body
@@ -16,6 +17,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("voice-channel")
 
 app = FastAPI(title="Voice Channel Console API")
+
+@app.on_event("startup")
+async def startup_cleanup():
+    # Clean up orphan temporary summary files
+    summary_dir = "acli/summary_history"
+    if os.path.exists(summary_dir):
+        for fname in os.listdir(summary_dir):
+            if fname.endswith(".tmp"):
+                try:
+                    os.remove(os.path.join(summary_dir, fname))
+                    logger.info(f"Cleaned orphan temp file: {fname}")
+                except Exception as e:
+                    logger.warning(f"Could not remove temp file {fname}: {e}")
 
 # Configuration from environment variables
 RC_URL = os.environ.get("RC_URL", "http://host.docker.internal:3000")
@@ -594,8 +608,16 @@ async def get_status():
                     break
         if codex_bin:
             auth_paths = ["/root/.codex/auth.json", os.path.expanduser("~/.codex/auth.json")]
-            if any(os.path.exists(p) for p in auth_paths):
-                codex_available = True
+            for p in auth_paths:
+                if os.path.exists(p):
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            auth_data = json.load(f)
+                            if isinstance(auth_data, dict) and len(auth_data) > 0:
+                                codex_available = True
+                                break
+                    except Exception:
+                        pass
     except Exception:
         pass
         
@@ -673,7 +695,12 @@ async def get_rooms():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/history")
-async def get_history(roomId: Optional[str] = None, count: int = 50):
+async def get_history(
+    roomId: Optional[str] = None, 
+    count: int = 30, 
+    offset: int = 0, 
+    latest: Optional[str] = None
+):
     base_url = get_rc_base_url()
     headers = {
         "X-Auth-Token": RC_AUTH_TOKEN,
@@ -681,43 +708,67 @@ async def get_history(roomId: Optional[str] = None, count: int = 50):
     }
     
     room_id = roomId or RC_ROOM_ID
+    clamped_count = min(max(count, 1), 100)
     
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # Try channels history first
-            url = f"{base_url}/api/v1/channels.history?roomId={room_id}&count={count}"
-            resp = await client.get(url, headers=headers)
-            
-            # If error (e.g. is private group), fall back to groups history
-            if resp.status_code != 200:
-                url = f"{base_url}/api/v1/groups.history?roomId={room_id}&count={count}"
-                resp = await client.get(url, headers=headers)
+    params = {
+        "roomId": room_id,
+        "count": clamped_count,
+        "offset": offset
+    }
+    if latest:
+        params["latest"] = latest
+
+    last_error = None
+    data = None
+    
+    # Retry loop with exponential backoff for transient failures
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for attempt in range(3):
+            try:
+                # Try channels history first
+                resp = await client.get(f"{base_url}/api/v1/channels.history", headers=headers, params=params)
                 
-            if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail=f"Rocket.Chat history error: {resp.text}")
+                # If error (e.g. is private group), fall back to groups history
+                if resp.status_code != 200:
+                    resp = await client.get(f"{base_url}/api/v1/groups.history", headers=headers, params=params)
+                    
+                if resp.status_code == 200:
+                    parsed = resp.json()
+                    if parsed.get("success"):
+                        data = parsed
+                        break
+                    else:
+                        last_error = f"API returned success=false: {parsed}"
+                else:
+                    last_error = f"HTTP {resp.status_code}: {resp.text[:100]}"
+            except Exception as e:
+                last_error = str(e)
                 
-            data = resp.json()
-            if not data.get("success"):
-                raise HTTPException(status_code=400, detail="Rocket.Chat history request failed")
+            if attempt < 2:
+                await asyncio.sleep(0.15 * (2 ** attempt))
                 
-            raw_messages = data.get("messages", [])
-            
-            # Rocket.Chat returns messages in reverse chronological order (newest first).
-            # We reverse them first to process and compute stats chronologically.
-            raw_messages.reverse()
-            
-            cleaned_messages, rolling_stats = process_history_messages(raw_messages)
-            
-            return {
-                "success": True,
-                "room_id": room_id,
-                "messages": cleaned_messages,
-                "stats": rolling_stats
-            }
-            
-    except Exception as e:
-        logger.exception("Error fetching history")
-        raise HTTPException(status_code=500, detail=str(e))
+    if not data:
+        logger.error(f"Failed to fetch history for room {room_id}: {last_error}")
+        raise HTTPException(status_code=502, detail=f"Rocket.Chat history request failed: {last_error}")
+
+    raw_messages = data.get("messages", [])
+    has_more = len(raw_messages) >= clamped_count
+    
+    # Rocket.Chat returns messages in reverse chronological order (newest first).
+    # We reverse them first to process and compute stats chronologically.
+    raw_messages.reverse()
+    
+    cleaned_messages, rolling_stats = process_history_messages(raw_messages)
+    
+    return {
+        "success": True,
+        "room_id": room_id,
+        "count": len(cleaned_messages),
+        "offset": offset,
+        "has_more": has_more,
+        "messages": cleaned_messages,
+        "stats": rolling_stats
+    }
 
 def read_matter_docs() -> str:
     docs = []
