@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 import sys
 import os
 import json
@@ -311,6 +312,68 @@ class TestMessageClassification(unittest.TestCase):
         
         # Validate that included_message_ids only contains msg-agent-reply-1 and msg-user-1
         self.assertEqual(res["included_message_ids"], ["msg-agent-reply-1", "msg-user-1"])
+
+    def test_atomic_summary_save(self):
+        from app.main import save_summary, read_prior_summaries
+        test_room = "test-atomic-room"
+        history_path = f"acli/summary_history/{test_room}.json"
+        tmp_path = f"acli/summary_history/{test_room}.json.tmp"
+        
+        try:
+            if os.path.exists(history_path):
+                os.remove(history_path)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+                
+            save_summary(test_room, "First digest")
+            self.assertTrue(os.path.exists(history_path))
+            self.assertFalse(os.path.exists(tmp_path))
+            
+            prior = read_prior_summaries(test_room)
+            self.assertEqual(len(prior), 1)
+            self.assertEqual(prior[0]["digest"], "First digest")
+        finally:
+            if os.path.exists(history_path):
+                os.remove(history_path)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    @patch("httpx.AsyncClient.get")
+    def test_status_endpoint_component_health(self, mock_get):
+        from app.main import get_status
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"success": True, "username": "acli_bot"}
+        mock_get.return_value = mock_resp
+        
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(get_status())
+        
+        self.assertEqual(res["status"], "online")
+        self.assertIn("app", res)
+        self.assertEqual(res["app"]["status"], "healthy")
+        self.assertIn("worker", res)
+        self.assertIn(res["worker"]["status"], ("ready", "degraded"))
+        self.assertIn("rocket_chat", res)
+        self.assertEqual(res["rocket_chat"]["status"], "connected")
+
+    def test_degraded_ai_fallback(self):
+        from app.main import generate_digest, DigestRequest, openai_client
+        messages = [
+            {"id": "m1", "lane": "agent", "text": "Report completed.", "event": {"agent": "codex"}},
+            {"id": "m2", "lane": "user", "text": "Acknowledged.", "username": "ed"}
+        ]
+        req = DigestRequest(messages=messages, roomId="test-degraded-room")
+        
+        with patch("app.main.openai_client", None):
+            with patch("subprocess.run") as mock_run:
+                mock_run.side_effect = Exception("Codex CLI unavailable")
+                loop = asyncio.get_event_loop()
+                res = loop.run_until_complete(generate_digest(req))
+                
+                self.assertIn("digest", res)
+                self.assertTrue(len(res["digest"]) > 0)
+                self.assertEqual(res["included_message_ids"], ["m1", "m2"])
 
 if __name__ == '__main__':
     unittest.main()

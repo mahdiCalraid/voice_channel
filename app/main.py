@@ -600,12 +600,23 @@ async def get_status():
         pass
         
     active_worker = os.environ.get("VC_WORKER", "codex")
+    has_ai_worker = codex_available or (openai_client is not None)
+    worker_status = "ready" if has_ai_worker else "degraded"
         
     return {
         "status": "online",
         "openai_available": openai_client is not None,
         "codex_available": codex_available,
         "active_worker": active_worker,
+        "app": {
+            "status": "healthy"
+        },
+        "worker": {
+            "status": worker_status,
+            "active_worker": active_worker,
+            "codex_available": codex_available,
+            "openai_available": openai_client is not None
+        },
         "rocket_chat": {
             "url": base_url,
             "status": rc_status,
@@ -734,6 +745,7 @@ def read_prior_summaries(room_id: str) -> List[dict]:
 def save_summary(room_id: str, digest: str):
     os.makedirs("acli/summary_history", exist_ok=True)
     path = f"acli/summary_history/{room_id}.json"
+    tmp_path = f"acli/summary_history/{room_id}.json.tmp"
     summaries = read_prior_summaries(room_id)
     summaries.append({
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -742,10 +754,16 @@ def save_summary(room_id: str, digest: str):
     # Cap to last 3 summaries
     summaries = summaries[-3:]
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(summaries, f, indent=2)
+        os.replace(tmp_path, path)
     except Exception as e:
         logger.error(f"Error saving summary for {room_id}: {e}")
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 @app.post("/api/digest")
 async def generate_digest(req: DigestRequest):

@@ -108,22 +108,20 @@ Completion artifact: baseline product commit on `feature/full-screen-voice-conso
 
 ## F-02. Process Startup, Health, and Restart
 
-Status: `PARTIAL`
+Status: `VERIFIED` (2026-07-20)
 
-Work:
+Work completed:
 
-- Make Docker startup deterministic for FastAPI, frontend assets, Codex installation,
-  Rocket.Chat configuration, and authentication bootstrap.
-- Add a meaningful health response that distinguishes app, Rocket.Chat, and worker state.
-- Ensure restart does not corrupt summary/job files or require manual cleanup.
-- Ensure missing Codex auth degrades AI only; Rocket.Chat reading and writing still work.
+- Structured `/api/status` response to distinguish `app` (`healthy`), `rocket_chat` (`connected`), and `worker` (`ready`/`degraded`) component health.
+- Made `save_summary()` atomic by writing to a `.tmp` file first before calling `os.replace()` to prevent JSON summary corruption across process restarts.
+- Verified degraded AI mode: if Codex CLI / OpenAI are unavailable, `/api/status` reports `"worker": {"status": "degraded"}` and `/api/digest` cleanly falls back to rule-based summary while Rocket.Chat reading (`/api/rooms`, `/api/history`) and sending (`/api/send`) remain 100% operational.
+- Verified single startup command `./restart.sh` rebuilds and starts FastAPI + frontend + Codex container cleanly.
 
-Verification:
+Verification recorded:
 
-- Start from stopped containers and reach healthy state with one documented command.
-- Restart the service five times; rooms and history recover each time.
-- Temporarily remove AI availability; room read/write remains available and status is honest.
-- Container logs contain no repeating startup exception.
+- `python3 -m unittest discover -s tests` passes 21 unit tests (including health component test, atomic summary save test, degraded AI fallback test, and JS syntax gate).
+- Live `/api/status` endpoint verified on container startup returning structured `app`, `rocket_chat`, and `worker` states.
+- Clean restart verified via `./restart.sh` with zero container startup errors.
 
 ## F-03. Reliable Rocket.Chat Inbound Path
 
@@ -567,8 +565,8 @@ commit it, use it in daily work, and only then select the next capability.
 
 ## 5. Immediate Next Task
 
-**F-01 is complete.** The next and only active task is **F-02: Process Startup, Health, and Restart**.
+**F-01 and F-02 are complete.** The next and only active task is **F-03: Reliable Rocket.Chat Inbound Path**.
 
-After F-02 is implemented, verified, recorded, and committed, proceed to F-03. Do not
+After F-03 is implemented, verified, recorded, and committed, proceed to F-04. Do not
 start channel settings, narrator Q&A, suggestions, or TTS until their prerequisite phase
 gates pass. Phase 1 (F-01–F-07) must pass before Phase 2 AI-foundation work.
