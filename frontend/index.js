@@ -253,6 +253,14 @@ async function loadRooms() {
     } catch (err) {
         console.error("Failed to load rooms:", err);
         if (roomSelect) roomSelect.innerHTML = `<option value="error">Error loading rooms</option>`;
+        if (channelsListEl) {
+            channelsListEl.innerHTML = `
+                <div class="empty-channels">
+                    <span class="material-symbols-rounded">error</span>
+                    <span>Failed to load channels</span>
+                </div>
+            `;
+        }
         showTranscriptError("Failed to load rooms: " + err.message);
     }
 }
@@ -1008,4 +1016,4 @@ async function sendDraftedMessage() {
         btnConfirmSend.disabled = false;
     }
 }
-}
+
