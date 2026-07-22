@@ -67,9 +67,9 @@ Current implementation truth:
 
 | Capability | Status | Evidence / limitation |
 | --- | --- | --- |
-| Rocket.Chat status and room discovery | PARTIAL | Live service connects and lists 25 rooms; reconnect/soak behavior is not tested |
-| Room history and lane classification | PARTIAL | User, agent, and system lanes work; pagination and continuity are incomplete |
-| Confirmed Rocket.Chat sending | PARTIAL | Send path exists; exact-once and interruption tests are missing |
+| Rocket.Chat status and room discovery | PARTIAL | Live service connects and lists rooms; multi-restart soak still open (F-02A) |
+| Room history and lane classification | PARTIAL | API can page; UI still loads only the latest window; continuity is F-03A |
+| Confirmed Rocket.Chat sending | PARTIAL | Send path exists; exact-once and interruption tests are missing (F-04) |
 | Codex CLI authentication and execution | VERIFIED | Real Codex CLI worker runs with shared host authentication |
 | Digest worker | PARTIAL | Codex digest works, but every room currently receives Voice Channel project documents |
 | Three-pane shell | PARTIAL | Usable live after F-01 baseline; product shell still needs health/room/send hardening (F-02–F-04) |
@@ -108,37 +108,112 @@ Completion artifact: baseline product commit on `feature/full-screen-voice-conso
 
 ## F-02. Process Startup, Health, and Restart
 
-Status: `VERIFIED` (2026-07-20)
+Status: `VERIFIED` (2026-07-21)
 
 Work completed:
 
-- Structured `/api/status` response to distinguish `app` (`healthy`), `rocket_chat` (`connected`), and `worker` (`ready`/`degraded`) component health.
-- Made `save_summary()` atomic by writing to a `.tmp` file first before calling `os.replace()` to prevent JSON summary corruption across process restarts.
-- Verified degraded AI mode: if Codex CLI / OpenAI are unavailable, `/api/status` reports `"worker": {"status": "degraded"}` and `/api/digest` cleanly falls back to rule-based summary while Rocket.Chat reading (`/api/rooms`, `/api/history`) and sending (`/api/send`) remain 100% operational.
-- Verified single startup command `./restart.sh` rebuilds and starts FastAPI + frontend + Codex container cleanly.
+- Structured `/api/status` with `app` / `rocket_chat` / `worker` blocks.
+- Atomic `save_summary()` via `.tmp` + `os.replace`.
+- Startup cleanup of orphan `*.tmp` summary files.
+- Auth file parse check (non-empty JSON) for Codex availability signal.
+- Unit tests for atomic save, status shape, and digest fallback when the worker subprocess fails.
+- Documented start/restart path remains `./restart.sh`.
 
-Verification recorded:
+## F-02A. Operational Readiness Closure
 
-- `python3 -m unittest discover -s tests` passes 21 unit tests (including health component test, atomic summary save test, degraded AI fallback test, and JS syntax gate).
-- Live `/api/status` endpoint verified on container startup returning structured `app`, `rocket_chat`, and `worker` states.
-- Clean restart verified via `./restart.sh` with zero container startup errors.
+Status: `VERIFIED` (2026-07-21)
 
-## F-03. Reliable Rocket.Chat Inbound Path
-
-Status: `VERIFIED` (2026-07-20)
+Purpose: close the honest F-02 verification bar without inventing new product features.
 
 Work completed:
 
-- Upgraded `/api/history` with bounded pagination parameters (`count` clamped between 1 and 100, `offset`, and `latest` cursor).
-- Implemented HTTP retry loop with exponential backoff for transient Rocket.Chat connection failures in `/api/history`.
-- Preserved chronological message ordering, lane classification, routing pairing, response time calculations, and unique source IDs.
-- Enhanced `frontend/index.js` with an interactive "Retry Connection" UI state for manual recovery on connection failures.
+1. **Restart soak**:
+   - Ran `verify_soak.py` to automate a 5-cycle restart loop of the container.
+   - For each cycle, verified `/api/status` is online, `/api/rooms` loads successfully, and `/api/history?count=5` retrieves chronological messages cleanly.
+   - Checked that container startup contains no exceptions and summary JSON histories remain completely uncorrupted.
+2. **Live degraded AI without destroying host credentials**:
+   - Temporarily mounted `/codex-host-auth` to an empty directory in `docker-compose.yml` and cleared `OPENAI_API_KEY`.
+   - Verified `/api/status` reports `"worker": {"status": "degraded", "configured": false, "codex_available": false, "openai_available": false}` while Rocket.Chat connection remains `"connected"`.
+   - Verified rooms/history continue to read/write normally, and `/api/digest` returns clean rule-based fallback summary text without throwing 500 exceptions.
+   - Restored volume mounts and verified worker state returns to `"ready"` and `"configured": true`.
+3. **Health honesty polish**:
+   - Exposed `configured` boolean flag inside `worker` component health block.
+   - Integrated cheap `codex --help` execution probe to verify the Codex CLI runs successfully before marking the status as `"ready"`.
+   - App health dynamically probes summary storage directory write permissions before reporting `"healthy"`.
 
 Verification recorded:
 
-- `python3 -m unittest discover -s tests` passes 22 unit tests (including `test_history_pagination_and_retries`).
-- Live `/api/history?count=5` verified returning `{ "success": true, "count": 5, "offset": 0, "has_more": true, "messages": [...] }`.
-- Verified live service recovers cleanly after restart and transient network failures.
+- 5-cycle restart loop passed successfully (recorded in `scratch/verify_soak.py`).
+- Degraded mode `/api/digest` returned rule-based text: `{"digest":"Here is a quick summary of the recent updates: grok worked on 1 updates. ed worked on 1 updates. The last update was from ed, saying: Good instruction","included_message_ids":[],"prior_summary_used":true}`.
+- `python3 -m unittest discover -s tests` passes 22 tests cleanly.
+
+Out of scope: pagination UI, send safety, narrator features, TTS.
+
+## F-03. Reliable Rocket.Chat Inbound Path (backend)
+
+Status: `PARTIAL` (API pagination/retry shipped 2026-07-20; client continuity is F-03A)
+
+Work completed (do not redo):
+
+- `/api/history` accepts bounded `count` (1–100), `offset`, and `latest`.
+- Exponential backoff retry (3 attempts) on transient Rocket.Chat failures; 502 if all fail.
+- Response includes `has_more`, `offset`, cleaned messages, and window stats.
+- Manual “Retry Connection” control on transcript load failure.
+- Unit test for fail-then-success history fetch and pagination fields.
+
+Remaining gaps (owned by F-03A):
+
+- Frontend still hardcodes latest `count=30` / `20` and never uses `offset` / `latest`.
+- No “load older,” no room-scoped accumulation, no scroll preservation, no merge of poll + older pages.
+- Page-local stats can be misleading if treated as full-history stats.
+- Plan checks for “page backward without scroll loss” and automatic recovery are not met in the product UI.
+
+## F-03A. Client History Continuity
+
+Status: `NOT STARTED`
+
+Purpose: make the supervision console actually use the inbound API for continuous reading, not only the newest window.
+
+Work:
+
+1. **Cursor-based older history (preferred over raw offset in the UI)**
+   - Prefer API param `before=<ISO timestamp>` (or keep `latest` as the RC mapping) for “messages older than this.”
+   - Backend: if needed, add an explicit `before` alias that maps to Rocket.Chat `latest` so the client does not invent offset math.
+   - Request boundary **inclusively** and **dedupe by Rocket.Chat message `id`** so shared timestamps do not drop messages.
+
+2. **Per-room history state in the browser**
+   - Maintain for each active room (or at least the current room): message map by id, ordered ids, oldest cursor, newest timestamp, `hasMoreOlder`, loading flags.
+   - Separate request tokens for **live poll/refresh** vs **load older** so they cannot cancel or clobber each other.
+   - On room switch: discard or ignore stale responses (already partly done); clear or swap room-scoped state atomically.
+
+3. **UI: Load older messages**
+   - Visible **Load older messages** control at the top of the transcript (simpler and more testable than infinite scroll).
+   - Before prepending: record `scrollHeight` / `scrollTop`; after prepend: restore viewport so the same message stays under the reader.
+   - Disable/hide the control when `hasMoreOlder` is false.
+
+4. **Polling merge, not replace**
+   - Live poll must **merge** new messages into the retained map by id, not wipe the loaded older history.
+   - Auto-scroll only when already near bottom or on first load of a room (existing near-bottom rule stays).
+
+5. **Stats labeling**
+   - Stats remain “recent window” (from the latest fetch used for stats) unless a separate full-loaded recompute is explicitly implemented.
+   - Do not claim page-local stats represent all loaded history.
+
+6. **Tests**
+   - Unit/API: boundary overlap dedupe, two consecutive older pages, end-of-history (`has_more` false).
+   - Browser or deterministic frontend tests where practical: load older preserves viewport; room switch mid-load does not paint wrong room; new message arrives while older page is open without wiping history.
+   - Product-only commit.
+
+Verification (all must pass):
+
+- From a busy room, click **Load older** at least twice; no duplicate ids; order stays chronological; no gap at the page boundary after dedupe.
+- Scroll position is preserved when older messages prepend.
+- While scrolled up reading history, a new live message does not force scroll-to-bottom (unless user was near bottom).
+- Rapid room switches during load older do not show the wrong room’s messages.
+- `python3 -m unittest discover -s tests` passes; any new frontend checks are included.
+- Live `/api/history` with the chosen older-page cursor works against real Rocket.Chat.
+
+Out of scope: send confirmation (F-04), full isolation audit (F-05), AI tasks, TTS.
 
 ## F-04. Safe Rocket.Chat Outbound Path
 
@@ -220,7 +295,8 @@ Verification:
 
 Status: `NOT STARTED`
 
-Phase 1 passes only when all F-01 through F-07 tasks are `VERIFIED` and:
+Phase 1 passes only when all F-01 through F-07 tasks (including F-02A and F-03A) are
+`VERIFIED` and:
 
 - The app survives a 60-minute multi-room soak without stale-room rendering or polling death.
 - At least one inbound and one confirmed outbound message are verified end to end.
@@ -562,8 +638,23 @@ commit it, use it in daily work, and only then select the next capability.
 
 ## 5. Immediate Next Task
 
-**F-01, F-02, and F-03 are complete.** The next and only active task is **F-04: Safe Rocket.Chat Outbound Path**.
+**Sequence (do not skip):**
 
-After F-04 is implemented, verified, recorded, and committed, proceed to F-05. Do not
-start channel settings, narrator Q&A, suggestions, or TTS until their prerequisite phase
-gates pass. Phase 1 (F-01–F-07) must pass before Phase 2 AI-foundation work.
+1. **F-02A — Operational Readiness Closure** (VERIFIED 2026-07-21)
+2. **F-03A — Client History Continuity** (active now)
+3. **F-04 — Safe Rocket.Chat Outbound Path**
+4. Then F-05 → F-06 → F-07 → F-08 foundation gate
+
+F-02 and F-02A are fully closed. F-03 backend is verified; F-03A is the active client paging closure task. Do not start F-04 until F-03A is `VERIFIED` and committed (product-only commits; no `acli/` runtime churn).
+
+Do not start channel settings, narrator Q&A, suggestions, or TTS until Phase 1 (through
+F-08) passes. Phase 2 AI-foundation work does not begin before the foundation gate.
+
+### Coalesced actionable checklist (short form)
+
+| ID | Do this | Done when |
+| --- | --- | --- |
+| F-02A | 5× restart soak + live degraded AI without destroying host Codex auth | VERIFIED (Cycle soak passed, degraded AI falls back successfully, RC loads rooms & history) |
+| F-03A | Cursor older-history + Load older UI + merge polls + scroll preserve + dedupe | Two older pages, no dupes, viewport holds, room-switch safe |
+| F-04 | Immutable confirmation room snapshot + single-flight send + RC message id | Wrong-room send impossible; double-confirm posts once |
+| F-05+ | Room isolation, interruption recovery, browser tests, soak gate | Per existing F-05–F-08 sections |

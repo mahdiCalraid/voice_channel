@@ -591,11 +591,13 @@ async def get_status():
         rc_status = "disconnected"
         rc_error = str(e)
         
-    # Check if codex is available
+    # Check if codex is available & executes successfully
     codex_available = False
+    codex_exec_works = False
     try:
         import shutil
         from pathlib import Path
+        import subprocess
         codex_bin = None
         for candidate in ["codex", "/usr/local/bin/codex"]:
             if "/" in candidate:
@@ -618,12 +620,30 @@ async def get_status():
                                 break
                     except Exception:
                         pass
+            if codex_available:
+                try:
+                    res = subprocess.run([codex_bin, "--help"], capture_output=True, text=True, timeout=2.0)
+                    if res.returncode in (0, 1, 64): # CLI ran successfully and returned help output
+                        codex_exec_works = True
+                except Exception:
+                    pass
     except Exception:
         pass
         
     active_worker = os.environ.get("VC_WORKER", "codex")
-    has_ai_worker = codex_available or (openai_client is not None)
+    has_ai_worker = (codex_available and codex_exec_works) or (openai_client is not None)
     worker_status = "ready" if has_ai_worker else "degraded"
+    
+    # Verify app storage path health
+    app_status = "healthy"
+    try:
+        os.makedirs("acli/summary_history", exist_ok=True)
+        test_path = "acli/summary_history/.health_probe"
+        with open(test_path, "w") as f:
+            f.write("probe")
+        os.remove(test_path)
+    except Exception:
+        app_status = "degraded"
         
     return {
         "status": "online",
@@ -631,10 +651,11 @@ async def get_status():
         "codex_available": codex_available,
         "active_worker": active_worker,
         "app": {
-            "status": "healthy"
+            "status": app_status
         },
         "worker": {
             "status": worker_status,
+            "configured": codex_available or (openai_client is not None),
             "active_worker": active_worker,
             "codex_available": codex_available,
             "openai_available": openai_client is not None

@@ -354,6 +354,7 @@ class TestMessageClassification(unittest.TestCase):
         self.assertEqual(res["app"]["status"], "healthy")
         self.assertIn("worker", res)
         self.assertIn(res["worker"]["status"], ("ready", "degraded"))
+        self.assertIn("configured", res["worker"])
         self.assertIn("rocket_chat", res)
         self.assertEqual(res["rocket_chat"]["status"], "connected")
 
