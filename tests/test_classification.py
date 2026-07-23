@@ -406,5 +406,36 @@ class TestMessageClassification(unittest.TestCase):
         self.assertEqual(res["offset"], 5)
         self.assertEqual(len(res["messages"]), 2)
 
+    @patch("httpx.AsyncClient.get")
+    def test_history_before_cursor_is_inclusive_and_returns_next_cursor(self, mock_get):
+        from app.main import get_history
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "success": True,
+            "messages": [
+                {"_id": "m3", "msg": "Boundary", "u": {"username": "ed"}, "ts": "2026-07-20T20:03:00.000Z"},
+                {"_id": "m2", "msg": "Older", "u": {"username": "ed"}, "ts": "2026-07-20T20:02:00.000Z"},
+                {"_id": "m2", "msg": "Older duplicate", "u": {"username": "ed"}, "ts": "2026-07-20T20:02:00.000Z"},
+            ],
+        }
+        mock_get.return_value = response
+
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(
+            get_history(
+                roomId="test-room-cursor",
+                count=10,
+                before="2026-07-20T20:03:00.000Z",
+            )
+        )
+
+        params = mock_get.call_args.kwargs["params"]
+        self.assertEqual(params["latest"], "2026-07-20T20:03:00.000Z")
+        self.assertEqual(params["inclusive"], "true")
+        self.assertEqual([message["id"] for message in res["messages"]], ["m2", "m3"])
+        self.assertEqual(res["next_before"], "2026-07-20T20:02:00.000Z")
+
 if __name__ == '__main__':
     unittest.main()

@@ -13,6 +13,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INDEX_JS = REPO_ROOT / "frontend" / "index.js"
+HISTORY_STATE_JS = REPO_ROOT / "frontend" / "history_state.js"
+HISTORY_STATE_TEST = REPO_ROOT / "tests" / "frontend_history_state.test.js"
 
 
 class TestFrontendSyntax(unittest.TestCase):
@@ -30,6 +32,26 @@ class TestFrontendSyntax(unittest.TestCase):
             0,
             msg=(
                 "frontend/index.js failed node --check\n"
+                f"stdout:\n{result.stdout}\n"
+                f"stderr:\n{result.stderr}"
+            ),
+        )
+
+    def test_history_state_behaviors(self):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "node is required for frontend history tests")
+        self.assertTrue(HISTORY_STATE_JS.is_file(), f"missing {HISTORY_STATE_JS}")
+        self.assertTrue(HISTORY_STATE_TEST.is_file(), f"missing {HISTORY_STATE_TEST}")
+        result = subprocess.run(
+            [node, "--test", str(HISTORY_STATE_TEST)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=(
+                "frontend history-state tests failed\n"
                 f"stdout:\n{result.stdout}\n"
                 f"stderr:\n{result.stderr}"
             ),

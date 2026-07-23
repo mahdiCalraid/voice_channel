@@ -720,7 +720,8 @@ async def get_history(
     roomId: Optional[str] = None, 
     count: int = 30, 
     offset: int = 0, 
-    latest: Optional[str] = None
+    latest: Optional[str] = None,
+    before: Optional[str] = None
 ):
     base_url = get_rc_base_url()
     headers = {
@@ -736,8 +737,11 @@ async def get_history(
         "count": clamped_count,
         "offset": offset
     }
-    if latest:
-        params["latest"] = latest
+
+    effective_latest = before or latest
+    if effective_latest:
+        params["latest"] = effective_latest
+        params["inclusive"] = "true"
 
     last_error = None
     data = None
@@ -779,6 +783,16 @@ async def get_history(
     # We reverse them first to process and compute stats chronologically.
     raw_messages.reverse()
     
+    # Deduplicate raw_messages by message _id to avoid duplicates across page boundaries
+    seen_ids = set()
+    deduped_raw = []
+    for msg in raw_messages:
+        m_id = msg.get("_id")
+        if m_id and m_id not in seen_ids:
+            seen_ids.add(m_id)
+            deduped_raw.append(msg)
+    raw_messages = deduped_raw
+
     cleaned_messages, rolling_stats = process_history_messages(raw_messages)
     
     return {
@@ -787,6 +801,8 @@ async def get_history(
         "count": len(cleaned_messages),
         "offset": offset,
         "has_more": has_more,
+        # The client uses this opaque cursor instead of offset math in a live room.
+        "next_before": raw_messages[0].get("ts") if raw_messages else None,
         "messages": cleaned_messages,
         "stats": rolling_stats
     }

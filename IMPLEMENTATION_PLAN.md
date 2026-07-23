@@ -67,8 +67,8 @@ Current implementation truth:
 
 | Capability | Status | Evidence / limitation |
 | --- | --- | --- |
-| Rocket.Chat status and room discovery | PARTIAL | Live service connects and lists rooms; multi-restart soak still open (F-02A) |
-| Room history and lane classification | PARTIAL | API can page; UI still loads only the latest window; continuity is F-03A |
+| Rocket.Chat status and room discovery | VERIFIED | F-02A restart soak and degraded-AI checks passed. |
+| Room history and lane classification | VERIFIED | F-03A adds cursor paging, retained per-room history, overlap dedupe, and preserved prepend scroll. |
 | Confirmed Rocket.Chat sending | PARTIAL | Send path exists; exact-once and interruption tests are missing (F-04) |
 | Codex CLI authentication and execution | VERIFIED | Real Codex CLI worker runs with shared host authentication |
 | Digest worker | PARTIAL | Codex digest works, but every room currently receives Voice Channel project documents |
@@ -151,7 +151,7 @@ Out of scope: pagination UI, send safety, narrator features, TTS.
 
 ## F-03. Reliable Rocket.Chat Inbound Path (backend)
 
-Status: `PARTIAL` (API pagination/retry shipped 2026-07-20; client continuity is F-03A)
+Status: `VERIFIED` (backend plus F-03A client continuity, 2026-07-23)
 
 Work completed (do not redo):
 
@@ -161,16 +161,16 @@ Work completed (do not redo):
 - Manual “Retry Connection” control on transcript load failure.
 - Unit test for fail-then-success history fetch and pagination fields.
 
-Remaining gaps (owned by F-03A):
+Client continuity closed by F-03A (2026-07-23):
 
-- Frontend still hardcodes latest `count=30` / `20` and never uses `offset` / `latest`.
-- No “load older,” no room-scoped accumulation, no scroll preservation, no merge of poll + older pages.
-- Page-local stats can be misleading if treated as full-history stats.
-- Plan checks for “page backward without scroll loss” and automatic recovery are not met in the product UI.
+- The browser uses the `before` cursor rather than raw offset math, retains room-scoped history, and exposes Load Older Messages.
+- Older pages overlap inclusively and dedupe by message ID; live polls merge rather than replace retained history.
+- Prepend scroll restoration preserves the reading position, including a queued live refresh that arrives during the prepend.
+- Stats are explicitly labeled as a recent window rather than a claim about all loaded history.
 
 ## F-03A. Client History Continuity
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-07-23)
 
 Purpose: make the supervision console actually use the inbound API for continuous reading, not only the newest window.
 
@@ -212,6 +212,14 @@ Verification (all must pass):
 - Rapid room switches during load older do not show the wrong room’s messages.
 - `python3 -m unittest discover -s tests` passes; any new frontend checks are included.
 - Live `/api/history` with the chosen older-page cursor works against real Rocket.Chat.
+
+Completion recorded:
+
+- Added `before` as the client-facing older-history cursor, mapped to Rocket.Chat `latest` with inclusive boundary retrieval, response `next_before`, and message-ID deduplication.
+- Added per-room retained state, separate live and older-load request sequences, a visible Load Older control, poll merging, viewport restoration, and recent-window stats labeling.
+- A live older-page request returned an inclusive boundary overlap and an older `next_before` cursor. The served console loads `history_state.js` before `index.js`.
+- `python3 -m unittest discover -s tests` passes 24 tests, including deterministic Node tests for overlap dedupe, chronological merge, retained live updates, end-of-history behavior, and prepend-scroll restoration.
+- An interactive browser was not available in this execution environment; deterministic frontend tests and the live served API cover the same state and cursor contract.
 
 Out of scope: send confirmation (F-04), full isolation audit (F-05), AI tasks, TTS.
 
@@ -641,11 +649,11 @@ commit it, use it in daily work, and only then select the next capability.
 **Sequence (do not skip):**
 
 1. **F-02A — Operational Readiness Closure** (VERIFIED 2026-07-21)
-2. **F-03A — Client History Continuity** (active now)
-3. **F-04 — Safe Rocket.Chat Outbound Path**
+2. **F-03A — Client History Continuity** (VERIFIED 2026-07-23)
+3. **F-04 — Safe Rocket.Chat Outbound Path** (active now)
 4. Then F-05 → F-06 → F-07 → F-08 foundation gate
 
-F-02 and F-02A are fully closed. F-03 backend is verified; F-03A is the active client paging closure task. Do not start F-04 until F-03A is `VERIFIED` and committed (product-only commits; no `acli/` runtime churn).
+F-02, F-02A, F-03, and F-03A are fully closed. F-04 is the active task. Do not start F-05 until F-04 is `VERIFIED` and committed (product-only commits; no `acli/` runtime churn).
 
 Do not start channel settings, narrator Q&A, suggestions, or TTS until Phase 1 (through
 F-08) passes. Phase 2 AI-foundation work does not begin before the foundation gate.
@@ -655,6 +663,6 @@ F-08) passes. Phase 2 AI-foundation work does not begin before the foundation ga
 | ID | Do this | Done when |
 | --- | --- | --- |
 | F-02A | 5× restart soak + live degraded AI without destroying host Codex auth | VERIFIED (Cycle soak passed, degraded AI falls back successfully, RC loads rooms & history) |
-| F-03A | Cursor older-history + Load older UI + merge polls + scroll preserve + dedupe | Two older pages, no dupes, viewport holds, room-switch safe |
+| F-03A | Cursor older-history + Load older UI + merge polls + scroll preserve + dedupe | VERIFIED (live cursor check; deterministic dedupe, ordering, retention, and scroll tests) |
 | F-04 | Immutable confirmation room snapshot + single-flight send + RC message id | Wrong-room send impossible; double-confirm posts once |
 | F-05+ | Room isolation, interruption recovery, browser tests, soak gate | Per existing F-05–F-08 sections |

@@ -10,8 +10,15 @@ let recognition = null;
 let isListening = false;
 let activeRoomId = null;
 let roomsList = [];
-let historyRequestSeq = 0;
+let liveRequestSeq = 0;
+let loadOlderRequestSeq = 0;
 let confirmationTargetRoomId = null;
+let roomHistoryStates = {};
+const historyState = window.VoiceChannelHistoryState;
+
+if (!historyState) {
+    throw new Error("history_state.js must load before index.js");
+}
 
 // DOM Elements
 const rcStatusChip = document.getElementById("rc-status-chip");
@@ -362,6 +369,98 @@ function handleRoomChange() {
 }
 
 // 2. Transcript Management
+function getRoomState(roomId) {
+    if (!roomHistoryStates[roomId]) {
+        roomHistoryStates[roomId] = historyState.createRoomState();
+    }
+    return roomHistoryStates[roomId];
+}
+
+function renderRecentStats(stats) {
+    if (stats) {
+        renderStats(stats);
+    } else {
+        statsBar.style.display = "none";
+    }
+}
+
+function flushPendingLatest(roomId, state) {
+    if (roomId !== activeRoomId || !state.pendingLatest) return;
+
+    const pending = state.pendingLatest;
+    state.pendingLatest = null;
+    historyState.applyLatestPage(state, pending.messages, pending.has_more);
+    renderTranscriptFromState(roomId);
+    renderRecentStats(pending.stats);
+}
+
+async function handleLoadOlder() {
+    if (!activeRoomId || activeRoomId === "loading" || activeRoomId === "error") return;
+
+    const state = getRoomState(activeRoomId);
+    if (state.loadingOlder || !state.hasMoreOlder) return;
+
+    const targetRoomId = activeRoomId;
+    const currentSeq = ++loadOlderRequestSeq;
+    state.loadingOlder = true;
+    renderTranscriptFromState(targetRoomId);
+
+    // Record scroll metrics before rendering prepended items
+    const oldScrollHeight = transcriptFeed.scrollHeight;
+    const oldScrollTop = transcriptFeed.scrollTop;
+
+    try {
+        const url = `/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=30&before=${encodeURIComponent(state.oldestCursor)}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("HTTP error " + response.status);
+        const data = await response.json();
+
+        if (targetRoomId !== activeRoomId || currentSeq !== loadOlderRequestSeq) return;
+
+        if (data.success && data.messages) {
+            state.loadingOlder = false;
+            historyState.applyOlderPage(
+                state,
+                data.messages,
+                data.has_more,
+                data.next_before
+            );
+
+            renderTranscriptFromState(targetRoomId);
+
+            // Restore scroll position
+            const newScrollHeight = transcriptFeed.scrollHeight;
+            transcriptFeed.scrollTop = historyState.restoredPrependScrollTop(
+                oldScrollHeight,
+                oldScrollTop,
+                newScrollHeight
+            );
+            // Apply a poll that arrived during the prepend only after the reader's
+            // original viewport has been restored.
+            flushPendingLatest(targetRoomId, state);
+        } else {
+            state.loadingOlder = false;
+            renderTranscriptFromState(targetRoomId);
+            console.error("Failed to load older history:", data.detail);
+        }
+    } catch (err) {
+        if (targetRoomId === activeRoomId && currentSeq === loadOlderRequestSeq) {
+            console.error("Failed to load older history:", err);
+        }
+    } finally {
+        // A room switch must release its old state's loading flag as well.
+        const wasLoading = state.loadingOlder;
+        state.loadingOlder = false;
+        if (wasLoading && targetRoomId === activeRoomId && currentSeq === loadOlderRequestSeq) {
+            renderTranscriptFromState(targetRoomId);
+            flushPendingLatest(targetRoomId, state);
+        }
+    }
+}
+
+// Bind to window so it is accessible from inline onclick attribute
+window.handleLoadOlder = handleLoadOlder;
+
 function showTranscriptError(message) {
     transcriptFeed.innerHTML = `
         <div class="empty-state">
@@ -377,7 +476,7 @@ function showTranscriptError(message) {
 async function loadHistory() {
     if (!activeRoomId || activeRoomId === "loading" || activeRoomId === "error") return;
     
-    const currentSeq = ++historyRequestSeq;
+    const currentSeq = ++liveRequestSeq;
     const targetRoomId = activeRoomId;
     
     try {
@@ -385,30 +484,42 @@ async function loadHistory() {
         if (!response.ok) throw new Error("HTTP error " + response.status);
         const data = await response.json();
         
-        // Ignore stale async response if active room or sequence changed mid-flight
-        if (currentSeq !== historyRequestSeq || targetRoomId !== activeRoomId) {
+        if (currentSeq !== liveRequestSeq || targetRoomId !== activeRoomId) {
             return;
         }
         
         if (data.success && data.messages) {
-            renderTranscript(data.messages);
-            if (data.stats) {
-                renderStats(data.stats);
-            } else {
-                statsBar.style.display = "none";
+            const state = getRoomState(targetRoomId);
+            if (state.loadingOlder) {
+                // Preserve the pre-prepend viewport; newest page wins while loading.
+                state.pendingLatest = data;
+                renderRecentStats(data.stats);
+                return;
             }
+            historyState.applyLatestPage(state, data.messages, data.has_more);
+
+            renderTranscriptFromState(targetRoomId);
+
+            renderRecentStats(data.stats);
         } else {
             showTranscriptError(data.detail || "Failed to load channel history.");
         }
     } catch (err) {
-        if (currentSeq === historyRequestSeq && targetRoomId === activeRoomId) {
+        if (currentSeq === liveRequestSeq && targetRoomId === activeRoomId) {
             console.error("Failed to load transcript history:", err);
             showTranscriptError("Failed to load transcript: " + err.message);
         }
     }
 }
 
-function renderTranscript(messages) {
+function renderTranscriptFromState(roomId) {
+    if (roomId !== activeRoomId) return;
+    const state = getRoomState(roomId);
+    const messages = state.orderedIds.map(id => state.messageMap[id]);
+    renderTranscript(messages, state);
+}
+
+function renderTranscript(messages, state = null) {
     if (messages.length === 0) {
         transcriptFeed.innerHTML = `
             <div class="empty-state">
@@ -433,8 +544,29 @@ function renderTranscript(messages) {
         }
     }
     
+    // Generate HTML for Load Older button/loader at the top
+    let loadOlderBtnHtml = '';
+    if (state && state.hasMoreOlder) {
+        if (state.loadingOlder) {
+            loadOlderBtnHtml = `
+                <div class="load-older-container" style="text-align: center; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 16px;">
+                    <span class="material-symbols-rounded spinning" style="font-size: 1.1rem; vertical-align: middle; display: inline-block;">progress_activity</span>
+                    <span style="font-size: 0.85rem; opacity: 0.8; vertical-align: middle; margin-left: 4px;">Loading older messages...</span>
+                </div>
+            `;
+        } else {
+            loadOlderBtnHtml = `
+                <div class="load-older-container" style="text-align: center; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 16px;">
+                    <button id="btn-load-older" class="btn btn-secondary btn-sm" onclick="handleLoadOlder()" style="padding: 6px 14px; font-size: 0.8rem; height: auto;">
+                        <span class="material-symbols-rounded" style="font-size: 1.1rem; vertical-align: middle; margin-right: 4px;">history</span>Load Older Messages
+                    </button>
+                </div>
+            `;
+        }
+    }
+
     // Generate HTML for messages
-    transcriptFeed.innerHTML = messages.map(msg => {
+    const msgsHtml = messages.map(msg => {
         const date = new Date(msg.timestamp);
         const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         
@@ -480,6 +612,8 @@ function renderTranscript(messages) {
         `;
     }).join("");
     
+    transcriptFeed.innerHTML = loadOlderBtnHtml + msgsHtml;
+
     // Auto-scroll ONLY if it's the initial room load OR user was already near the bottom
     if (shouldScroll && (isNearBottom || isInitialLoad)) {
         transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
@@ -528,7 +662,7 @@ function renderStats(stats) {
     if (items.trim() === "") {
         statsBar.style.display = "none";
     } else {
-        statsBar.innerHTML = items;
+        statsBar.innerHTML = `<span class="stats-label" style="font-weight: 600; opacity: 0.7; font-size: 0.8rem; margin-right: 12px; display: inline-flex; align-items: center; gap: 4px;"><span class="material-symbols-rounded" style="font-size: 0.95rem;">history</span> Recent Window Stats:</span>` + items;
         statsBar.style.display = "flex";
     }
 }
@@ -1019,4 +1153,3 @@ async function sendDraftedMessage() {
         btnConfirmSend.disabled = false;
     }
 }
-
