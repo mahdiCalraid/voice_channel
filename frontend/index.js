@@ -605,6 +605,20 @@ function showTranscriptError(message) {
     `;
 }
 
+function handleTranscriptError(targetRoomId, message) {
+    const state = getRoomState(targetRoomId);
+    // If the room already has rendered/cached messages, preserve them on screen and update status chip
+    if (state && state.orderedIds.length > 0) {
+        if (rcStatusChip) {
+            rcStatusChip.className = "status-chip error";
+            const label = rcStatusChip.querySelector(".status-label");
+            if (label) label.innerText = "Rocket.Chat: Reconnecting...";
+        }
+    } else {
+        showTranscriptError(message);
+    }
+}
+
 async function loadHistory() {
     if (!activeRoomId || activeRoomId === "loading" || activeRoomId === "error") return;
     
@@ -634,12 +648,12 @@ async function loadHistory() {
 
             renderRecentStats(data.stats);
         } else {
-            showTranscriptError(data.detail || "Failed to load channel history.");
+            handleTranscriptError(targetRoomId, data.detail || "Failed to load channel history.");
         }
     } catch (err) {
         if (currentSeq === liveRequestSeq && targetRoomId === activeRoomId) {
             console.error("Failed to load transcript history:", err);
-            showTranscriptError("Failed to load transcript: " + err.message);
+            handleTranscriptError(targetRoomId, "Failed to load transcript: " + err.message);
         }
     }
 }

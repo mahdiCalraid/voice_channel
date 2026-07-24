@@ -269,12 +269,12 @@ Work:
 - Persisted unsent message drafts per room to `localStorage`, ensuring drafts survive browser refreshes without manual data clearing.
 - Explicitly caught `subprocess.TimeoutExpired` during worker execution, killing/cleaning up timed out tasks and falling back cleanly to rule-based digests.
 - Added automatic startup and execution cleanup of temporary `job_dir` worker directories, guaranteeing zero orphan process files accumulate under `tmp/jobs/`.
-- Preserved room transcripts during transient network failures, automatically resuming history polling when connectivity recovers.
+- Updated `handleTranscriptError()` to preserve rendered transcript DOM nodes on screen during transient network failures, updating status chip to "Reconnecting..." while polling continues.
 
 Verification:
 - Added `test_digest_worker_timeout_and_cleanup` in `tests/test_classification.py` to verify timeout handling and zero-orphan directory guarantees.
-- Added `unsent draft is persisted to localStorage` in `tests/frontend_room_isolation.test.js` to verify draft persistence across state resets.
-- Passed 28 Python unit tests and 6 Node frontend tests.
+- Added `unsent draft is persisted to localStorage` and `network error during polling preserves existing rendered transcript DOM` in `tests/frontend_room_isolation.test.js`.
+- Passed 28 Python unit tests and 7 Node frontend tests.
 
 ## F-07. Foundation Test Harness
 

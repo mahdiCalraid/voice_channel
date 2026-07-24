@@ -132,3 +132,26 @@ test("unsent draft is persisted to localStorage and restored for active room", (
     
     assert.equal(app.sandbox.document.getElementById("command-input").value, "Drafting recovery message");
 });
+
+test("network error during polling preserves existing rendered transcript DOM", async () => {
+    const app = loadFrontend();
+    const feed = app.sandbox.document.getElementById("transcript-feed");
+    feed.innerHTML = "<div class='chat-msg'>Existing Message</div>";
+
+    // Populate room state with a message
+    vm.runInContext(`
+        activeRoomId = "room-network-test";
+        const state = getRoomState("room-network-test");
+        state.orderedIds = ["msg-1"];
+        state.messageMap["msg-1"] = { id: "msg-1", text: "Existing Message", lane: "user", timestamp: 1000 };
+    `, app.sandbox);
+
+    // Mock fetch to simulate a network error
+    app.sandbox.fetch = () => Promise.reject(new Error("Network disconnect"));
+
+    await app.sandbox.loadHistory();
+
+    // Verify DOM was NOT replaced with signal_wifi_off error state
+    assert.equal(feed.innerHTML.includes("signal_wifi_off"), false);
+    assert.equal(feed.innerHTML.includes("Existing Message"), true);
+});
