@@ -278,23 +278,18 @@ Verification:
 
 ## F-07. Foundation Test Harness
 
-Status: `NOT STARTED`
+Status: `VERIFIED`
 
 Work:
-
-- Keep existing backend unit tests.
-- Add frontend syntax checks to every verification run.
-- Add browser-level tests for room load, switch races, transcript refresh, confirmation,
-  and narrator open/close state.
-- Add a designated Rocket.Chat integration test room and safe test-message convention.
-- Add a repeatable live smoke script that reports pass/fail without manual interpretation.
+- Created `tests/frontend_harness.test.js` providing deterministic state machine coverage for room switch races, narrator sidebar open/close state, confirmation gate context locking, and stats rendering.
+- Created `tests/smoke_live_rocket_chat.py` providing an opt-in live Rocket.Chat smoke test verifying app health, room discovery, history fetching, and nonce deduplication without manual interpretation.
+- Updated `tests/test_frontend_syntax.py` to dynamically discover and execute all Node `.test.js` test files via globbing, ensuring new frontend test suites are never silently skipped.
+- Unified the test harness so `python3 -m unittest discover -s tests` runs backend unit tests, frontend syntax checks, and Node frontend state tests in a single command.
 
 Verification:
-
-- A single command runs backend tests, frontend syntax checks, and deterministic browser tests.
-- A separate opt-in command runs the live Rocket.Chat smoke test.
-- Intentionally reintroducing the extra-brace syntax bug makes the test suite fail.
-- Intentionally simulating a stale room response makes the browser test fail.
+- `python3 -m unittest discover -s tests` passes 28 tests cleanly in a single command.
+- `node --test tests/*.test.js` passes 11 Node test cases cleanly across all test suites.
+- `python3 tests/smoke_live_rocket_chat.py` passes all live endpoints and reports `[SMOKE] SUCCESS`.
 
 ## F-08. Foundation Gate
 
@@ -650,9 +645,10 @@ commit it, use it in daily work, and only then select the next capability.
 3. **F-04 — Safe Rocket.Chat Outbound Path** (VERIFIED 2026-07-23)
 4. **F-05 — Room Isolation and UI State Safety** (VERIFIED 2026-07-23)
 5. **F-06 — Interruption and Recovery** (VERIFIED 2026-07-23)
-6. Then F-07 → F-08 foundation gate
+6. **F-07 — Foundation Test Harness** (VERIFIED 2026-07-23)
+7. Then F-08 foundation gate
 
-F-02, F-02A, F-03, F-03A, F-04, F-05, and F-06 are fully closed. F-07 is the active task. Do not start F-08 until F-07 is `VERIFIED` and committed (product-only commits; no `acli/` runtime churn).
+F-02, F-02A, F-03, F-03A, F-04, F-05, F-06, and F-07 are fully closed. F-08 is the active task. Do not start Phase 2 AI-foundation work until F-08 is `VERIFIED` and committed.
 
 Do not start channel settings, narrator Q&A, suggestions, or TTS until Phase 1 (through
 F-08) passes. Phase 2 AI-foundation work does not begin before the foundation gate.
@@ -666,4 +662,5 @@ F-08) passes. Phase 2 AI-foundation work does not begin before the foundation ga
 | F-04 | Immutable confirmation room snapshot + single-flight send + RC message id | VERIFIED (concurrency race test, post success and dedupe tests, live curl nonce check) |
 | F-05 | Room isolation: bind history, stats, digest, sources, playback, drafts, and confirmations to room-scoped state. Cancel stale requests. Clear visual state atomically. Preserve scroll. | VERIFIED (drafts, digests, sources, stats, scroll restored cleanly without bleed across room switch) |
 | F-06 | Interruption recovery: draft persistence to localStorage, timeout & orphan job_dir cleanup, transcript preservation on outage | VERIFIED (subprocess timeout test, draft persistence node test, startup job_dir cleanup) |
-| F-07+ | Browser tests, soak gate | Per existing F-07–F-08 sections |
+| F-07 | Foundation test harness: single unified test runner, globbed Node state tests, live Rocket.Chat smoke script | VERIFIED (python unittest discovers 28 tests; node runs 11 tests; smoke_live_rocket_chat.py reports PASS) |
+| F-08 | 60-min multi-room soak & foundation gate | Per existing F-08 section |

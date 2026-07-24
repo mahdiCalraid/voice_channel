@@ -38,14 +38,14 @@ class TestFrontendSyntax(unittest.TestCase):
             ),
         )
 
-    def test_history_state_behaviors(self):
+    def test_frontend_node_tests(self):
         node = shutil.which("node")
-        self.assertIsNotNone(node, "node is required for frontend history tests")
+        self.assertIsNotNone(node, "node is required for frontend node tests")
         self.assertTrue(HISTORY_STATE_JS.is_file(), f"missing {HISTORY_STATE_JS}")
-        self.assertTrue(HISTORY_STATE_TEST.is_file(), f"missing {HISTORY_STATE_TEST}")
-        self.assertTrue(ROOM_ISOLATION_TEST.is_file(), f"missing {ROOM_ISOLATION_TEST}")
+        test_files = sorted([str(p) for p in (REPO_ROOT / "tests").glob("*.test.js")])
+        self.assertTrue(len(test_files) > 0, "No frontend .test.js files found")
         result = subprocess.run(
-            [node, "--test", str(HISTORY_STATE_TEST), str(ROOM_ISOLATION_TEST)],
+            [node, "--test"] + test_files,
             capture_output=True,
             text=True,
         )
@@ -53,7 +53,7 @@ class TestFrontendSyntax(unittest.TestCase):
             result.returncode,
             0,
             msg=(
-                "frontend history-state tests failed\n"
+                "frontend node tests failed\n"
                 f"stdout:\n{result.stdout}\n"
                 f"stderr:\n{result.stderr}"
             ),
