@@ -4,6 +4,8 @@ import json
 import logging
 import re
 import asyncio
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Body
@@ -31,6 +33,15 @@ async def startup_cleanup():
                     logger.info(f"Cleaned orphan temp file: {fname}")
                 except Exception as e:
                     logger.warning(f"Could not remove temp file {fname}: {e}")
+
+    # Clean up orphan temporary job directories
+    jobs_dir = os.path.join("tmp", "jobs")
+    if os.path.exists(jobs_dir):
+        try:
+            shutil.rmtree(jobs_dir, ignore_errors=True)
+            logger.info("Cleaned orphan temporary job directories.")
+        except Exception as e:
+            logger.warning(f"Could not remove temp job dir: {e}")
 
 # Configuration from environment variables
 RC_URL = os.environ.get("RC_URL", "http://host.docker.internal:3000")
@@ -954,33 +965,42 @@ async def generate_digest(req: DigestRequest):
     digest_text = None
     
     try:
-        # Run worker with 30s timeout
-        env = os.environ.copy()
-        env["PYTHONPATH"] = env.get("PYTHONPATH", "") + ":" + os.getcwd()
-        
-        result_proc = subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=30
-        )
-        
-        if result_proc.returncode == 0:
-            result_json_path = os.path.join(job_dir, "result.json")
-            if os.path.exists(result_json_path):
-                with open(result_json_path, "r", encoding="utf-8") as f:
-                    job_result = json.load(f)
-                if job_result.get("ok"):
-                    digest_text = job_result.get("output")
-                    success = True
-                    logger.info(f"Worker '{worker_name}' successfully generated digest.")
-        else:
-            logger.error(f"Worker execution failed: {result_proc.stderr}")
+        try:
+            # Run worker with 30s timeout
+            env = os.environ.copy()
+            env["PYTHONPATH"] = env.get("PYTHONPATH", "") + ":" + os.getcwd()
             
-    except Exception as e:
-        logger.exception("Error executing worker process")
+            result_proc = subprocess.run(
+                cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=30
+            )
+            
+            if result_proc.returncode == 0:
+                result_json_path = os.path.join(job_dir, "result.json")
+                if os.path.exists(result_json_path):
+                    with open(result_json_path, "r", encoding="utf-8") as f:
+                        job_result = json.load(f)
+                    if job_result.get("ok"):
+                        digest_text = job_result.get("output")
+                        success = True
+                        logger.info(f"Worker '{worker_name}' successfully generated digest.")
+            else:
+                logger.error(f"Worker execution failed: {result_proc.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Worker '{worker_name}' execution timed out after 30s.")
+        except Exception as e:
+            logger.exception("Error executing worker process")
+    finally:
+        if 'job_dir' in locals() and os.path.exists(job_dir):
+            try:
+                shutil.rmtree(job_dir, ignore_errors=True)
+            except Exception as e:
+                logger.warning(f"Could not remove temp job_dir '{job_dir}': {e}")
         
     if success and digest_text:
         # Persist summary

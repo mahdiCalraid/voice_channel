@@ -105,3 +105,30 @@ test("a digest abandoned by a room switch releases the originating room", async 
 
     assert.equal(vm.runInContext('getRoomState("room-a").digestLoading', app.sandbox), false);
 });
+
+test("unsent draft is persisted to localStorage and restored for active room", () => {
+    const storage = {};
+    const app = loadFrontend();
+    app.sandbox.localStorage = {
+        getItem: key => storage[key] || null,
+        setItem: (key, val) => { storage[key] = val; },
+        removeItem: key => { delete storage[key]; }
+    };
+    
+    vm.runInContext(`
+        activeRoomId = "room-test";
+        document.getElementById("command-input").value = "Drafting recovery message";
+        saveRoomUIData("room-test");
+    `, app.sandbox);
+    
+    assert.equal(storage["vc_draft_room-test"], "Drafting recovery message");
+    
+    // Simulate room restore after clearing volatile state
+    vm.runInContext(`
+        document.getElementById("command-input").value = "";
+        getRoomState("room-test").draftText = null;
+        restoreRoomUIData("room-test");
+    `, app.sandbox);
+    
+    assert.equal(app.sandbox.document.getElementById("command-input").value, "Drafting recovery message");
+});

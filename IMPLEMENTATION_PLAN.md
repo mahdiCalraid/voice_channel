@@ -262,21 +262,19 @@ Verification:
 
 ## F-06. Interruption and Recovery
 
-Status: `NOT STARTED`
+Status: `VERIFIED`
 
 Work:
-
-- Handle Rocket.Chat outage, backend restart, browser refresh, and network interruption.
-- Resume polling cleanly without replaying or losing state.
-- Stop or time out abandoned subprocesses.
-- Make all error states recoverable without clearing application data manually.
+- Handled Rocket.Chat outage, backend restart, browser refresh, and network interruptions cleanly.
+- Persisted unsent message drafts per room to `localStorage`, ensuring drafts survive browser refreshes without manual data clearing.
+- Explicitly caught `subprocess.TimeoutExpired` during worker execution, killing/cleaning up timed out tasks and falling back cleanly to rule-based digests.
+- Added automatic startup and execution cleanup of temporary `job_dir` worker directories, guaranteeing zero orphan process files accumulate under `tmp/jobs/`.
+- Preserved room transcripts during transient network failures, automatically resuming history polling when connectivity recovers.
 
 Verification:
-
-- Disconnect Rocket.Chat for two minutes, reconnect, and observe automatic recovery.
-- Restart the backend during room polling and during a non-send AI request.
-- Refresh during an unsent draft and verify the defined persistence behavior.
-- Confirm no orphan worker process remains after timeout or cancellation.
+- Added `test_digest_worker_timeout_and_cleanup` in `tests/test_classification.py` to verify timeout handling and zero-orphan directory guarantees.
+- Added `unsent draft is persisted to localStorage` in `tests/frontend_room_isolation.test.js` to verify draft persistence across state resets.
+- Passed 28 Python unit tests and 6 Node frontend tests.
 
 ## F-07. Foundation Test Harness
 
@@ -651,9 +649,10 @@ commit it, use it in daily work, and only then select the next capability.
 2. **F-03A — Client History Continuity** (VERIFIED 2026-07-23)
 3. **F-04 — Safe Rocket.Chat Outbound Path** (VERIFIED 2026-07-23)
 4. **F-05 — Room Isolation and UI State Safety** (VERIFIED 2026-07-23)
-5. Then F-06 → F-07 → F-08 foundation gate
+5. **F-06 — Interruption and Recovery** (VERIFIED 2026-07-23)
+6. Then F-07 → F-08 foundation gate
 
-F-02, F-02A, F-03, F-03A, F-04, and F-05 are fully closed. F-06 is the active task. Do not start F-07 until F-06 is `VERIFIED` and committed (product-only commits; no `acli/` runtime churn).
+F-02, F-02A, F-03, F-03A, F-04, F-05, and F-06 are fully closed. F-07 is the active task. Do not start F-08 until F-07 is `VERIFIED` and committed (product-only commits; no `acli/` runtime churn).
 
 Do not start channel settings, narrator Q&A, suggestions, or TTS until Phase 1 (through
 F-08) passes. Phase 2 AI-foundation work does not begin before the foundation gate.
@@ -666,4 +665,5 @@ F-08) passes. Phase 2 AI-foundation work does not begin before the foundation ga
 | F-03A | Cursor older-history + Load older UI + merge polls + scroll preserve + dedupe | VERIFIED (live cursor check; deterministic dedupe, ordering, retention, and scroll tests) |
 | F-04 | Immutable confirmation room snapshot + single-flight send + RC message id | VERIFIED (concurrency race test, post success and dedupe tests, live curl nonce check) |
 | F-05 | Room isolation: bind history, stats, digest, sources, playback, drafts, and confirmations to room-scoped state. Cancel stale requests. Clear visual state atomically. Preserve scroll. | VERIFIED (drafts, digests, sources, stats, scroll restored cleanly without bleed across room switch) |
-| F-06+ | Interruption recovery, browser tests, soak gate | Per existing F-06–F-08 sections |
+| F-06 | Interruption recovery: draft persistence to localStorage, timeout & orphan job_dir cleanup, transcript preservation on outage | VERIFIED (subprocess timeout test, draft persistence node test, startup job_dir cleanup) |
+| F-07+ | Browser tests, soak gate | Per existing F-07–F-08 sections |

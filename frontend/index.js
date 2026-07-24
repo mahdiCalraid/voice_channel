@@ -90,6 +90,20 @@ function init() {
     btnCancelSend.addEventListener("click", hideConfirmation);
     btnConfirmSend.addEventListener("click", sendDraftedMessage);
     
+    if (commandInput) {
+        commandInput.addEventListener("input", (e) => {
+            if (activeRoomId) {
+                const state = getRoomState(activeRoomId);
+                state.draftText = e.target.value;
+                if (e.target.value.trim()) {
+                    localStorage.setItem("vc_draft_" + activeRoomId, e.target.value);
+                } else {
+                    localStorage.removeItem("vc_draft_" + activeRoomId);
+                }
+            }
+        });
+    }
+    
     if (roomSelect) {
         roomSelect.addEventListener("change", (e) => {
             selectRoom(e.target.value);
@@ -285,6 +299,11 @@ function saveRoomUIData(roomId) {
     const state = getRoomState(roomId);
     if (commandInput) {
         state.draftText = commandInput.value;
+        if (commandInput.value.trim()) {
+            localStorage.setItem("vc_draft_" + roomId, commandInput.value);
+        } else {
+            localStorage.removeItem("vc_draft_" + roomId);
+        }
     }
     state.digestText = currentDigestText;
     state.digestSourcesHtml = sourcesList ? sourcesList.innerHTML : "";
@@ -306,6 +325,10 @@ function saveRoomUIData(roomId) {
 function restoreRoomUIData(roomId) {
     if (!roomId) return;
     const state = getRoomState(roomId);
+    
+    if (state.draftText === undefined || state.draftText === null) {
+        state.draftText = localStorage.getItem("vc_draft_" + roomId) || "";
+    }
     
     if (commandInput) {
         commandInput.value = state.draftText || "";
@@ -1307,6 +1330,9 @@ async function sendDraftedMessage() {
         if (data.success) {
             commandInput.value = "";
             commandInput.readOnly = false;
+            localStorage.removeItem("vc_draft_" + targetRoomId);
+            const state = getRoomState(targetRoomId);
+            state.draftText = "";
             hideConfirmation();
             
             // Display successful send feedback with message ID

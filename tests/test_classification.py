@@ -547,5 +547,26 @@ class TestMessageClassification(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         self.assertEqual(successes[0]["msgId"], "mock-rc-msg-id-concurrent")
 
+    @patch("subprocess.run")
+    def test_digest_worker_timeout_and_cleanup(self, mock_subprocess):
+        from app.main import generate_digest, DigestRequest
+        import subprocess
+        mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd=["run_worker.py"], timeout=30)
+        
+        req = DigestRequest(
+            messages=[{"id": "m1", "lane": "user", "text": "hello", "username": "ed"}],
+            roomId="test-timeout-room"
+        )
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(generate_digest(req))
+        
+        # Verify fallback rule-based digest was returned cleanly
+        self.assertIn("Here is a quick summary", res["digest"])
+        
+        # Verify no orphan job directories remain in tmp/jobs
+        jobs_dir = os.path.join("tmp", "jobs")
+        if os.path.exists(jobs_dir):
+            self.assertEqual(len(os.listdir(jobs_dir)), 0)
+
 if __name__ == '__main__':
     unittest.main()
