@@ -66,6 +66,10 @@ function init() {
     initNarratorSidebarState();
     checkStatus();
     loadRooms().then(() => {
+        if (activeRoomId) {
+            restoreRoomUIData(activeRoomId);
+            renderTranscriptFromState(activeRoomId);
+        }
         loadHistory();
     });
     
@@ -87,7 +91,9 @@ function init() {
     btnConfirmSend.addEventListener("click", sendDraftedMessage);
     
     if (roomSelect) {
-        roomSelect.addEventListener("change", handleRoomChange);
+        roomSelect.addEventListener("change", (e) => {
+            selectRoom(e.target.value);
+        });
     }
     
     // Channel Search Filter
@@ -274,8 +280,95 @@ async function loadRooms() {
     }
 }
 
+function saveRoomUIData(roomId) {
+    if (!roomId) return;
+    const state = getRoomState(roomId);
+    if (commandInput) {
+        state.draftText = commandInput.value;
+    }
+    state.digestText = currentDigestText;
+    state.digestSourcesHtml = sourcesList ? sourcesList.innerHTML : "";
+    state.digestSourcesVisible = digestSourcesContainer ? (digestSourcesContainer.style.display === "block") : false;
+    state.sourcesToggleText = sourcesToggleText ? sourcesToggleText.innerText : "";
+    state.sourcesListVisible = sourcesList ? !sourcesList.classList.contains("hidden") : false;
+    state.sourcesArrowRotated = sourcesArrow ? sourcesArrow.classList.contains("rotated") : false;
+    state.digestLoading = btnGenerateDigest ? btnGenerateDigest.disabled : false;
+    
+    if (statsBar) {
+        state.statsHtml = statsBar.innerHTML;
+        state.statsVisible = statsBar.style.display !== "none";
+    }
+    if (transcriptFeed) {
+        state.scrollTop = transcriptFeed.scrollTop;
+    }
+}
+
+function restoreRoomUIData(roomId) {
+    if (!roomId) return;
+    const state = getRoomState(roomId);
+    
+    if (commandInput) {
+        commandInput.value = state.draftText || "";
+    }
+    
+    currentDigestText = state.digestText || "";
+    if (digestContent) {
+        if (currentDigestText) {
+            digestContent.innerText = currentDigestText;
+        } else {
+            digestContent.innerText = 'No digest loaded. Click "Generate Digest" below to fetch the latest updates from the channel and read them aloud.';
+        }
+    }
+    
+    if (sourcesList) {
+        sourcesList.innerHTML = state.digestSourcesHtml || "";
+        if (state.sourcesListVisible) {
+            sourcesList.classList.remove("hidden");
+        } else {
+            sourcesList.classList.add("hidden");
+        }
+    }
+    
+    if (digestSourcesContainer) {
+        digestSourcesContainer.style.display = state.digestSourcesVisible ? "block" : "none";
+    }
+    
+    if (sourcesToggleText) {
+        sourcesToggleText.innerText = state.sourcesToggleText || "Show Sources (0)";
+    }
+    
+    if (sourcesArrow) {
+        if (state.sourcesArrowRotated) {
+            sourcesArrow.classList.add("rotated");
+        } else {
+            sourcesArrow.classList.remove("rotated");
+        }
+    }
+    
+    if (btnGenerateDigest) {
+        btnGenerateDigest.disabled = state.digestLoading || false;
+    }
+    
+    if (statsBar) {
+        statsBar.innerHTML = state.statsHtml || "";
+        statsBar.style.display = state.statsVisible ? "flex" : "none";
+    }
+    
+    if (state.scrollTop !== undefined && state.scrollTop !== null) {
+        state.savedScrollTop = state.scrollTop;
+    } else {
+        state.savedScrollTop = null;
+    }
+}
+
 function selectRoom(roomId) {
-    if (!roomId || roomId === activeRoomId) return;
+    if (!roomId) return;
+    const oldRoomId = activeRoomId;
+    
+    if (oldRoomId && oldRoomId !== roomId) {
+        saveRoomUIData(oldRoomId);
+    }
+    
     activeRoomId = roomId;
     if (roomSelect) roomSelect.value = roomId;
     localStorage.setItem("activeRoomId", activeRoomId);
@@ -337,36 +430,32 @@ function renderChannelsList(filterText = "") {
 }
 
 function handleRoomChange() {
-    if (roomSelect) activeRoomId = roomSelect.value;
-    localStorage.setItem("activeRoomId", activeRoomId);
-    renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
-    updateHeaderRoomInfo();
-    
     // Always hide/cancel any pending confirmation gate on room switch
     hideConfirmation();
     
-    // Clear transcript UI and state
-    lastMessageTimestamp = null;
-    transcriptFeed.innerHTML = `
-        <div class="loading-state">
-            <span class="material-symbols-rounded spinning">progress_activity</span>
-            <p>Loading updates for selected room...</p>
-        </div>
-    `;
+    // Restore UI state of the new active room
+    restoreRoomUIData(activeRoomId);
     
-    // Clear digest & sources Narrator UI completely
-    currentDigestText = "";
-    digestContent.innerText = 'No digest loaded. Click "Generate Digest" below to fetch the latest updates from the channel and read them aloud.';
-    if (digestSourcesContainer) digestSourcesContainer.style.display = "none";
-    if (sourcesList) {
-        sourcesList.innerHTML = "";
-        sourcesList.classList.add("hidden");
+    // Clear lastMessageTimestamp so renderTranscript updates scroll properly
+    lastMessageTimestamp = null;
+    
+    const state = getRoomState(activeRoomId);
+    if (state.orderedIds.length > 0) {
+        // If we have cached messages, render them immediately!
+        renderTranscriptFromState(activeRoomId);
+    } else {
+        // Otherwise, display loading state
+        transcriptFeed.innerHTML = `
+            <div class="loading-state">
+                <span class="material-symbols-rounded spinning">progress_activity</span>
+                <p>Loading updates for selected room...</p>
+            </div>
+        `;
     }
-    if (sourcesArrow) sourcesArrow.classList.remove("rotated");
-    if (sourcesToggleText) sourcesToggleText.innerText = "Show Sources (0)";
+    
     handleStop();
     
-    // Reload
+    // Reload history to get latest updates
     loadHistory();
 }
 
@@ -617,7 +706,10 @@ function renderTranscript(messages, state = null) {
     transcriptFeed.innerHTML = loadOlderBtnHtml + msgsHtml;
 
     // Auto-scroll ONLY if it's the initial room load OR user was already near the bottom
-    if (shouldScroll && (isNearBottom || isInitialLoad)) {
+    if (state && state.savedScrollTop !== undefined && state.savedScrollTop !== null) {
+        transcriptFeed.scrollTop = state.savedScrollTop;
+        state.savedScrollTop = null;
+    } else if (shouldScroll && (isNearBottom || isInitialLoad)) {
         transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
     }
 }

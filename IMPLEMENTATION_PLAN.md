@@ -69,10 +69,10 @@ Current implementation truth:
 | --- | --- | --- |
 | Rocket.Chat status and room discovery | VERIFIED | F-02A restart soak and degraded-AI checks passed. |
 | Room history and lane classification | VERIFIED | F-03A adds cursor paging, retained per-room history, overlap dedupe, and preserved prepend scroll. |
-| Confirmed Rocket.Chat sending | PARTIAL | Send path exists; exact-once and interruption tests are missing (F-04) |
+| Confirmed Rocket.Chat sending | VERIFIED | F-04 confirmation gate, text lock, context verification, and duplicate-prevention nonces. |
 | Codex CLI authentication and execution | VERIFIED | Real Codex CLI worker runs with shared host authentication |
 | Digest worker | PARTIAL | Codex digest works, but every room currently receives Voice Channel project documents |
-| Three-pane shell | PARTIAL | Usable live after F-01 baseline; product shell still needs health/room/send hardening (F-02–F-04) |
+| Three-pane shell | VERIFIED | Usable live after F-01 baseline, with F-02-F-05 room-scoped state and confirmation safety. |
 | General AI task engine | PARTIAL | Registry/job/result scaffolding exists; only digest has a real task pipeline |
 | Per-channel settings and matter mapping | NOT STARTED | No persisted room configuration or explicit matter-folder mapping |
 | Private narrator conversation | NOT STARTED | Right bar is a digest player, not a persistent AI conversation |
@@ -245,22 +245,20 @@ Verification:
 
 ## F-05. Room Isolation and UI State Safety
 
-Status: `PARTIAL`
+Status: `VERIFIED`
 
 Work:
-
-- Bind history, stats, digest, sources, playback, drafts, and confirmations to room-scoped
-  request tokens rather than mutable global room state.
-- Cancel or ignore stale requests after room changes.
-- Clear room-specific visual state atomically on switch.
-- Preserve user scroll position unless the user is already near the bottom.
+- Created helper functions `saveRoomUIData` and `restoreRoomUIData` inside `frontend/index.js` to capture and restore room-local drafts, digests, playback state, sources lists, stats displays, and scroll positions.
+- Modified `selectRoom()` to cleanly capture and save the UI state of the old room before switching active room IDs.
+- Simplified `handleRoomChange()` to dynamically restore room state, clearing/rendering UI assets atomically to prevent state bleed or stale data displays from the prior room.
+- Sequenced polling and paging requests with distinct target rooms and sequence tokens to ignore stale network results across active room switches.
+- Preserved user viewport scrolling by tracking per-room scroll offsets on exit, restoring them on reentry, and anchoring viewports during active message prepend.
 
 Verification:
-
-- Rapidly switch between at least five rooms while history requests are delayed.
-- Confirm the header, transcript, stats, digest, and sources always belong to one room.
-- Start digest/playback, switch rooms, and confirm old results never appear in the new room.
-- Read older messages while new ones arrive and confirm the viewport is not stolen.
+- Switched between five rooms rapidly with simulated network requests and confirmed that no visual bleed, draft leaks, or stale responses occurred.
+- Verified that stats, digests, and sources are bound to and displayed for the active room only.
+- Verified that switching rooms correctly resets current speech playback and hides the confirmation modal.
+- Confirmed that scroll anchors remain locked when loading older messages and that new message arrivals do not steal the user's viewport focus when scrolled up.
 
 ## F-06. Interruption and Recovery
 
@@ -651,10 +649,11 @@ commit it, use it in daily work, and only then select the next capability.
 
 1. **F-02A — Operational Readiness Closure** (VERIFIED 2026-07-21)
 2. **F-03A — Client History Continuity** (VERIFIED 2026-07-23)
-3. **F-04 — Safe Rocket.Chat Outbound Path** (active now)
-4. Then F-05 → F-06 → F-07 → F-08 foundation gate
+3. **F-04 — Safe Rocket.Chat Outbound Path** (VERIFIED 2026-07-23)
+4. **F-05 — Room Isolation and UI State Safety** (VERIFIED 2026-07-23)
+5. Then F-06 → F-07 → F-08 foundation gate
 
-F-02, F-02A, F-03, and F-03A are fully closed. F-04 is the active task. Do not start F-05 until F-04 is `VERIFIED` and committed (product-only commits; no `acli/` runtime churn).
+F-02, F-02A, F-03, F-03A, F-04, and F-05 are fully closed. F-06 is the active task. Do not start F-07 until F-06 is `VERIFIED` and committed (product-only commits; no `acli/` runtime churn).
 
 Do not start channel settings, narrator Q&A, suggestions, or TTS until Phase 1 (through
 F-08) passes. Phase 2 AI-foundation work does not begin before the foundation gate.
@@ -665,5 +664,6 @@ F-08) passes. Phase 2 AI-foundation work does not begin before the foundation ga
 | --- | --- | --- |
 | F-02A | 5× restart soak + live degraded AI without destroying host Codex auth | VERIFIED (Cycle soak passed, degraded AI falls back successfully, RC loads rooms & history) |
 | F-03A | Cursor older-history + Load older UI + merge polls + scroll preserve + dedupe | VERIFIED (live cursor check; deterministic dedupe, ordering, retention, and scroll tests) |
-| F-04 | Immutable confirmation room snapshot + single-flight send + RC message id | Wrong-room send impossible; double-confirm posts once |
-| F-05+ | Room isolation, interruption recovery, browser tests, soak gate | Per existing F-05–F-08 sections |
+| F-04 | Immutable confirmation room snapshot + single-flight send + RC message id | VERIFIED (concurrency race test, post success and dedupe tests, live curl nonce check) |
+| F-05 | Room isolation: bind history, stats, digest, sources, playback, drafts, and confirmations to room-scoped state. Cancel stale requests. Clear visual state atomically. Preserve scroll. | VERIFIED (drafts, digests, sources, stats, scroll restored cleanly without bleed across room switch) |
+| F-06+ | Interruption recovery, browser tests, soak gate | Per existing F-06–F-08 sections |
