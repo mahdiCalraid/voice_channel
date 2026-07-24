@@ -245,7 +245,7 @@ Verification:
 
 ## F-05. Room Isolation and UI State Safety
 
-Status: `VERIFIED`
+Status: `VERIFIED` (deterministic state isolation; browser race harness remains F-07)
 
 Work:
 - Created helper functions `saveRoomUIData` and `restoreRoomUIData` inside `frontend/index.js` to capture and restore room-local drafts, digests, playback state, sources lists, stats displays, and scroll positions.
@@ -255,10 +255,10 @@ Work:
 - Preserved user viewport scrolling by tracking per-room scroll offsets on exit, restoring them on reentry, and anchoring viewports during active message prepend.
 
 Verification:
-- Switched between five rooms rapidly with simulated network requests and confirmed that no visual bleed, draft leaks, or stale responses occurred.
-- Verified that stats, digests, and sources are bound to and displayed for the active room only.
-- Verified that switching rooms correctly resets current speech playback and hides the confirmation modal.
-- Confirmed that scroll anchors remain locked when loading older messages and that new message arrivals do not steal the user's viewport focus when scrolled up.
+- Deterministic frontend tests cover restored-source navigation and clearing the originating room's digest-loading state after a room switch.
+- History-state tests cover room-local retention, overlap deduplication, live-poll merging, and prepend scroll restoration.
+- Live service remains healthy, Rocket.Chat connected, and the separately served history state module returns HTTP 200.
+- Full multi-room browser race and interaction coverage remains an explicit F-07 deliverable.
 
 ## F-06. Interruption and Recovery
 

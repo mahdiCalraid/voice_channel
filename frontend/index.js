@@ -327,6 +327,7 @@ function restoreRoomUIData(roomId) {
         } else {
             sourcesList.classList.add("hidden");
         }
+        bindSourceItemHandlers();
     }
     
     if (digestSourcesContainer) {
@@ -363,6 +364,7 @@ function restoreRoomUIData(roomId) {
 
 function selectRoom(roomId) {
     if (!roomId) return;
+    if (roomId === activeRoomId) return;
     const oldRoomId = activeRoomId;
     
     if (oldRoomId && oldRoomId !== roomId) {
@@ -465,6 +467,22 @@ function getRoomState(roomId) {
         roomHistoryStates[roomId] = historyState.createRoomState();
     }
     return roomHistoryStates[roomId];
+}
+
+function bindSourceItemHandlers() {
+    if (!sourcesList) return;
+    sourcesList.querySelectorAll(".source-item").forEach(item => {
+        item.addEventListener("click", () => {
+            const msgId = item.dataset.sourceId;
+            const msgElem = document.querySelector(`[data-id="${msgId}"]`);
+            if (!msgElem) return;
+
+            msgElem.scrollIntoView({ behavior: "smooth", block: "center" });
+            msgElem.classList.remove("highlight-pulse");
+            void msgElem.offsetWidth;
+            msgElem.classList.add("highlight-pulse");
+        });
+    });
 }
 
 function renderRecentStats(stats) {
@@ -937,6 +955,8 @@ function initSpeechSynthesis() {
 async function handleGenerateDigest() {
     if (!activeRoomId) return;
     const targetRoomId = activeRoomId;
+    const targetState = getRoomState(targetRoomId);
+    targetState.digestLoading = true;
     btnGenerateDigest.disabled = true;
     digestContent.innerHTML = "<em>Generating new digest from recent updates...</em>";
     
@@ -996,19 +1016,7 @@ async function handleGenerateDigest() {
                 `;
             }).join("");
             
-            // Add click listeners to source items
-            sourcesList.querySelectorAll(".source-item").forEach(item => {
-                item.addEventListener("click", () => {
-                    const msgId = item.dataset.sourceId;
-                    const msgElem = document.querySelector(`[data-id="${msgId}"]`);
-                    if (msgElem) {
-                        msgElem.scrollIntoView({ behavior: "smooth", block: "center" });
-                        msgElem.classList.remove("highlight-pulse");
-                        void msgElem.offsetWidth; // Trigger browser reflow for CSS keyframe animation restart
-                        msgElem.classList.add("highlight-pulse");
-                    }
-                });
-            });
+            bindSourceItemHandlers();
             
             digestSourcesContainer.style.display = "block";
         } else {
@@ -1026,6 +1034,7 @@ async function handleGenerateDigest() {
             digestContent.innerText = "Error generating digest. Please check console.";
         }
     } finally {
+        targetState.digestLoading = false;
         if (targetRoomId === activeRoomId) {
             btnGenerateDigest.disabled = false;
         }

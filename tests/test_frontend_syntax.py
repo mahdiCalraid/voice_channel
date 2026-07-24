@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 INDEX_JS = REPO_ROOT / "frontend" / "index.js"
 HISTORY_STATE_JS = REPO_ROOT / "frontend" / "history_state.js"
 HISTORY_STATE_TEST = REPO_ROOT / "tests" / "frontend_history_state.test.js"
+ROOM_ISOLATION_TEST = REPO_ROOT / "tests" / "frontend_room_isolation.test.js"
 
 
 class TestFrontendSyntax(unittest.TestCase):
@@ -42,8 +43,9 @@ class TestFrontendSyntax(unittest.TestCase):
         self.assertIsNotNone(node, "node is required for frontend history tests")
         self.assertTrue(HISTORY_STATE_JS.is_file(), f"missing {HISTORY_STATE_JS}")
         self.assertTrue(HISTORY_STATE_TEST.is_file(), f"missing {HISTORY_STATE_TEST}")
+        self.assertTrue(ROOM_ISOLATION_TEST.is_file(), f"missing {ROOM_ISOLATION_TEST}")
         result = subprocess.run(
-            [node, "--test", str(HISTORY_STATE_TEST)],
+            [node, "--test", str(HISTORY_STATE_TEST), str(ROOM_ISOLATION_TEST)],
             capture_output=True,
             text=True,
         )
