@@ -23,7 +23,7 @@ def log(msg):
 def run_smoke_test(allow_live_send=False):
     log(f"Starting live Rocket.Chat integration smoke test against {BASE_URL}...")
     
-    # Step 1: Health / Status Check
+    # Step 1: Health / Status & Asset Route Check
     status_url = f"{BASE_URL}/api/status"
     try:
         req = urllib.request.Request(status_url)
@@ -41,9 +41,26 @@ def run_smoke_test(allow_live_send=False):
         log(f"FAIL: Health check request failed: {e}")
         return False
 
+    # Step 1b: Verify Static Asset Route (/history_state.js)
+    asset_url = f"{BASE_URL}/history_state.js"
+    try:
+        req = urllib.request.Request(asset_url)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status != 200:
+                log(f"FAIL: /history_state.js status is {resp.status}, expected 200")
+                return False
+            content = resp.read().decode()
+            if "createRoomState" not in content:
+                log("FAIL: /history_state.js content does not contain VoiceChannelHistoryState definitions")
+                return False
+            log(f"PASS: /history_state.js served cleanly (200 OK, {len(content)} bytes)")
+    except Exception as e:
+        log(f"FAIL: /history_state.js asset check failed: {e}")
+        return False
+
     # Step 2: Room Discovery Check
     rooms_url = f"{BASE_URL}/api/rooms"
-    target_room_id = None
+    target_room_id = os.environ.get("SMOKE_ROOM_ID")
     try:
         with urllib.request.urlopen(urllib.request.Request(rooms_url), timeout=5) as resp:
             data = json.loads(resp.read().decode())
@@ -51,8 +68,10 @@ def run_smoke_test(allow_live_send=False):
             if not data.get("success") or len(rooms) == 0:
                 log("FAIL: No rooms returned from /api/rooms")
                 return False
-            target_room_id = rooms[0]["id"]
-            log(f"PASS: Discovered {len(rooms)} rooms. Target room: #{rooms[0]['name']} ({target_room_id})")
+            if not target_room_id:
+                target_room_id = rooms[0]["id"]
+            matched = next((r for r in rooms if r["id"] == target_room_id), rooms[0])
+            log(f"PASS: Discovered {len(rooms)} rooms. Target room: #{matched['name']} ({target_room_id})")
     except Exception as e:
         log(f"FAIL: Room discovery request failed: {e}")
         return False

@@ -568,5 +568,10 @@ class TestMessageClassification(unittest.TestCase):
         if os.path.exists(jobs_dir):
             self.assertEqual(len(os.listdir(jobs_dir)), 0)
 
+    def test_soak_runner_unit(self):
+        from tests.soak_test_runner import run_soak
+        success = run_soak(cycles=3)
+        self.assertTrue(success)
+
 if __name__ == '__main__':
     unittest.main()
