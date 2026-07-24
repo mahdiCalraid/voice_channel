@@ -437,5 +437,115 @@ class TestMessageClassification(unittest.TestCase):
         self.assertEqual([message["id"] for message in res["messages"]], ["m2", "m3"])
         self.assertEqual(res["next_before"], "2026-07-20T20:02:00.000Z")
 
+    @patch("httpx.AsyncClient.post")
+    def test_send_message_success(self, mock_post):
+        from app.main import send_message, MessageSendRequest
+        
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "success": True,
+            "message": {
+                "_id": "mock-rc-msg-id-123",
+                "rid": "test-room-send",
+                "msg": "Hello Rocket.Chat",
+                "ts": "2026-07-20T20:00:00.000Z"
+            }
+        }
+        mock_post.return_value = response
+        
+        req = MessageSendRequest(roomId="test-room-send", text="Hello Rocket.Chat")
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(send_message(req))
+        
+        self.assertTrue(res["success"])
+        self.assertEqual(res["msgId"], "mock-rc-msg-id-123")
+        self.assertEqual(res["message"]["msg"], "Hello Rocket.Chat")
+        
+        call_args = mock_post.call_args
+        self.assertIn("/api/v1/chat.postMessage", call_args[0][0])
+        self.assertEqual(call_args[1]["json"]["roomId"], "test-room-send")
+        self.assertEqual(call_args[1]["json"]["text"], "Hello Rocket.Chat")
+
+    @patch("httpx.AsyncClient.post")
+    def test_send_message_deduplication(self, mock_post):
+        from app.main import send_message, MessageSendRequest
+        import app.main
+        
+        app.main.processed_nonces.clear()
+        
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "success": True,
+            "message": {
+                "_id": "mock-rc-msg-id-nonce",
+                "rid": "test-room-nonce",
+                "msg": "Nonce message",
+                "ts": "2026-07-20T20:00:00.000Z"
+            }
+        }
+        mock_post.return_value = response
+        
+        req1 = MessageSendRequest(roomId="test-room-nonce", text="Nonce message", nonce="unique-nonce-123")
+        req2 = MessageSendRequest(roomId="test-room-nonce", text="Nonce message", nonce="unique-nonce-123")
+        
+        loop = asyncio.get_event_loop()
+        res1 = loop.run_until_complete(send_message(req1))
+        res2 = loop.run_until_complete(send_message(req2))
+        
+        self.assertTrue(res1["success"])
+        self.assertEqual(res1["msgId"], "mock-rc-msg-id-nonce")
+        self.assertTrue(res2["success"])
+        self.assertEqual(res2["msgId"], "mock-rc-msg-id-nonce")
+        
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("httpx.AsyncClient.post")
+    def test_send_message_concurrent_pending(self, mock_post):
+        from app.main import send_message, MessageSendRequest
+        import app.main
+        from fastapi import HTTPException
+        
+        app.main.processed_nonces.clear()
+        
+        # Mock post to delay so that the first request is pending when the second request arrives
+        async def delayed_post(*args, **kwargs):
+            await asyncio.sleep(0.1)
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {
+                "success": True,
+                "message": {
+                    "_id": "mock-rc-msg-id-concurrent",
+                    "rid": "test-room-concurrent",
+                    "msg": "Concurrent message",
+                    "ts": "2026-07-20T20:00:00.000Z"
+                }
+            }
+            return response
+            
+        mock_post.side_effect = delayed_post
+        
+        req = MessageSendRequest(roomId="test-room-concurrent", text="Concurrent message", nonce="concurrent-nonce-123")
+        
+        loop = asyncio.get_event_loop()
+        
+        async def run_concurrent():
+            # Run two sends concurrently
+            t1 = send_message(req)
+            t2 = send_message(req)
+            return await asyncio.gather(t1, t2, return_exceptions=True)
+            
+        results = loop.run_until_complete(run_concurrent())
+        
+        # One must succeed and one must raise HTTPException with status_code 409
+        successes = [r for r in results if isinstance(r, dict) and r.get("success")]
+        conflicts = [r for r in results if isinstance(r, HTTPException) and r.status_code == 409]
+        
+        self.assertEqual(len(successes), 1)
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(successes[0]["msgId"], "mock-rc-msg-id-concurrent")
+
 if __name__ == '__main__':
     unittest.main()

@@ -595,6 +595,31 @@ body {
     gap: 0.75rem;
 }
 
+.send-feedback {
+    font-size: 0.85rem;
+    padding: 0.5rem 1rem;
+    margin-left: 1rem;
+    border-radius: 8px;
+    text-align: center;
+    max-width: 350px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: none;
+}
+
+.send-feedback.success {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.send-feedback.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
 /* Loading & Empty States */
 .loading-state, .empty-state {
     display: flex;

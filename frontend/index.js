@@ -13,6 +13,8 @@ let roomsList = [];
 let liveRequestSeq = 0;
 let loadOlderRequestSeq = 0;
 let confirmationTargetRoomId = null;
+let confirmationTargetText = null;
+let confirmationNonce = null;
 let roomHistoryStates = {};
 const historyState = window.VoiceChannelHistoryState;
 
@@ -1100,19 +1102,62 @@ function stopListening() {
 }
 
 // 5. Message Composer & Confirmation Workflows
+function showSendFeedback(message, type) {
+    const feedbackEl = document.getElementById("send-feedback");
+    if (!feedbackEl) return;
+    feedbackEl.textContent = message;
+    feedbackEl.className = "send-feedback " + type;
+    feedbackEl.style.display = "block";
+    
+    if (type === "success") {
+        setTimeout(() => {
+            if (feedbackEl.textContent === message) {
+                feedbackEl.style.display = "none";
+            }
+        }, 5000);
+    }
+}
+
 function showConfirmation() {
     const text = commandInput.value.trim();
     if (!text || !activeRoomId) return;
     
     confirmationTargetRoomId = activeRoomId;
+    confirmationTargetText = text;
+    confirmationNonce = "nonce_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+    
+    // Lock text input during confirmation
+    commandInput.readOnly = true;
+    
     confirmationGate.classList.remove("hidden");
     btnPreSend.classList.add("hidden");
+    
+    // Clear any stale feedback
+    const feedbackEl = document.getElementById("send-feedback");
+    if (feedbackEl) {
+        feedbackEl.style.display = "none";
+    }
 }
 
 function hideConfirmation() {
     confirmationTargetRoomId = null;
+    confirmationTargetText = null;
+    confirmationNonce = null;
+    
+    // Unlock input
+    commandInput.readOnly = false;
+    
     confirmationGate.classList.add("hidden");
     btnPreSend.classList.remove("hidden");
+    
+    // Reset buttons state
+    btnConfirmSend.disabled = false;
+    btnCancelSend.disabled = false;
+    
+    const feedbackEl = document.getElementById("send-feedback");
+    if (feedbackEl) {
+        feedbackEl.style.display = "none";
+    }
 }
 
 async function sendDraftedMessage() {
@@ -1121,35 +1166,64 @@ async function sendDraftedMessage() {
     
     // Safety check: ensure active room hasn't changed since confirmation was opened
     if (confirmationTargetRoomId && confirmationTargetRoomId !== activeRoomId) {
-        alert("Active channel changed while drafting message. Please review before sending.");
+        showSendFeedback("Active channel changed while drafting message. Please review before sending.", "error");
+        hideConfirmation();
+        return;
+    }
+    
+    // Safety check: ensure text hasn't changed
+    if (confirmationTargetText && text !== confirmationTargetText) {
+        showSendFeedback("Draft content changed. Please draft and confirm again.", "error");
         hideConfirmation();
         return;
     }
     
     const targetRoomId = confirmationTargetRoomId || activeRoomId;
+    
+    // Prevent double clicks/sends and cancel requests while in-flight
     btnConfirmSend.disabled = true;
+    btnCancelSend.disabled = true;
+    
+    showSendFeedback("Transmitting message to Rocket.Chat...", "success");
     
     try {
         const response = await fetch("/api/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ roomId: targetRoomId, text: text })
+            body: JSON.stringify({ 
+                roomId: targetRoomId, 
+                text: confirmationTargetText, 
+                nonce: confirmationNonce 
+            })
         });
         
-        if (!response.ok) throw new Error("Failed to post message");
         const data = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(data.detail || "Failed to post message");
+        }
         
         if (data.success) {
             commandInput.value = "";
+            commandInput.readOnly = false;
             hideConfirmation();
+            
+            // Display successful send feedback with message ID
+            const msgId = data.msgId || (data.message && data.message._id) || "unknown";
+            showSendFeedback(`Message transmitted successfully. ID: ${msgId}`, "success");
+            
             loadHistory(); // Reload history immediately to see the new message
         } else {
-            alert("Error sending message to Rocket.Chat");
+            showSendFeedback("Error sending message to Rocket.Chat", "error");
+            btnConfirmSend.disabled = false;
+            btnCancelSend.disabled = false;
         }
     } catch (err) {
         console.error("Post message failed:", err);
-        alert("Failed to send message: " + err.message);
-    } finally {
+        showSendFeedback("Failed to send message: " + err.message, "error");
+        
+        // Retain draft and allow retry
         btnConfirmSend.disabled = false;
+        btnCancelSend.disabled = false;
     }
 }

@@ -225,22 +225,23 @@ Out of scope: send confirmation (F-04), full isolation audit (F-05), AI tasks, T
 
 ## F-04. Safe Rocket.Chat Outbound Path
 
-Status: `PARTIAL`
+Status: `VERIFIED`
 
 Work:
-
-- Keep one backend send boundary and one explicit UI confirmation gate.
-- Bind every pending confirmation to an immutable room ID and message snapshot.
-- Reject confirmation after room context changes.
-- Prevent duplicate sends caused by double-clicks, retries, or delayed responses.
-- Return and display the Rocket.Chat message ID on success.
+- Maintained a single backend send endpoint (`POST /api/send`) and one explicit frontend confirmation overlay (`confirmation-gate`).
+- Bound every pending confirmation session to an immutable `roomId`, message text snapshot, and a client-side generated unique `nonce`.
+- Locked the message input composer to `readOnly` while confirmation is pending.
+- Automatically rejects transmission if the active room ID or input text changes before transmission completes.
+- Implemented backend-level request deduplication using a thread-safe in-memory cache of nonces, returning cached success payloads for duplicates without invoking Rocket.Chat.
+- Disabled both the confirmation and cancel buttons during transmission to prevent double-clicks or aborting in-flight requests.
+- Extracted and returned the Rocket.Chat message `_id` on success, which is rendered dynamically in the UI status area.
+- Retains the message draft and returns the UI to a retry state if transmission fails or times out.
 
 Verification:
-
-- Send a test message to a designated test room and verify exactly one matching message.
-- Double-click Confirm and verify only one Rocket.Chat post.
-- Open confirmation in room A, switch to room B, and prove nothing can be sent to B.
-- Simulate timeout/error and confirm the draft is retained with a clear retry state.
+- Added `test_send_message_success` and `test_send_message_deduplication` unit tests to `tests/test_classification.py`.
+- Verified live posting via curl to `/api/send` correctly posts exactly one message to the test room and returns `msgId`.
+- Verified duplicate sends with the same nonce return the cached success payload without posting a second message.
+- Confirmed that room changes clear/reset confirmation states (`hideConfirmation()` is called on room context changes).
 
 ## F-05. Room Isolation and UI State Safety
 

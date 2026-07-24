@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import logging
 import re
@@ -554,7 +555,8 @@ else:
 # Request models
 class MessageSendRequest(BaseModel):
     text: str
-    roomId: Optional[str] = None
+    roomId: str
+    nonce: Optional[str] = None
 
 class DigestRequest(BaseModel):
     messages: List[dict]
@@ -1027,36 +1029,95 @@ async def generate_digest(req: DigestRequest):
         "prior_summary_used": prior_summary_used
     }
 
+# A simple thread-safe in-memory cache for nonces.
+processed_nonces = {}
+processed_nonces_lock = asyncio.Lock()
+
+async def deduplicate_nonce(nonce: str, execute_func):
+    """
+    Checks if a nonce exists. If yes, returns the cached result.
+    Otherwise, executes the function, stores, and returns the result.
+    """
+    async with processed_nonces_lock:
+        now = time.time()
+        # inline expiration check (10 mins)
+        expired = [k for k, v in list(processed_nonces.items()) if now - v[0] > 600]
+        for k in expired:
+            processed_nonces.pop(k, None)
+            
+        if nonce in processed_nonces:
+            val = processed_nonces[nonce][1]
+            if val == "pending":
+                raise HTTPException(status_code=409, detail="Request is already being processed")
+            logger.info(f"Duplicate request detected for nonce: {nonce}. Returning cached response.")
+            return val
+            
+        # Mark as pending
+        processed_nonces[nonce] = (now, "pending")
+        
+    try:
+        res = await execute_func()
+        async with processed_nonces_lock:
+            processed_nonces[nonce] = (time.time(), res)
+        return res
+    except Exception as e:
+        async with processed_nonces_lock:
+            if processed_nonces.get(nonce) and processed_nonces[nonce][1] == "pending":
+                processed_nonces.pop(nonce, None)
+        raise e
+
 @app.post("/api/send")
 async def send_message(req: MessageSendRequest):
-    base_url = get_rc_base_url()
-    headers = {
-        "X-Auth-Token": RC_AUTH_TOKEN,
-        "X-User-Id": RC_USER_ID,
-        "Content-Type": "application/json"
-    }
-    
-    room_id = req.roomId or RC_ROOM_ID
-    payload = {
-        "roomId": room_id,
-        "text": req.text
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(f"{base_url}/api/v1/chat.postMessage", headers=headers, json=payload)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail=f"Rocket.Chat post error: {resp.text}")
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Message text cannot be empty")
+        
+    async def _do_send():
+        base_url = get_rc_base_url()
+        headers = {
+            "X-Auth-Token": RC_AUTH_TOKEN,
+            "X-User-Id": RC_USER_ID,
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "roomId": req.roomId,
+            "text": req.text
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(f"{base_url}/api/v1/chat.postMessage", headers=headers, json=payload)
+                if resp.status_code != 200:
+                    raise HTTPException(status_code=resp.status_code, detail=f"Rocket.Chat post error: {resp.text}")
+                    
+                data = resp.json()
+                if not data.get("success"):
+                    raise HTTPException(status_code=400, detail="Rocket.Chat post message failed")
+                    
+                msg_data = data.get("message", {})
+                msg_id = msg_data.get("_id")
+                return {
+                    "success": True, 
+                    "msgId": msg_id,
+                    "message": msg_data
+                }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Error posting message")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    if req.nonce:
+        async with processed_nonces_lock:
+            if req.nonce in processed_nonces:
+                entry = processed_nonces[req.nonce]
+                if entry[1] == "pending":
+                    raise HTTPException(status_code=409, detail="Request is already being processed")
+                return entry[1]
                 
-            data = resp.json()
-            if not data.get("success"):
-                raise HTTPException(status_code=400, detail="Rocket.Chat post message failed")
-                
-            return {"success": True, "message": data.get("message")}
-            
-    except Exception as e:
-        logger.exception("Error posting message")
-        raise HTTPException(status_code=500, detail=str(e))
+        return await deduplicate_nonce(req.nonce, _do_send)
+    else:
+        return await _do_send()
 
 # Route to serve frontend assets
 @app.get("/")
@@ -1070,3 +1131,7 @@ async def get_css():
 @app.get("/index.js")
 async def get_js():
     return FileResponse("frontend/index.js")
+
+@app.get("/history_state.js")
+async def get_history_state_js():
+    return FileResponse("frontend/history_state.js")
