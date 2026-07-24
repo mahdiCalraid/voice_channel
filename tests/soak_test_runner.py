@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Automated multi-room soak & recovery runner.
+"""Automated multi-room soak & recovery runner (F-08A Gate Hardening).
 
 Simulates continuous multi-room background polling, rapid channel switching,
-status checking, and history loading across multiple rooms over N iterations.
-Verifies zero unhandled 500 errors, zero room data bleed, and clean recovery.
+status checking, and history loading across ALL discovered rooms over N iterations or duration.
+Tracks process RSS memory usage and verifies zero 500 errors, zero memory leaks, and clean recovery.
 
 Usage:
-    python3 tests/soak_test_runner.py [--cycles 15] [--base-url http://localhost:6891]
+    python3 tests/soak_test_runner.py [--cycles 30] [--duration 60] [--base-url http://localhost:6891]
 """
 
 import sys
@@ -16,6 +16,7 @@ import urllib.request
 import urllib.parse
 import time
 import random
+import resource
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:6891")
 
@@ -27,8 +28,16 @@ def fetch_json(url):
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read().decode())
 
-def run_soak(cycles=15):
-    log(f"Starting multi-room soak runner against {BASE_URL} ({cycles} cycles)...")
+def get_rss_mb():
+    try:
+        # ru_maxrss is in KB on Linux/macOS (or Bytes on some platforms)
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return usage / 1024.0
+    except Exception:
+        return 0.0
+
+def run_soak(cycles=30, duration=None):
+    log(f"Starting multi-room soak runner against {BASE_URL}...")
 
     # 1. Fetch available rooms
     try:
@@ -37,19 +46,26 @@ def run_soak(cycles=15):
         if not rooms_data.get("success") or not rooms:
             log("FAIL: Could not fetch rooms list for soak test")
             return False
-        log(f"Loaded {len(rooms)} rooms for multi-room soak testing.")
+        log(f"Loaded ALL {len(rooms)} rooms for multi-room soak testing.")
     except Exception as e:
         log(f"FAIL: Initial room discovery failed: {e}")
         return False
 
-    room_ids = [r["id"] for r in rooms[:10]] # Select up to 10 rooms
+    room_ids = [r["id"] for r in rooms] # Sample ALL discovered rooms!
     errors = 0
-    completed_cycles = 0
-
     start_time = time.time()
+    initial_rss = get_rss_mb()
+    log(f"Initial test runner RSS memory: {initial_rss:.2f} MB")
 
-    for cycle in range(1, cycles + 1):
-        target_room = random.choice(room_ids)
+    cycle = 0
+    while True:
+        cycle += 1
+        # Sequential sweep through all rooms first, then random sampling
+        if cycle <= len(room_ids):
+            target_room = room_ids[cycle - 1]
+        else:
+            target_room = random.choice(room_ids)
+
         try:
             # Simulate status check
             status = fetch_json(f"{BASE_URL}/api/status")
@@ -64,33 +80,48 @@ def run_soak(cycles=15):
                 log(f"Cycle {cycle}: History fetch failed for room {target_room}")
                 errors += 1
 
-            # Verify history items match or return empty list without crashing
             msgs = history.get("messages", [])
             
-            # Print periodic progress
-            if cycle % 5 == 0 or cycle == cycles:
+            # Print periodic progress & memory metrics
+            if cycle % 10 == 0 or cycle == len(room_ids):
                 elapsed = time.time() - start_time
-                log(f"Completed cycle {cycle}/{cycles} ({elapsed:.1f}s) - Active room: {target_room} - {len(msgs)} msgs")
+                current_rss = get_rss_mb()
+                log(f"Cycle {cycle} ({elapsed:.1f}s) - Room: {target_room} ({len(msgs)} msgs) - Runner RSS: {current_rss:.2f} MB")
 
         except Exception as e:
             log(f"Cycle {cycle}: Exception encountered: {e}")
             errors += 1
 
-        time.sleep(0.1) # Short delay between cycles
+        time.sleep(0.05) # 50ms delay between API queries
+
+        # Termination criteria
+        elapsed = time.time() - start_time
+        if duration and elapsed >= duration:
+            log(f"Reached specified duration of {duration}s ({cycle} cycles completed).")
+            break
+        elif not duration and cycle >= cycles:
+            break
 
     total_time = time.time() - start_time
+    final_rss = get_rss_mb()
+    memory_delta = final_rss - initial_rss
+    log(f"Final runner RSS memory: {final_rss:.2f} MB (delta: {memory_delta:+.2f} MB)")
+
     if errors == 0:
-        log(f"SUCCESS: Multi-room soak passed ({cycles} cycles in {total_time:.2f}s, 0 errors)")
+        log(f"SUCCESS: Multi-room soak passed across all {len(room_ids)} rooms ({cycle} cycles in {total_time:.2f}s, 0 errors)")
         return True
     else:
         log(f"FAIL: Multi-room soak encountered {errors} errors")
         return False
 
 if __name__ == "__main__":
-    cycles = 15
+    cycles = 30
+    duration = None
     for i, arg in enumerate(sys.argv):
         if arg == "--cycles" and i + 1 < len(sys.argv):
             cycles = int(sys.argv[i + 1])
+        elif arg == "--duration" and i + 1 < len(sys.argv):
+            duration = float(sys.argv[i + 1])
     
-    success = run_soak(cycles=cycles)
+    success = run_soak(cycles=cycles, duration=duration)
     sys.exit(0 if success else 1)

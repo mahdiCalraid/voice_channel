@@ -291,22 +291,24 @@ Verification:
 - `node --test tests/*.test.js` passes 11 Node test cases cleanly across all test suites.
 - `python3 tests/smoke_live_rocket_chat.py` passes all live endpoints and reports `[SMOKE] SUCCESS`.
 
-## F-08. Foundation Gate
+## F-08 / F-08A. Foundation Gate & Gate Hardening
 
 Status: `VERIFIED`
 
 Work:
 - Verified all tasks F-01 through F-07 (including F-02A, F-03A, F-04, F-05, F-06, and F-07) are complete, tested, and committed with zero `acli/` churn.
-- Created `tests/soak_test_runner.py` providing an automated multi-room soak & recovery runner simulating multi-room background polling, channel switches, status checks, and history queries across 29 live channels.
-- Enhanced `tests/smoke_live_rocket_chat.py` with static asset route verification (`GET /history_state.js` -> 200 OK) and `SMOKE_ROOM_ID` override support.
-- Added `test_soak_runner_unit` to `tests/test_classification.py` to ensure multi-room soak validation runs automatically as part of `python3 -m unittest discover -s tests`.
+- **F-08A Gate Hardening**:
+  - Expanded `tests/soak_test_runner.py` to sample across **all 29 live rooms** and track process RSS memory metrics across cycles.
+  - Enhanced `tests/smoke_live_rocket_chat.py` with `--live-send` verification, confirming live outbound transmission to Rocket.Chat (returning `msgId`) and verifying atomic nonce deduplication on live server.
+  - Added static asset route checks (`GET /history_state.js` -> 200 OK, verifying module export content).
+  - Guarded `test_soak_runner_unit` in `tests/test_classification.py` with a live server reachability check so offline `unittest discover` runs cleanly without external dependencies.
 
 Verification:
-- `python3 -m unittest discover -s tests` passes 29 tests cleanly in 1.4s.
+- `python3 -m unittest discover -s tests` passes 29 tests cleanly in 1.2s.
 - `node --test tests/*.test.js` passes 11 Node test cases cleanly across all test suites.
-- `python3 tests/smoke_live_rocket_chat.py` passes all live endpoints including asset route checks (`[SMOKE] SUCCESS`).
-- `python3 tests/soak_test_runner.py --cycles 20` passes 20 cycles across 29 rooms with 0 errors (`[SOAK] SUCCESS`).
-- Phase 1 Foundation is fully complete and verified. Ready for Phase 2 (Reusable AI Foundation).
+- `python3 tests/smoke_live_rocket_chat.py --live-send` posts a live message, verifies nonce deduplication, and reports `[SMOKE] SUCCESS`.
+- `python3 tests/soak_test_runner.py --cycles 30` sweeps all 29 rooms with zero errors and tracks memory RSS (`[SOAK] SUCCESS`).
+- Phase 1 Foundation is 100% complete, verified, and gated. Clear to proceed to Phase 2 (Reusable AI Foundation).
 
 # Phase 2 - Reusable AI Foundation
 
