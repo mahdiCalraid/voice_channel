@@ -129,6 +129,56 @@ class TestGatewayContracts(unittest.TestCase):
         res2 = GatewayResult.model_validate(data) if hasattr(GatewayResult, "model_validate") else GatewayResult.parse_obj(data)
         self.assertEqual(res, res2)
 
+    def test_confirmation_snapshot_frozen_immutability(self):
+        conf = ConfirmationSnapshot(
+            immutable_interaction_id="int_001",
+            room_id="room_123",
+            agent="codex",
+            exact_message="Original message",
+            expires_at=time.time() + 100.0,
+            nonce="nonce_immutable",
+        )
+        with self.assertRaises((TypeError, ValidationError)):
+            conf.room_id = "hacked_room"
+        with self.assertRaises((TypeError, ValidationError)):
+            conf.exact_message = "Altered message"
+
+    def test_confirmation_expiration_helper(self):
+        now = time.time()
+        conf_future = ConfirmationSnapshot(
+            immutable_interaction_id="int_001",
+            room_id="room_123",
+            agent="codex",
+            exact_message="Future test",
+            expires_at=now + 60.0,
+            nonce="nonce_future",
+        )
+        conf_past = ConfirmationSnapshot(
+            immutable_interaction_id="int_002",
+            room_id="room_123",
+            agent="codex",
+            exact_message="Past test",
+            expires_at=now - 10.0,
+            nonce="nonce_past",
+        )
+        self.assertFalse(conf_future.is_expired(now))
+        self.assertTrue(conf_past.is_expired(now))
+
+    def test_extra_fields_forbidden(self):
+        with self.assertRaises(ValidationError):
+            InteractionRequest(raw_input="Test", unknown_extra_key="bad_val")
+
+        with self.assertRaises(ValidationError):
+            ConfirmationSnapshot(
+                immutable_interaction_id="int_001",
+                room_id="room_123",
+                agent="codex",
+                exact_message="Test message",
+                expires_at=time.time() + 100.0,
+                nonce="nonce_extra",
+                illegal_override_field="evil",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

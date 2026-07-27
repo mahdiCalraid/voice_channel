@@ -11,7 +11,7 @@ import time
 from enum import Enum
 from uuid import uuid4
 from typing import Optional, List, Dict, Any, Set
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, Extra
 
 CURRENT_SCHEMA_VERSION = "1.0"
 SUPPORTED_SCHEMA_VERSIONS: Set[str] = {CURRENT_SCHEMA_VERSION}
@@ -49,7 +49,11 @@ class TaskState(str, Enum):
     SUMMARIZED = "summarized"
     SPOKEN = "spoken"
 
-class InteractionRequest(BaseModel):
+class BaseContractModel(BaseModel):
+    class Config:
+        extra = Extra.forbid
+
+class InteractionRequest(BaseContractModel):
     schema_version: str = Field(default=CURRENT_SCHEMA_VERSION)
     interaction_id: str = Field(default_factory=lambda: f"int_{uuid4().hex[:12]}")
     actor_id: str = Field(default="user")
@@ -70,7 +74,7 @@ class InteractionRequest(BaseModel):
             raise ValueError("raw_input cannot be empty")
         return v
 
-class Interpretation(BaseModel):
+class Interpretation(BaseContractModel):
     schema_version: str = Field(default=CURRENT_SCHEMA_VERSION)
     selected_action: str
     selected_room_id: Optional[str] = None
@@ -86,7 +90,7 @@ class Interpretation(BaseModel):
     def check_schema_version(cls, v: str) -> str:
         return validate_schema_version(v)
 
-class ConfirmationSnapshot(BaseModel):
+class ConfirmationSnapshot(BaseContractModel):
     schema_version: str = Field(default=CURRENT_SCHEMA_VERSION)
     immutable_interaction_id: str
     room_id: str
@@ -95,6 +99,10 @@ class ConfirmationSnapshot(BaseModel):
     permission_tier: PermissionTier = Field(default=PermissionTier.COMMIT)
     expires_at: float
     nonce: str
+
+    class Config:
+        frozen = True
+        extra = Extra.forbid
 
     @validator("schema_version")
     def check_schema_version(cls, v: str) -> str:
@@ -106,14 +114,19 @@ class ConfirmationSnapshot(BaseModel):
             raise ValueError("exact_message cannot be empty")
         return v
 
-class TaskEvent(BaseModel):
+    def is_expired(self, now: Optional[float] = None) -> bool:
+        if now is None:
+            now = time.time()
+        return now >= self.expires_at
+
+class TaskEvent(BaseContractModel):
     event_id: str = Field(default_factory=lambda: f"evt_{uuid4().hex[:12]}")
     interaction_id: str
     timestamp: float = Field(default_factory=time.time)
     state: TaskState
     details: Dict[str, Any] = Field(default_factory=dict)
 
-class GatewayResult(BaseModel):
+class GatewayResult(BaseContractModel):
     schema_version: str = Field(default=CURRENT_SCHEMA_VERSION)
     status: TaskState = Field(default=TaskState.COMPLETED)
     selected_room_id: Optional[str] = None
