@@ -16,10 +16,13 @@ import httpx
 from openai import OpenAI
 from app.contracts import (
     CURRENT_SCHEMA_VERSION,
+    InputMode,
+    PermissionTier,
+    TaskState,
     InteractionRequest,
     Interpretation,
     ConfirmationSnapshot,
-    TaskState,
+    TaskEvent,
     GatewayResult,
 )
 
@@ -1094,6 +1097,150 @@ async def deduplicate_nonce(nonce: str, execute_func):
             if processed_nonces.get(nonce) and processed_nonces[nonce][1] == "pending":
                 processed_nonces.pop(nonce, None)
         raise e
+
+@app.post("/api/gateway/interact", response_model=GatewayResult)
+async def gateway_interact(req: InteractionRequest):
+    """Client-neutral interaction entrypoint.
+    Normalizes text input, selects room/agent, produces an Interpretation,
+    and returns a ConfirmationSnapshot inside GatewayResult.
+    """
+    target_room = req.requested_room_id or RC_ROOM_ID
+    target_agent = req.requested_agent or "codex"
+    
+    interp = Interpretation(
+        schema_version=CURRENT_SCHEMA_VERSION,
+        selected_action="post_message",
+        selected_room_id=target_room,
+        selected_agent=target_agent,
+        refined_draft=req.raw_input.strip(),
+        confidence_score=1.0,
+        requires_clarification=False,
+        audit_explanation="Interaction converted to message post draft.",
+        source_context_ids=[]
+    )
+    
+    expiry = time.time() + 300.0
+    nonce = f"nonce_{req.interaction_id}"
+    
+    conf = ConfirmationSnapshot(
+        schema_version=CURRENT_SCHEMA_VERSION,
+        immutable_interaction_id=req.interaction_id,
+        room_id=target_room,
+        agent=target_agent,
+        exact_message=interp.refined_draft,
+        permission_tier=PermissionTier.COMMIT,
+        expires_at=expiry,
+        nonce=nonce
+    )
+    
+    event = TaskEvent(
+        interaction_id=req.interaction_id,
+        timestamp=time.time(),
+        state=TaskState.AWAITING_CONFIRMATION,
+        details={"room_id": target_room, "agent": target_agent}
+    )
+    
+    interp_dict = interp.model_dump() if hasattr(interp, "model_dump") else interp.dict()
+    conf_dict = conf.model_dump() if hasattr(conf, "model_dump") else conf.dict()
+    
+    return GatewayResult(
+        schema_version=CURRENT_SCHEMA_VERSION,
+        status=TaskState.AWAITING_CONFIRMATION,
+        selected_room_id=target_room,
+        selected_agent=target_agent,
+        task_events=[event],
+        full_response=f"Draft prepared for room {target_room}. Awaiting confirmation.",
+        concise_summary=f"Draft: '{interp.refined_draft}'",
+        provider_metadata={
+            "interpretation": interp_dict,
+            "confirmation_snapshot": conf_dict
+        }
+    )
+
+@app.post("/api/gateway/confirm", response_model=GatewayResult)
+async def gateway_confirm(conf: ConfirmationSnapshot):
+    """Client-neutral confirmation execution entrypoint.
+    Validates confirmation expiration, posts the message to Rocket.Chat,
+    and returns GatewayResult with resulting message ID.
+    """
+    if conf.is_expired():
+        raise HTTPException(status_code=400, detail="Confirmation snapshot has expired")
+        
+    async def _do_send():
+        base_url = get_rc_base_url()
+        headers = {
+            "X-Auth-Token": RC_AUTH_TOKEN,
+            "X-User-Id": RC_USER_ID,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "roomId": conf.room_id,
+            "text": conf.exact_message
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(f"{base_url}/api/v1/chat.postMessage", headers=headers, json=payload)
+                if resp.status_code != 200:
+                    raise HTTPException(status_code=resp.status_code, detail=f"Rocket.Chat post error: {resp.text}")
+                data = resp.json()
+                if not data.get("success"):
+                    raise HTTPException(status_code=400, detail="Rocket.Chat post message failed")
+                msg_data = data.get("message", {})
+                return msg_data.get("_id", "unknown")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Error posting confirmed message")
+            raise HTTPException(status_code=500, detail=str(e))
+            
+    if conf.nonce:
+        async with processed_nonces_lock:
+            if conf.nonce in processed_nonces:
+                entry = processed_nonces[conf.nonce]
+                if entry[1] == "pending":
+                    raise HTTPException(status_code=409, detail="Request is already being processed")
+                res_val = entry[1]
+                msg_id = res_val if isinstance(res_val, str) else (res_val.get("msgId") if isinstance(res_val, dict) else "unknown")
+                event = TaskEvent(
+                    interaction_id=conf.immutable_interaction_id,
+                    timestamp=time.time(),
+                    state=TaskState.POSTED,
+                    details={"msg_id": msg_id, "cached": True}
+                )
+                return GatewayResult(
+                    schema_version=CURRENT_SCHEMA_VERSION,
+                    status=TaskState.POSTED,
+                    selected_room_id=conf.room_id,
+                    selected_agent=conf.agent,
+                    rocket_chat_msg_ids=[msg_id],
+                    task_events=[event],
+                    full_response=f"Message posted successfully (ID: {msg_id})",
+                    concise_summary=f"Posted to {conf.room_id}: {msg_id}"
+                )
+        msg_id = await deduplicate_nonce(conf.nonce, _do_send)
+    else:
+        msg_id = await _do_send()
+
+    if isinstance(msg_id, dict):
+        msg_id = msg_id.get("msgId", "unknown")
+
+    event = TaskEvent(
+        interaction_id=conf.immutable_interaction_id,
+        timestamp=time.time(),
+        state=TaskState.POSTED,
+        details={"msg_id": msg_id}
+    )
+
+    return GatewayResult(
+        schema_version=CURRENT_SCHEMA_VERSION,
+        status=TaskState.POSTED,
+        selected_room_id=conf.room_id,
+        selected_agent=conf.agent,
+        rocket_chat_msg_ids=[msg_id],
+        task_events=[event],
+        full_response=f"Message posted successfully (ID: {msg_id})",
+        concise_summary=f"Posted to {conf.room_id}: {msg_id}"
+    )
 
 @app.post("/api/send")
 async def send_message(req: MessageSendRequest):

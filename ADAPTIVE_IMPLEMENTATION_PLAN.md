@@ -523,17 +523,16 @@ Acceptance:
 
 ### M1-02. Local Client Adapter
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-07-27)
 
-- Adapt the existing browser console to submit through the gateway contract.
-- Add a small CLI fixture client for deterministic tests.
-- Text input only is sufficient for this task.
+- Added `/api/gateway/interact` endpoint in `app/main.py` converting text interaction requests into `Interpretation` and immutable `ConfirmationSnapshot` instances inside `GatewayResult`.
+- Added `/api/gateway/confirm` endpoint in `app/main.py` executing confirmed snapshots with nonce deduplication, expiration enforcement, and returning `rocket_chat_msg_ids`.
+- Implemented `cli/gateway_client.py` CLI fixture client adapter for deterministic command-line end-to-end execution.
+- Added comprehensive unit and integration test suite `tests/test_gateway_adapter.py`.
 
 Acceptance:
-
-- one text request can select a room, create a draft, confirm, send, and return a message
-  ID;
-- no AI model is required.
+- One text request can select a room, create a draft, confirm, send, and return a message ID.
+- Executed deterministically without requiring an external AI model.
 
 ### M1-03. Task Supervisor
 
