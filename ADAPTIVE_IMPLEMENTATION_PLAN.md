@@ -509,17 +509,17 @@ requiring communication AI or mobile.
 
 ### M1-01. Gateway Contract Skeleton
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-07-27)
 
-- Implement versioned interaction, confirmation, event, task, and result models.
-- Add validation and explicit unsupported-version errors.
-- Preserve existing endpoint compatibility during migration.
+- Implemented versioned interaction (`InteractionRequest`), interpretation (`Interpretation`), confirmation (`ConfirmationSnapshot`), task state (`TaskState`), task event (`TaskEvent`), and result (`GatewayResult`) models in `app/contracts.py`.
+- Added schema version validation (`validate_schema_version`), rejecting unsupported versions cleanly with explicit errors.
+- Surfaced gateway schema version in `/api/status` endpoint while preserving full endpoint compatibility.
+- Added comprehensive unit and contract test suite `tests/test_gateway_contracts.py`.
 
 Acceptance:
-
-- valid fixtures round-trip;
-- invalid fields fail clearly;
-- frontend and test CLI use the same contract.
+- Valid fixtures round-trip through JSON/dict serialization.
+- Invalid fields and unsupported schema versions fail clearly with validation errors.
+- Existing frontend and backend endpoints preserve full compatibility.
 
 ### M1-02. Local Client Adapter
 

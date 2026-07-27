@@ -14,6 +14,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import httpx
 from openai import OpenAI
+from app.contracts import (
+    CURRENT_SCHEMA_VERSION,
+    InteractionRequest,
+    Interpretation,
+    ConfirmationSnapshot,
+    TaskState,
+    GatewayResult,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -660,6 +668,7 @@ async def get_status():
         
     return {
         "status": "online",
+        "schema_version": CURRENT_SCHEMA_VERSION,
         "openai_available": openai_client is not None,
         "codex_available": codex_available,
         "active_worker": active_worker,
