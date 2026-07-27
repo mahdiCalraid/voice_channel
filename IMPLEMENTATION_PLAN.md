@@ -1,9 +1,14 @@
-# Voice Channel Implementation Plan
+# Historical Voice Channel UI Implementation Plan
 
 Status updated: 2026-07-26
 
-This is the authoritative execution plan for Voice Channel. It replaces the previous
-mixed historical plan and reorders the work around four strict phases:
+> This file preserves the implementation history and future UI/UX track from
+> `feature/full-screen-voice-console`. On `codex/adaptive-voice-gateway`, the
+> authoritative plan is `ADAPTIVE_IMPLEMENTATION_PLAN.md`.
+
+This was the authoritative execution plan for the original Voice Channel UI direction.
+It replaced the previous mixed historical plan and reordered the work around four strict
+phases:
 
 1. Mechanical foundation
 2. Reusable AI foundation

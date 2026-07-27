@@ -1,60 +1,128 @@
-# Voice Channel Console
+# Adaptive Voice Gateway
 
-An audio-first console and command center for Rocket.Chat channels. It acts as a selective narrator and supervisor interface over agent workspaces.
+A self-hosted, Mac-first communication and supervision layer for Ed's existing
+Rocket.Chat, ACLI, nc2, and local project systems.
 
-## Features
-- **Live Narrator (TTS)**: Fetches recent Rocket.Chat messages, formats them to remove system/markup noise, and summarizes them into an audio digest read aloud using standard browser speech synthesis.
-- **Voice Dictation (STT)**: Allows voice commands and speech-to-text drafting.
-- **Agent Command Hub**: Shortcuts to target specific agents (`@codex`, `@gemini`, `@claude`, `@grok`) with preset or custom commands.
-- **Confirmation Gate**: Any message or command drafted is held in a confirmation container and is only transmitted to Rocket.Chat once manually/verbally approved.
-- **Premium Glassmorphic UI**: Sleek dark interface with animated visualizers and pulsing status chips.
+This branch preserves the original Voice Channel implementation while changing its
+architectural role. Voice Channel is now a client-neutral gateway and future client
+platform, not a replacement for ACLI.
 
-## Directory Structure
+## Current Branch Direction
+
+- Branch: `codex/adaptive-voice-gateway`
+- Original UI branch: `feature/full-screen-voice-console`
+- First priority: complete the local Mac control loop.
+- Second priority: add bounded AI routing, summarization, and suggestions.
+- Third priority: test Omi or a smaller Apple-native mobile client.
+
+Read these documents first:
+
+- `NORTH_STAR.md`
+- `OBJECTIVES.md`
+- `DISCOVERY_RECORD.md`
+- `ADAPTIVE_IMPLEMENTATION_PLAN.md`
+- `PROJECT_HANDOFF.md`
+
+`IMPLEMENTATION_PLAN.md` preserves the original custom UI plan and its verification
+history.
+
+## Stable System Model
+
 ```text
-/Users/ed/King/clawd_2/voice_channel
-├── app/
-│   └── main.py          # FastAPI backend server
-├── frontend/
-│   ├── index.html       # Console user interface
-│   ├── index.css        # Premium styling (glassmorphism/dark mode)
-│   └── index.js         # Audio engines (TTS/STT) & API wiring
-├── Dockerfile           # Builds python service container
-├── docker-compose.yml   # Maps port 6891 & configures host networking
-├── restart.sh           # Executable script to rebuild & restart console
-├── requirements.txt     # Python backend dependencies
-└── README.md            # System documentation
+Mac browser / CLI / future Mac client / Omi / custom iPhone client
+                              |
+                      Adaptive Voice Gateway
+                              |
+          speech + routing + summaries + supervision
+                              |
+                         Rocket.Chat
+                         /         \
+                      ACLI          nc2
+                         \         /
+                   approved local files
 ```
 
-## Getting Started
+- ACLI does the substantive work.
+- Rocket.Chat is the canonical communication transport and transcript.
+- The gateway adds communication intelligence and safety.
+- Clients and model/speech providers remain replaceable.
 
-### 1. Environment Configuration
-The backend retrieves the required environment variables directly from the host system. It uses the following variables (automatically resolved from your shell):
-- `ACLI_RC_URL`: Base Rocket.Chat URL (e.g. `http://localhost:3000`). Inside the Docker container, it automatically maps `localhost` to `host.docker.internal` to bridge to the host machine.
-- `ACLI_RC_USER_ID` / `ACLI_RC_AUTH_TOKEN`: Credentials for `acli_bot` to read history and post messages.
-- `OPENAI_API_KEY`: API key for generating AI digests. If the key is invalid or absent, the console automatically falls back to an elegant rule-based summary generator.
+## Existing Features
 
-### 2. Launching or Restarting the Server
-To start or update the server after any code modification, run the restart helper script from the root workspace:
+- Rocket.Chat health and room discovery.
+- Paginated room history with deduplication.
+- Per-room state isolation.
+- ACLI routing and operational event classification.
+- Confirmation-gated message sending.
+- Nonce-based duplicate prevention.
+- Digest generation with provider failure fallback.
+- Browser speech playback and basic speech input.
+- Draft and interruption recovery.
+- Python, Node, live smoke, and soak tests.
+
+## Directory Structure
+
+```text
+app/
+  main.py                     FastAPI backend
+frontend/
+  index.html                  Existing Mac browser client
+  index.css
+  index.js
+  history_state.js
+workers/
+  run_worker.py               Current AI worker runner
+  registry.json
+  providers/
+tests/
+  Python and Node test suites
+acli/
+  Runtime matter/session data; exclude churn from product commits
+```
+
+## Local Development
+
+The existing service can be built and started with:
 
 ```bash
 ./restart.sh
 ```
 
-This script:
-1. Stops any running instances of the console.
-2. Rebuilds the Docker image to include any backend or frontend updates.
-3. Launches the container in the background, listening on **port 6891**.
-4. Provides a link to access the app and instructions for viewing logs.
+It listens on port `6891`.
 
-### 3. Monitoring Server Logs
-To watch the backend application logs in real-time, run:
+Run the automated suites with:
 
 ```bash
-docker-compose logs -f
+python3 -m unittest discover -s tests
+node --test tests/*.test.js
 ```
 
-## API Endpoints
-- `GET /api/status`: Returns status of backend server, OpenAI client, and the connection status to Rocket.Chat.
-- `GET /api/history?count=N`: Fetches the last `N` messages from `#voice_channel`, filtering out system messages and formatting text.
-- `POST /api/digest`: Generates an audio-optimized digest of the messages (Markdown-free, concise narration) utilizing OpenAI or rule-based fallback.
-- `POST /api/send`: Posts a drafted message/command to `#voice_channel`.
+Live Rocket.Chat checks remain opt-in and require the local services and credentials:
+
+```bash
+python3 tests/smoke_live_rocket_chat.py
+python3 tests/soak_test_runner.py --cycles 30
+```
+
+## Configuration
+
+The Docker wrapper maps these host variables into the backend:
+
+- `ACLI_RC_URL`
+- `ACLI_RC_USER`
+- `ACLI_RC_USER_ID`
+- `ACLI_RC_AUTH_TOKEN`
+- `OPENAI_API_KEY`
+- `VC_WORKER`
+
+Do not commit credentials. The existing default Rocket.Chat token in
+`docker-compose.yml` is a known security issue and must be removed and rotated before
+remote exposure.
+
+## Current Milestone
+
+Phase 0 establishes the adaptive direction and documentation. The next implementation
+task is `M1-01 Gateway Contract Skeleton`.
+
+Mobile development, Cloudflare exposure, continuous audio, and Omi integration are
+deliberately deferred until the local Mac gate passes.

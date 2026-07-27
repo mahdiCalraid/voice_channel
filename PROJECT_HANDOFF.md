@@ -1,46 +1,95 @@
-# Project Handoff: Voice Channel
+# Project Handoff: Adaptive Voice Gateway
 
-## Starting Point
-This matter exists to replace the earlier video-call direction with a simpler voice-first channel workflow.
+Updated: 2026-07-27
 
-The previous attempt lives at `/Users/ed/King/clawd_2/video_call`. Its useful artifacts are the problem framing and Rocket.Chat bridge ideas. Its risky pattern is the LiveKit-heavy video-room implementation path.
+## Current Direction
 
-## Current Setup Completed
-- Created Rocket.Chat channel `#voice_channel`.
-- Invited `ed`, `acli_bot`, and all ACLI agent users.
-- Initialized ACLI matter files under `/Users/ed/King/clawd_2/voice_channel/acli`.
-- Documented the North Star and objectives for future agents.
-- Registered the matter with the ACLI runtime registry.
-- Restarted the local ACLI daemon so it resolves and listens to `#voice_channel`.
+This branch is an adaptive fork of the Voice Channel project.
 
-## Agents In This Matter
-- `gemini`
-- `agy`
-- `codex`
-- `claude`
-- `pplx`
-- `cursor`
-- `grok`
+The previous branch remains available for completion of the custom three-pane UI:
 
-## Recommended Next Work
-1. Verify ACLI daemon sees the new matter.
-2. Send a short test mention in `#voice_channel` and confirm one agent replies.
-3. Build a minimal Rocket.Chat history reader for this channel.
-4. Build a local digest generator over recent messages.
-5. Add simple TTS playback.
-6. Only then evaluate OpenAI Realtime, Gemini Live, Pipecat, LiveKit, or ElevenLabs for the interactive layer.
+`feature/full-screen-voice-console`
 
-## Guardrails
-- Keep Rocket.Chat as the source of truth.
-- Keep writes confirmation-gated.
-- Avoid a video-call architecture until the audio-only path is useful.
-- Avoid making LiveKit a required dependency for milestone 1.
-- Prefer a small working loop over a polished media experience.
+The current checked-out branch is:
 
-## Known Setup Incident
-During initial daemon restart, Rocket.Chat membership system events (`t: "au"`) were briefly routed as default Codex requests because the ACLI poller did not ignore system messages. The local queue was cleared, the `voice_channel` poll cursor was anchored past those setup messages, and the poller was patched to mark system events processed without routing them.
+`codex/adaptive-voice-gateway`
 
-## Useful Context From The Current Discussion
-Ed wants the channels to feel more interactive and faster to work with: he wants to sit with the agents, interview them, talk through research, hear summaries, and avoid manually selecting text to read aloud.
+The fork reuses the tested Rocket.Chat foundation but changes the priority:
 
-The strongest current recommendation is an audio-first Rocket.Chat voice console: start with narration and command routing, then add realtime speech once the channel tools are stable.
+1. Complete the local Mac mechanics.
+2. Add small communication AI.
+3. Harden a client-neutral gateway.
+4. Test Omi or another mobile client later.
+
+## System Roles
+
+- ACLI at `/Users/ed/King/clawd_2/development_channel` is the primary worker dispatch
+  and execution system.
+- Rocket.Chat at `/Users/ed/King/clawd_2/rc` is the communication terminal and durable
+  operational transcript.
+- nc2 at `/Users/ed/King/clawd_2/nc2` is a smaller secondary agent and memory system.
+- Voice Gateway is the bounded communication, speech, routing, summarization, and
+  supervision layer.
+- Omi, a custom iPhone application, the existing browser UI, and future clients are
+  replaceable adapters.
+
+## Existing Foundation to Preserve
+
+- Rocket.Chat status and room discovery.
+- Cursor-based history paging and message deduplication.
+- Per-room frontend state and room-switch isolation.
+- Confirmation-bound sends.
+- Nonce/idempotency duplicate prevention.
+- ACLI routing and operational event classification.
+- Digest generation and deterministic fallback.
+- Draft persistence and interruption recovery.
+- Python and Node test harnesses.
+- Live smoke and soak scripts.
+
+## Phase 0 Artifacts
+
+- `NORTH_STAR.md`: mission and architectural guardrails.
+- `OBJECTIVES.md`: scoped product, engineering, privacy, Mac, AI, and mobile objectives.
+- `DISCOVERY_RECORD.md`: the complete substantive discovery conversation.
+- `ADAPTIVE_IMPLEMENTATION_PLAN.md`: authoritative adaptive plan, interfaces, tools,
+  limitations, tests, gates, and pivot paths.
+- `IMPLEMENTATION_PLAN.md`: preserved historical UI plan.
+
+## Immediate Next Task
+
+After Phase 0 verification, implement `M1-01 Gateway Contract Skeleton` from
+`ADAPTIVE_IMPLEMENTATION_PLAN.md`.
+
+Do not start mobile work yet. The first release must be useful on the Mac.
+
+## Critical Security Action
+
+`docker-compose.yml` contains a Rocket.Chat authentication token as a default value.
+Before the service is remotely exposed:
+
+1. Remove the committed default.
+2. Rotate/revoke the credential.
+3. Require secret injection.
+4. Verify no credential is present in client bundles, logs, or repository history used
+   for distribution.
+
+## Product Commit Rule
+
+Do not include ACLI runtime churn in product commits, including:
+
+- routing and transcript logs;
+- session files;
+- generated summary history;
+- inbox screenshots;
+- temporary jobs and scratch output.
+
+These files may be active and user-owned. Preserve them unless Ed explicitly requests a
+separate cleanup.
+
+## Gate Philosophy
+
+- A passing unit test is not a live integration test.
+- A successful Omi demo is not proof of self-hosting.
+- A model response is not proof of correct routing.
+- A mobile build is not proof of acceptable background reliability.
+- Every claim must identify the test, environment, and remaining limitation.

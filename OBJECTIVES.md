@@ -1,53 +1,109 @@
-# Voice Channel Objectives
+# Adaptive Voice Gateway Objectives
 
 ## Immediate Objective
-Create a dedicated Rocket.Chat-backed matter named `voice_channel` at `/Users/ed/King/clawd_2/voice_channel` for gradual research and implementation of a voice interface over agent channels.
 
-## Current Channel Contract
-- Local folder: `/Users/ed/King/clawd_2/voice_channel`
-- Rocket.Chat channel: `#voice_channel`
-- Rocket.Chat room ID: `6a54579eb53b70a1d1b5bb94`
-- Main user: `ed`
-- Dispatcher/bot: `acli_bot`
-- Active agents: `gemini`, `agy`, `codex`, `claude`, `pplx`, `cursor`, `grok`
+Establish an adaptive fork of Voice Channel that reuses the verified Rocket.Chat
+foundation while changing the development priority to:
+
+1. a complete local Mac control loop;
+2. bounded communication intelligence;
+3. optional mobile clients after the gateway contract is stable.
+
+## System Context
+
+- Working folder: `/Users/ed/King/clawd_2/voice_channel`
+- Original UI branch: `feature/full-screen-voice-console`
+- Adaptive fork branch: `codex/adaptive-voice-gateway`
+- ACLI implementation: `/Users/ed/King/clawd_2/development_channel`
+- Rocket.Chat implementation: `/Users/ed/King/clawd_2/rc`
+- nc2 implementation: `/Users/ed/King/clawd_2/nc2`
+- Primary Rocket.Chat matter: `#voice_channel`
 
 ## Product Objectives
-1. Build a lightweight narrator for selected Rocket.Chat updates.
-2. Build a voice command interface for channel summaries and agent interviews.
-3. Support interrupt, pause, repeat, slower/faster, skip, and switch-channel controls.
-4. Allow spoken or typed draft replies with explicit confirmation before posting.
-5. Preserve Rocket.Chat as the canonical transcript and audit trail.
-6. Keep the system useful without requiring a full video-call interface.
 
-## Research Objectives
-1. Compare OpenAI Realtime API, Gemini Live, Pipecat, LiveKit, ElevenLabs, and browser-native speech APIs for this specific use case.
-2. Prototype the smallest reliable local narrator before any full realtime voice-agent integration.
-3. Identify where LiveKit is genuinely useful and where it adds unnecessary complexity.
-4. Define a stable Rocket.Chat tool surface for room history, summaries, agent prompts, and message posting.
-5. Evaluate cost, latency, interruption handling, privacy, and operational reliability.
+1. Provide one client-neutral gateway for Mac, CLI, web, Omi, Apple-native, and future
+   clients.
+2. Reuse Rocket.Chat as the canonical communication and agent-event transport.
+3. Reuse ACLI as the primary dispatch and execution engine.
+4. Make natural voice or text requests safe to route to the correct room and worker.
+5. Track several concurrent requests without mixing their state or responses.
+6. Summarize long replies and operational events into grounded spoken updates.
+7. Produce optional follow-up suggestions and editable drafts.
+8. Preserve explicit confirmation for consequential Rocket.Chat writes.
+9. Keep the system useful when speech or AI providers are unavailable.
+
+## Mac-First Objectives
+
+1. Run the gateway and primary client locally on Ed's Mac.
+2. Support local text input before speech.
+3. Support replaceable local or API-backed STT and TTS.
+4. Provide task status, interruption, cancellation, repeat, full-response, and summary
+   controls.
+5. Avoid requiring an Omi, Vellum, or other hosted account.
+
+## Small-AI Objectives
+
+1. Define structured routing output rather than accepting free-form model guesses.
+2. Record confidence, alternatives, and reasons for ambiguous routing.
+3. Ground summaries in explicit Rocket.Chat message IDs and task events.
+4. Keep room and project context isolated.
+5. Preserve the original user meaning when refining a command.
+6. Never let suggestion generation invoke or send an action.
+7. Allow OpenAI or another API initially while preserving local-provider adapters.
+
+## Mobile Objectives
+
+1. Begin only after the local Mac and gateway gates pass.
+2. Test an Omi-derived client against the self-hosted gateway.
+3. Require the client to work without Omi-hosted conversation storage.
+4. Prefer Apple on-device STT and TTS for the first iPhone experiment.
+5. Retain the option to build a smaller Swift/Flutter client if Omi is too coupled,
+   unreliable, heavy, or difficult to distribute.
+6. Keep the same gateway API and task semantics regardless of the selected client.
+
+## Privacy and Security Objectives
+
+1. Keep durable history and state on Ed-controlled systems.
+2. Store no raw audio by default.
+3. Keep Rocket.Chat, model, and provider credentials off mobile clients.
+4. Pair remote devices and issue revocable, scoped credentials.
+5. Expose only the gateway through the remote-access layer.
+6. Audit reads, drafts, confirmations, sends, cancellations, and privileged actions.
+7. Enforce allowlisted rooms, folders, and tool permissions.
+8. Test that vendor domains can be blocked without breaking the self-hosted core.
 
 ## Engineering Objectives
-1. Read Rocket.Chat through official REST or realtime APIs.
-2. Avoid scraping the Rocket.Chat UI.
-3. Keep raw audio out of durable storage unless explicitly needed.
-4. Keep all outgoing Rocket.Chat writes confirmation-gated.
-5. Make the local dev flow startable with a clear command and health check.
-6. Add tests around room lookup, history reads, deduplication, summarization prompts, and confirmed message sends.
 
-## Non-Goals For The First Milestone
-- No video conference UI.
-- No agent avatar/video presence.
-- No required LiveKit dependency.
-- No phone/SIP support.
-- No automatic posting to Rocket.Chat without confirmation.
-- No broad refactor of existing ACLI or NemoClaw systems.
+1. Create explicit interfaces for clients, speech providers, edge-AI tasks, Rocket.Chat,
+   and persistence.
+2. Use versioned request, event, task, and result contracts.
+3. Make long-running work observable and cancellable.
+4. Use idempotency keys and immutable confirmation snapshots for writes.
+5. Add deterministic unit, contract, integration, privacy, recovery, and live tests.
+6. Keep ACLI runtime logs, sessions, inbox artifacts, and generated summaries out of
+   product commits.
 
-## First Milestone
-Build a text-driven voice-console skeleton:
-1. List target rooms.
-2. Fetch recent messages.
-3. Produce a concise digest.
-4. Read the digest aloud using a simple TTS path.
-5. Accept basic controls: pause, repeat, skip, summarize, ask agent, draft reply.
+## Non-Goals
 
-Only after this works should realtime speech-to-speech be introduced.
+- Reimplement ACLI workers inside the gateway.
+- Replace Rocket.Chat as the durable operational transcript.
+- Create a new general-purpose personal-memory platform.
+- Adopt all Omi, Vellum, EverOS, or Fabric features.
+- Make a wearable or phone application the first milestone.
+- Require continuous ambient recording.
+- Store raw audio or full duplicated transcripts without an explicit retention policy.
+- Allow unconfirmed posting or unrestricted remote shell execution.
+
+## Phase 0 Completion Criteria
+
+Phase 0 is complete when:
+
+- the adaptive branch exists and is checked out;
+- the prior UI branch remains intact;
+- the new North Star and objectives are documented;
+- the discovery conversation and decisions are recorded;
+- the adaptive implementation plan defines phases, pivot points, tests, and acceptance
+  criteria;
+- documentation names known technical limitations and unresolved decisions;
+- existing automated tests still pass;
+- no unrelated ACLI runtime artifacts are included in the Phase 0 product changes.
