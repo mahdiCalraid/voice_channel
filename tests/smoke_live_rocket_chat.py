@@ -6,6 +6,8 @@ fetches channel history, and tests nonce deduplication without requiring manual 
 
 Usage:
     python3 tests/smoke_live_rocket_chat.py [--live-send]
+
+Set SMOKE_ROOM_ID before using --live-send. Read-only smoke may use the first room.
 """
 
 import sys
@@ -20,23 +22,35 @@ BASE_URL = os.environ.get("BASE_URL", "http://localhost:6891")
 def log(msg):
     print(f"[SMOKE] {msg}")
 
+
+def fetch_json_when_ready(url, attempts=10, delay=0.5):
+    """Wait briefly for the container after a restart without hiding persistent failure."""
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url), timeout=5) as response:
+                return json.loads(response.read().decode())
+        except Exception as error:
+            last_error = error
+            if attempt < attempts:
+                time.sleep(delay)
+    raise last_error
+
 def run_smoke_test(allow_live_send=False):
     log(f"Starting live Rocket.Chat integration smoke test against {BASE_URL}...")
     
     # Step 1: Health / Status & Asset Route Check
     status_url = f"{BASE_URL}/api/status"
     try:
-        req = urllib.request.Request(status_url)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            if data.get("status") != "online":
-                log(f"FAIL: App status is '{data.get('status')}', expected 'online'")
-                return False
-            rc_status = data.get("rocket_chat", {}).get("status")
-            if rc_status != "connected":
-                log(f"FAIL: Rocket.Chat status is '{rc_status}', expected 'connected'")
-                return False
-            log(f"PASS: App online & Rocket.Chat connected (user: {data.get('rocket_chat', {}).get('user')})")
+        data = fetch_json_when_ready(status_url)
+        if data.get("status") != "online":
+            log(f"FAIL: App status is '{data.get('status')}', expected 'online'")
+            return False
+        rc_status = data.get("rocket_chat", {}).get("status")
+        if rc_status != "connected":
+            log(f"FAIL: Rocket.Chat status is '{rc_status}', expected 'connected'")
+            return False
+        log(f"PASS: App online & Rocket.Chat connected (user: {data.get('rocket_chat', {}).get('user')})")
     except Exception as e:
         log(f"FAIL: Health check request failed: {e}")
         return False
@@ -61,6 +75,9 @@ def run_smoke_test(allow_live_send=False):
     # Step 2: Room Discovery Check
     rooms_url = f"{BASE_URL}/api/rooms"
     target_room_id = os.environ.get("SMOKE_ROOM_ID")
+    if allow_live_send and not target_room_id:
+        log("FAIL: SMOKE_ROOM_ID is required when --live-send is used")
+        return False
     try:
         with urllib.request.urlopen(urllib.request.Request(rooms_url), timeout=5) as resp:
             data = json.loads(resp.read().decode())

@@ -579,7 +579,7 @@ class TestMessageClassification(unittest.TestCase):
         except Exception:
             self.skipTest("Live server offline; skipping live soak unit assertion")
 
-        success = run_soak(cycles=3)
+        success = run_soak(cycles=3, interval=0)
         self.assertTrue(success)
 
 if __name__ == '__main__':

@@ -1,6 +1,6 @@
 # Voice Channel Implementation Plan
 
-Status updated: 2026-07-20
+Status updated: 2026-07-26
 
 This is the authoritative execution plan for Voice Channel. It replaces the previous
 mixed historical plan and reorders the work around four strict phases:
@@ -12,7 +12,8 @@ mixed historical plan and reorders the work around four strict phases:
 
 Work proceeds one numbered task at a time. A task is not complete when code exists; it
 is complete only after its verification checklist passes and the result is committed.
-No work from a later phase starts until the current phase gate passes.
+No work from a later phase starts until the current phase gate passes, unless Ed explicitly
+accepts a documented residual risk and records that decision in this plan.
 
 ## 1. Product Direction
 
@@ -293,12 +294,12 @@ Verification:
 
 ## F-08 / F-08A. Foundation Gate & Gate Hardening
 
-Status: `VERIFIED`
+Status: `PARTIAL` (API smoke and short all-room hammer verified; not an endurance or browser gate)
 
 Work:
 - Verified all tasks F-01 through F-07 (including F-02A, F-03A, F-04, F-05, F-06, and F-07) are complete, tested, and committed with zero `acli/` churn.
 - **F-08A Gate Hardening**:
-  - Expanded `tests/soak_test_runner.py` to sample across **all 29 live rooms** and track process RSS memory metrics across cycles.
+  - Expanded `tests/soak_test_runner.py` to sample across all discovered rooms.
   - Enhanced `tests/smoke_live_rocket_chat.py` with `--live-send` verification, confirming live outbound transmission to Rocket.Chat (returning `msgId`) and verifying atomic nonce deduplication on live server.
   - Added static asset route checks (`GET /history_state.js` -> 200 OK, verifying module export content).
   - Guarded `test_soak_runner_unit` in `tests/test_classification.py` with a live server reachability check so offline `unittest discover` runs cleanly without external dependencies.
@@ -307,8 +308,73 @@ Verification:
 - `python3 -m unittest discover -s tests` passes 29 tests cleanly in 1.2s.
 - `node --test tests/*.test.js` passes 11 Node test cases cleanly across all test suites.
 - `python3 tests/smoke_live_rocket_chat.py --live-send` posts a live message, verifies nonce deduplication, and reports `[SMOKE] SUCCESS`.
-- `python3 tests/soak_test_runner.py --cycles 30` sweeps all 29 rooms with zero errors and tracks memory RSS (`[SOAK] SUCCESS`).
-- Phase 1 Foundation is 100% complete, verified, and gated. Clear to proceed to Phase 2 (Reusable AI Foundation).
+- `python3 tests/soak_test_runner.py --cycles 30` completed a short API-level multi-room hammer with no errors.
+- The existing check does not prove a 60-minute run, browser state isolation, backend restart recovery, or absence of application memory leaks.
+
+## F-08B. Foundation Gate Evidence Correction
+
+Status: `VERIFIED` (evidence corrected; browser endurance is separated into F-09)
+
+Purpose: correct F-08A's unsupported gate claims and collect only evidence the tools can
+actually provide. This task does not reopen the working F-01 through F-07 product changes.
+
+Work:
+
+- Rename the soak runner's contract to an API multi-room hammer and validate app/RC health,
+  requested-room identity, and chronological history responses.
+- Remove test-runner `ru_maxrss` from gate evidence. When explicitly given a Docker container,
+  record its RSS as observational telemetry only; do not claim leak-free operation from a short run.
+- Keep live outbound smoke opt-in and require `SMOKE_ROOM_ID` for any deliberate live-send run.
+- Correct Phase 1 status language so API evidence is not represented as browser endurance proof.
+- Run one restart followed by read-only smoke and an all-room API hammer in this execution.
+
+Verification:
+
+- `python3 -m unittest discover -s tests` and `node --test tests/*.test.js` pass.
+- `./restart.sh` followed by `python3 tests/smoke_live_rocket_chat.py` passes.
+- `python3 tests/soak_test_runner.py --cycles 30 --container voice-channel-console` passes
+  with all discovered rooms exercised at least once.
+- The plan distinguishes an API hammer from browser endurance and makes no zero-leak claim.
+
+Recorded verification:
+
+- Restarted the Docker service with `./restart.sh`; the smoke test now waits for bounded
+  service readiness instead of racing the server startup.
+- Read-only `python3 tests/smoke_live_rocket_chat.py` passed after restart.
+- `python3 tests/soak_test_runner.py --cycles 30 --interval 0 --container voice-channel-console`
+  passed across all 29 discovered rooms. Its Docker RSS output is explicitly observational.
+
+Phase 1 decision after this task:
+
+- The mechanical foundation is suitable for daily use and for Phase 2 work.
+- It is not a fully proven browser-endurance gate. That remaining work is F-09.
+
+## F-09. Browser Endurance and Race Gate
+
+Status: `NOT STARTED`
+
+Purpose: obtain the browser-level evidence that the Node VM and API hammer cannot provide.
+This is a hardening task, not a prerequisite for the already working AI foundation unless Ed
+chooses to require a fully proven browser-endurance gate before Phase 2.
+
+Work:
+
+- Establish a real browser-E2E harness (for example Playwright against the local console),
+  or record the concrete browser-driver blocker without substituting VM tests.
+- Exercise repeated room switching, load-older prepend, polling while scrolled up, narrator
+  toggle, and confirmation-room binding in a real viewport.
+- Run a timed browser session of at least 15 minutes while recording browser console errors
+  and app/container RSS observations. RSS is diagnostic only unless a justified threshold is
+  separately defined.
+- Restart the backend once during the browser session and prove that the UI preserves the
+  last transcript, reconnects, and resumes polling without stale-room rendering.
+
+Verification:
+
+- Browser test artifacts identify the driver, command, duration, selected rooms, and result.
+- No uncaught browser console errors; transcript remains bound to the selected room after
+  switching and restart recovery.
+- Any remaining limitation is recorded as an accepted residual risk, not labeled `VERIFIED`.
 
 # Phase 2 - Reusable AI Foundation
 
@@ -651,9 +717,14 @@ commit it, use it in daily work, and only then select the next capability.
 4. **F-05 — Room Isolation and UI State Safety** (VERIFIED 2026-07-23)
 5. **F-06 — Interruption and Recovery** (VERIFIED 2026-07-23)
 6. **F-07 — Foundation Test Harness** (VERIFIED 2026-07-23)
-7. **F-08 — Foundation Gate** (VERIFIED 2026-07-24)
+7. **F-08 / F-08A — Foundation Gate** (PARTIAL: API smoke and short hammer only)
+8. **F-08B — Foundation Gate Evidence Correction** (VERIFIED: tooling and wording corrected)
+9. **F-09 — Browser Endurance and Race Gate** (NOT STARTED)
 
-All Phase 1 tasks (F-01 through F-08) are fully `VERIFIED` and committed. Phase 1 is officially COMPLETE. The workspace is clear to proceed to **Phase 2: Reusable AI Foundation** (AI-01).
+F-01 through F-07 and F-08B are `VERIFIED`. F-08/F-08A supplied useful API-level gate
+tooling but did not prove the written endurance/browser claims. F-09 contains that separate
+browser hardening work. Phase 2 may proceed with this documented residual risk, or Ed may
+require F-09 before beginning AI-01.
 
 ### Coalesced actionable checklist (short form)
 
@@ -665,4 +736,6 @@ All Phase 1 tasks (F-01 through F-08) are fully `VERIFIED` and committed. Phase 
 | F-05 | Room isolation: bind history, stats, digest, sources, playback, drafts, and confirmations to room-scoped state. Cancel stale requests. Clear visual state atomically. Preserve scroll. | VERIFIED (drafts, digests, sources, stats, scroll restored cleanly without bleed across room switch) |
 | F-06 | Interruption recovery: draft persistence to localStorage, timeout & orphan job_dir cleanup, transcript preservation on outage | VERIFIED (subprocess timeout test, draft persistence node test, startup job_dir cleanup) |
 | F-07 | Foundation test harness: single unified test runner, globbed Node state tests, live Rocket.Chat smoke script | VERIFIED (python unittest discovers 29 tests; node runs 11 tests; smoke_live_rocket_chat.py reports PASS) |
-| F-08 | Foundation Gate: 60-min / 20-cycle multi-room soak runner, static asset route verification, zero memory leaks / polling death | VERIFIED (soak_test_runner.py passes 20 cycles across 29 rooms; Phase 1 complete) |
+| F-08 / F-08A | Foundation Gate: static asset route, opt-in live-send smoke, and short API multi-room hammer | PARTIAL (useful API evidence; it is not a 60-minute browser or memory-leak gate) |
+| F-08B | Correct gate evidence, run restart + smoke + all-room API hammer, and record the remaining browser/endurance risk | VERIFIED (API hammer truthful; restart + smoke passed) |
+| F-09 | Real-browser 15-minute endurance, room-race, viewport, and restart-recovery proof | NOT STARTED |

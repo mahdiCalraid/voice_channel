@@ -1,127 +1,167 @@
 #!/usr/bin/env python3
-"""Automated multi-room soak & recovery runner (F-08A Gate Hardening).
+"""Rocket.Chat API multi-room hammer.
 
-Simulates continuous multi-room background polling, rapid channel switching,
-status checking, and history loading across ALL discovered rooms over N iterations or duration.
-Tracks process RSS memory usage and verifies zero 500 errors, zero memory leaks, and clean recovery.
+This is a live API regression check, not a browser endurance or memory-leak test. It
+checks that the console stays online and returns correctly scoped, chronological
+history while cycling through every discovered Rocket.Chat room.
+
+Optional container RSS snapshots are observational only. They are never treated as
+proof that the application is leak-free.
 
 Usage:
-    python3 tests/soak_test_runner.py [--cycles 30] [--duration 60] [--base-url http://localhost:6891]
+    python3 tests/soak_test_runner.py --cycles 30
+    python3 tests/soak_test_runner.py --duration 900 --interval 1
+    python3 tests/soak_test_runner.py --container voice-channel-console
 """
 
-import sys
-import os
+import argparse
 import json
-import urllib.request
-import urllib.parse
-import time
+import os
 import random
-import resource
+import re
+import subprocess
+import time
+import urllib.parse
+import urllib.request
+
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:6891")
 
-def log(msg):
-    print(f"[SOAK] {msg}")
+
+def log(message):
+    print(f"[SOAK] {message}")
+
 
 def fetch_json(url):
-    req = urllib.request.Request(url)
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read().decode())
+    request = urllib.request.Request(url)
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read().decode())
 
-def get_rss_mb():
+
+def container_rss_bytes(container):
+    """Return the Docker container's current memory use when Docker is available."""
+    if not container:
+        return None
     try:
-        # ru_maxrss is in KB on Linux/macOS (or Bytes on some platforms)
-        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        return usage / 1024.0
-    except Exception:
-        return 0.0
+        result = subprocess.run(
+            ["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", container],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        usage = result.stdout.strip().split(" / ", 1)[0]
+        units = {"b": 1, "kib": 1024, "mib": 1024**2, "gib": 1024**3}
+        match = re.fullmatch(r"([0-9.]+)\s*(B|KiB|MiB|GiB)", usage)
+        if not match:
+            return None
+        number, unit = match.groups()
+        return int(float(number) * units[unit.lower()])
+    except (FileNotFoundError, IndexError, KeyError, subprocess.SubprocessError, ValueError):
+        return None
 
-def run_soak(cycles=30, duration=None):
-    log(f"Starting multi-room soak runner against {BASE_URL}...")
 
-    # 1. Fetch available rooms
+def format_bytes(value):
+    if value is None:
+        return "unavailable"
+    return f"{value / (1024 ** 2):.1f} MiB"
+
+
+def history_is_chronological(messages):
+    timestamps = [message.get("timestamp", "") for message in messages]
+    return timestamps == sorted(timestamps)
+
+
+def run_soak(cycles=30, duration=None, interval=1.0, container=None):
+    """Run the API hammer and return True only when all checked API invariants hold."""
+    log(f"Starting API multi-room hammer against {BASE_URL}...")
     try:
         rooms_data = fetch_json(f"{BASE_URL}/api/rooms")
         rooms = rooms_data.get("rooms", [])
         if not rooms_data.get("success") or not rooms:
-            log("FAIL: Could not fetch rooms list for soak test")
+            log("FAIL: Could not fetch rooms list")
             return False
-        log(f"Loaded ALL {len(rooms)} rooms for multi-room soak testing.")
-    except Exception as e:
-        log(f"FAIL: Initial room discovery failed: {e}")
+    except Exception as error:
+        log(f"FAIL: Initial room discovery failed: {error}")
         return False
 
-    room_ids = [r["id"] for r in rooms] # Sample ALL discovered rooms!
+    room_ids = [room["id"] for room in rooms]
     errors = 0
-    start_time = time.time()
-    initial_rss = get_rss_mb()
-    log(f"Initial test runner RSS memory: {initial_rss:.2f} MB")
-
     cycle = 0
+    start_time = time.monotonic()
+    initial_container_rss = container_rss_bytes(container)
+    if container:
+        log(f"Container RSS at start: {format_bytes(initial_container_rss)} (observational only)")
+    log(f"Loaded {len(room_ids)} rooms; this check exercises API responses, not browser UI state.")
+
     while True:
         cycle += 1
-        # Sequential sweep through all rooms first, then random sampling
-        if cycle <= len(room_ids):
-            target_room = room_ids[cycle - 1]
-        else:
-            target_room = random.choice(room_ids)
-
+        target_room = room_ids[(cycle - 1) % len(room_ids)] if cycle <= len(room_ids) else random.choice(room_ids)
         try:
-            # Simulate status check
             status = fetch_json(f"{BASE_URL}/api/status")
-            if status.get("status") != "online":
-                log(f"Cycle {cycle}: App status abnormal: {status.get('status')}")
+            if status.get("status") != "online" or status.get("rocket_chat", {}).get("status") != "connected":
+                log(f"Cycle {cycle}: unhealthy status response")
                 errors += 1
 
-            # Simulate history query for selected room
-            hist_url = f"{BASE_URL}/api/history?roomId={urllib.parse.quote(target_room)}&count=20"
-            history = fetch_json(hist_url)
-            if not history.get("success"):
-                log(f"Cycle {cycle}: History fetch failed for room {target_room}")
+            history_url = f"{BASE_URL}/api/history?roomId={urllib.parse.quote(target_room)}&count=20"
+            history = fetch_json(history_url)
+            messages = history.get("messages", [])
+            if not history.get("success") or history.get("room_id") != target_room:
+                log(f"Cycle {cycle}: history response did not match requested room {target_room}")
+                errors += 1
+            elif not history_is_chronological(messages):
+                log(f"Cycle {cycle}: history response was not chronological for {target_room}")
                 errors += 1
 
-            msgs = history.get("messages", [])
-            
-            # Print periodic progress & memory metrics
             if cycle % 10 == 0 or cycle == len(room_ids):
-                elapsed = time.time() - start_time
-                current_rss = get_rss_mb()
-                log(f"Cycle {cycle} ({elapsed:.1f}s) - Room: {target_room} ({len(msgs)} msgs) - Runner RSS: {current_rss:.2f} MB")
-
-        except Exception as e:
-            log(f"Cycle {cycle}: Exception encountered: {e}")
+                elapsed = time.monotonic() - start_time
+                log(f"Cycle {cycle} ({elapsed:.1f}s): {target_room}, {len(messages)} messages")
+        except Exception as error:
+            log(f"Cycle {cycle}: exception: {error}")
             errors += 1
 
-        time.sleep(0.05) # 50ms delay between API queries
-
-        # Termination criteria
-        elapsed = time.time() - start_time
-        if duration and elapsed >= duration:
-            log(f"Reached specified duration of {duration}s ({cycle} cycles completed).")
+        elapsed = time.monotonic() - start_time
+        if duration is not None and elapsed >= duration:
+            log(f"Reached requested duration of {duration:.0f}s after {cycle} cycles.")
             break
-        elif not duration and cycle >= cycles:
+        if duration is None and cycle >= cycles:
             break
+        time.sleep(interval)
 
-    total_time = time.time() - start_time
-    final_rss = get_rss_mb()
-    memory_delta = final_rss - initial_rss
-    log(f"Final runner RSS memory: {final_rss:.2f} MB (delta: {memory_delta:+.2f} MB)")
+    total_time = time.monotonic() - start_time
+    final_container_rss = container_rss_bytes(container)
+    if container:
+        log(
+            "Container RSS: "
+            f"{format_bytes(initial_container_rss)} -> {format_bytes(final_container_rss)} "
+            "(observational only; this runner does not make memory-leak claims)"
+        )
 
-    if errors == 0:
-        log(f"SUCCESS: Multi-room soak passed across all {len(room_ids)} rooms ({cycle} cycles in {total_time:.2f}s, 0 errors)")
-        return True
-    else:
-        log(f"FAIL: Multi-room soak encountered {errors} errors")
+    if errors:
+        log(f"FAIL: API multi-room hammer found {errors} error(s)")
         return False
+    log(f"SUCCESS: API multi-room hammer completed {cycle} cycles across {len(room_ids)} rooms in {total_time:.1f}s")
+    return True
+
 
 if __name__ == "__main__":
-    cycles = 30
-    duration = None
-    for i, arg in enumerate(sys.argv):
-        if arg == "--cycles" and i + 1 < len(sys.argv):
-            cycles = int(sys.argv[i + 1])
-        elif arg == "--duration" and i + 1 < len(sys.argv):
-            duration = float(sys.argv[i + 1])
-    
-    success = run_soak(cycles=cycles, duration=duration)
-    sys.exit(0 if success else 1)
+    parser = argparse.ArgumentParser(description="Run the Voice Channel API multi-room hammer.")
+    parser.add_argument("--cycles", type=int, default=30, help="cycles when --duration is omitted")
+    parser.add_argument("--duration", type=float, help="run for this many seconds instead of a fixed cycle count")
+    parser.add_argument("--interval", type=float, default=1.0, help="seconds between cycles (default: 1)")
+    parser.add_argument(
+        "--container",
+        default=os.environ.get("SOAK_CONTAINER"),
+        help="optional Docker container name for observational RSS snapshots",
+    )
+    arguments = parser.parse_args()
+    raise SystemExit(
+        0
+        if run_soak(
+            cycles=arguments.cycles,
+            duration=arguments.duration,
+            interval=arguments.interval,
+            container=arguments.container,
+        )
+        else 1
+    )
