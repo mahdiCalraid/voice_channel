@@ -17,6 +17,7 @@ platform, not a replacement for ACLI.
 
 Read these documents first:
 
+- `ADAPTIVE_HANDOFF.md`
 - `NORTH_STAR.md`
 - `OBJECTIVES.md`
 - `DISCOVERY_RECORD.md`

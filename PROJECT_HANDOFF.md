@@ -48,6 +48,8 @@ The fork reuses the tested Rocket.Chat foundation but changes the priority:
 
 ## Phase 0 Artifacts
 
+- `ADAPTIVE_HANDOFF.md`: complete standalone handoff covering the discussion, decisions,
+  architecture, pathway, risks, tests, and next actions.
 - `NORTH_STAR.md`: mission and architectural guardrails.
 - `OBJECTIVES.md`: scoped product, engineering, privacy, Mac, AI, and mobile objectives.
 - `DISCOVERY_RECORD.md`: the complete substantive discovery conversation.
