@@ -63,6 +63,24 @@ Before routing a gateway message, ACLI must:
    message ID in the route record.
 5. Echo `interaction_id=<id>` in its routing, heartbeat, terminal, failure, and stop events.
 
+The ACLI implementation is constrained by the recovery and compatibility plan in
+`development_channel/docs/VOICE_GATEWAY_RC_INGRESS_CHANGE_CONTROL.md`. In particular it
+must verify and strip the envelope before buffering context, consume a nonce only at initial
+acceptance (not when an ACLI busy queue replays the request), and retain the ordinary
+`**@agent**:` prefix on final responses.
+
+For unambiguous, safe correlation, ACLI appends this exact final line to every lifecycle
+message arising from a gateway request:
+
+```text
+[gateway_interaction_id=<id>]
+```
+
+It never prepends a correlation token. ACLI context and reporting must remove the final
+trailer before retaining a terminal response. The gateway accepts only this final trailer as
+an ACLI lifecycle correlation ID; it must not scrape an arbitrary earlier occurrence from a
+quoted request.
+
 The gateway supervisor uses that echoed ID for exact correlation. It deliberately does not
 fall back to room-and-agent guessing when a malformed explicit ID is present.
 

@@ -583,6 +583,13 @@ Status: `PARTIAL` (gateway signed-envelope producer and exact-ID supervisor corr
 - ACLI integration contract: `docs/ROCKET_CHAT_DISPATCH_INGRESS.md` specifies signature
   validation, replay protection, and lifecycle-event echoing. ACLI-side code is outside this
   repository and remains the prerequisite for live completion evidence.
+- Change-control addendum (2026-07-28): before ACLI code changes, the independent recovery
+  guide at `development_channel/docs/VOICE_GATEWAY_RC_INGRESS_CHANGE_CONTROL.md` records the
+  additive authorization branch, strict envelope rules, durable nonce placement, sanitized
+  queue replay, context/report filtering, exact final lifecycle trailer, compatibility tests,
+  restart rule, and rollback procedure. Gateway correlation must parse only the final
+  `[gateway_interaction_id=<id>]` trailer; the gateway user's own visible envelope is a
+  dispatch/system message, not agent chatter.
 
 Acceptance:
 
