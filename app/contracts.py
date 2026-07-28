@@ -120,11 +120,40 @@ class ConfirmationSnapshot(BaseContractModel):
         return now >= self.expires_at
 
 class TaskEvent(BaseContractModel):
+    schema_version: str = Field(default=CURRENT_SCHEMA_VERSION)
     event_id: str = Field(default_factory=lambda: f"evt_{uuid4().hex[:12]}")
     interaction_id: str
     timestamp: float = Field(default_factory=time.time)
     state: TaskState
+    source_message_id: Optional[str] = None
     details: Dict[str, Any] = Field(default_factory=dict)
+
+    @validator("schema_version")
+    def check_schema_version(cls, v: str) -> str:
+        return validate_schema_version(v)
+
+
+class TaskRecord(BaseContractModel):
+    """Durable gateway-side state for one interaction tracked through Rocket.Chat."""
+
+    schema_version: str = Field(default=CURRENT_SCHEMA_VERSION)
+    interaction_id: str
+    actor_id: str
+    client_id: str
+    room_id: str
+    agent: str
+    state: TaskState = Field(default=TaskState.CAPTURED)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    rocket_chat_msg_ids: List[str] = Field(default_factory=list)
+    source_message_ids: List[str] = Field(default_factory=list)
+    task_events: List[TaskEvent] = Field(default_factory=list)
+    confirmation_snapshot: Optional[ConfirmationSnapshot] = None
+    terminal_summary: str = ""
+
+    @validator("schema_version")
+    def check_schema_version(cls, v: str) -> str:
+        return validate_schema_version(v)
 
 class GatewayResult(BaseContractModel):
     schema_version: str = Field(default=CURRENT_SCHEMA_VERSION)
@@ -133,6 +162,7 @@ class GatewayResult(BaseContractModel):
     selected_agent: Optional[str] = None
     rocket_chat_msg_ids: List[str] = Field(default_factory=list)
     task_events: List[TaskEvent] = Field(default_factory=list)
+    confirmation_snapshot: Optional[ConfirmationSnapshot] = None
     full_response: str = ""
     concise_summary: str = ""
     file_references: List[str] = Field(default_factory=list)

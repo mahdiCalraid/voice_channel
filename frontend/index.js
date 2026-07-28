@@ -15,6 +15,7 @@ let loadOlderRequestSeq = 0;
 let confirmationTargetRoomId = null;
 let confirmationTargetText = null;
 let confirmationNonce = null;
+let gatewayConfirmationSnapshot = null;
 let roomHistoryStates = {};
 const historyState = window.VoiceChannelHistoryState;
 
@@ -1262,18 +1263,60 @@ function showConfirmation() {
     
     confirmationTargetRoomId = activeRoomId;
     confirmationTargetText = text;
-    confirmationNonce = "nonce_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+    confirmationNonce = null;
+    gatewayConfirmationSnapshot = null;
     
     // Lock text input during confirmation
     commandInput.readOnly = true;
     
     confirmationGate.classList.remove("hidden");
     btnPreSend.classList.add("hidden");
+    btnConfirmSend.disabled = true;
     
     // Clear any stale feedback
     const feedbackEl = document.getElementById("send-feedback");
-    if (feedbackEl) {
-        feedbackEl.style.display = "none";
+    if (feedbackEl) feedbackEl.style.display = "none";
+
+    return prepareGatewayInteraction(text, activeRoomId);
+}
+
+function extractRequestedAgent(text) {
+    const match = text.match(/^@([a-zA-Z0-9_]+)/);
+    return match ? match[1] : null;
+}
+
+async function prepareGatewayInteraction(text, roomId) {
+    showSendFeedback("Preparing gateway confirmation...", "success");
+    try {
+        const response = await fetch("/api/gateway/interact", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                schema_version: "1.0",
+                client_id: "browser_console",
+                input_mode: "text",
+                raw_input: text,
+                requested_room_id: roomId,
+                requested_agent: extractRequestedAgent(text) || undefined
+            })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Gateway could not prepare confirmation");
+
+        const snapshot = data.confirmation_snapshot || data.provider_metadata?.confirmation_snapshot;
+        if (!snapshot) throw new Error("Gateway response did not include a confirmation snapshot");
+        if (activeRoomId !== roomId || commandInput.value.trim() !== text) return;
+
+        gatewayConfirmationSnapshot = snapshot;
+        confirmationTargetRoomId = snapshot.room_id;
+        confirmationTargetText = snapshot.exact_message;
+        confirmationNonce = snapshot.nonce;
+        btnConfirmSend.disabled = false;
+        showSendFeedback("Review and confirm the gateway-prepared transmission.", "success");
+    } catch (err) {
+        console.error("Gateway interaction preparation failed:", err);
+        hideConfirmation();
+        showSendFeedback("Could not prepare message: " + err.message, "error");
     }
 }
 
@@ -1281,6 +1324,7 @@ function hideConfirmation() {
     confirmationTargetRoomId = null;
     confirmationTargetText = null;
     confirmationNonce = null;
+    gatewayConfirmationSnapshot = null;
     
     // Unlock input
     commandInput.readOnly = false;
@@ -1317,22 +1361,22 @@ async function sendDraftedMessage() {
     }
     
     const targetRoomId = confirmationTargetRoomId || activeRoomId;
+    if (!gatewayConfirmationSnapshot) {
+        showSendFeedback("Gateway confirmation is still being prepared. Please wait.", "error");
+        return;
+    }
     
     // Prevent double clicks/sends and cancel requests while in-flight
     btnConfirmSend.disabled = true;
     btnCancelSend.disabled = true;
     
-    showSendFeedback("Transmitting message to Rocket.Chat...", "success");
+    showSendFeedback("Transmitting confirmed gateway message...", "success");
     
     try {
-        const response = await fetch("/api/send", {
+        const response = await fetch("/api/gateway/confirm", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-                roomId: targetRoomId, 
-                text: confirmationTargetText, 
-                nonce: confirmationNonce 
-            })
+            body: JSON.stringify(gatewayConfirmationSnapshot)
         });
         
         const data = await response.json();
@@ -1341,7 +1385,7 @@ async function sendDraftedMessage() {
             throw new Error(data.detail || "Failed to post message");
         }
         
-        if (data.success) {
+        if (data.status === "posted") {
             commandInput.value = "";
             commandInput.readOnly = false;
             localStorage.removeItem("vc_draft_" + targetRoomId);
@@ -1350,7 +1394,7 @@ async function sendDraftedMessage() {
             hideConfirmation();
             
             // Display successful send feedback with message ID
-            const msgId = data.msgId || (data.message && data.message._id) || "unknown";
+            const msgId = data.rocket_chat_msg_ids?.[0] || "unknown";
             showSendFeedback(`Message transmitted successfully. ID: ${msgId}`, "success");
             
             loadHistory(); // Reload history immediately to see the new message

@@ -7,7 +7,7 @@ import asyncio
 import shutil
 import subprocess
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,8 +23,10 @@ from app.contracts import (
     Interpretation,
     ConfirmationSnapshot,
     TaskEvent,
+    TaskRecord,
     GatewayResult,
 )
+from app.task_supervisor import TaskSupervisor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -61,6 +63,8 @@ RC_USER_ID = os.environ.get("RC_USER_ID", "acli_bot")
 RC_AUTH_TOKEN = os.environ.get("RC_AUTH_TOKEN", "")
 RC_ROOM_ID = os.environ.get("RC_ROOM_ID", "6a32407ea294f44649684786")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+GATEWAY_TASK_STATE_PATH = os.environ.get("GATEWAY_TASK_STATE_PATH", "acli/gateway_state/tasks.json")
+task_supervisor = TaskSupervisor(GATEWAY_TASK_STATE_PATH)
 
 # Fallback helper for local execution outside Docker / network resolution inside Docker
 def get_rc_base_url() -> str:
@@ -89,6 +93,15 @@ def parse_datetime(ts_str: str) -> datetime:
     if ts_str.endswith("Z"):
         ts_str = ts_str[:-1] + "+00:00"
     return datetime.fromisoformat(ts_str)
+
+
+def timestamp_to_epoch(timestamp: Optional[str]) -> float:
+    if not timestamp:
+        return time.time()
+    try:
+        return parse_datetime(timestamp).timestamp()
+    except (TypeError, ValueError):
+        return time.time()
 
 def parse_routing(text: str):
     agent_match = re.search(r"🔄 Routing to \*\*([a-zA-Z0-9_]+)\*\*", text)
@@ -819,6 +832,16 @@ async def get_history(
     raw_messages = deduped_raw
 
     cleaned_messages, rolling_stats = process_history_messages(raw_messages)
+    supervised_interaction_ids = []
+    for raw_message, cleaned_message in zip(raw_messages, cleaned_messages):
+        record = task_supervisor.ingest_event(
+            room_id,
+            raw_message.get("_id"),
+            timestamp_to_epoch(raw_message.get("ts")),
+            cleaned_message.get("event", {}),
+        )
+        if record and record.interaction_id not in supervised_interaction_ids:
+            supervised_interaction_ids.append(record.interaction_id)
     
     return {
         "success": True,
@@ -829,7 +852,8 @@ async def get_history(
         # The client uses this opaque cursor instead of offset math in a live room.
         "next_before": raw_messages[0].get("ts") if raw_messages else None,
         "messages": cleaned_messages,
-        "stats": rolling_stats
+        "stats": rolling_stats,
+        "supervised_interaction_ids": supervised_interaction_ids,
     }
 
 def read_matter_docs() -> str:
@@ -1139,6 +1163,7 @@ async def gateway_interact(req: InteractionRequest):
         state=TaskState.AWAITING_CONFIRMATION,
         details={"room_id": target_room, "agent": target_agent}
     )
+    task_supervisor.create_interaction(req, conf, event)
     
     interp_dict = interp.model_dump() if hasattr(interp, "model_dump") else interp.dict()
     conf_dict = conf.model_dump() if hasattr(conf, "model_dump") else conf.dict()
@@ -1149,6 +1174,7 @@ async def gateway_interact(req: InteractionRequest):
         selected_room_id=target_room,
         selected_agent=target_agent,
         task_events=[event],
+        confirmation_snapshot=conf,
         full_response=f"Draft prepared for room {target_room}. Awaiting confirmation.",
         concise_summary=f"Draft: '{interp.refined_draft}'",
         provider_metadata={
@@ -1165,6 +1191,8 @@ async def gateway_confirm(conf: ConfirmationSnapshot):
     """
     if conf.is_expired():
         raise HTTPException(status_code=400, detail="Confirmation snapshot has expired")
+    if not task_supervisor.confirmation_matches(conf):
+        raise HTTPException(status_code=400, detail="Confirmation snapshot is unknown or does not match its interaction")
         
     async def _do_send():
         base_url = get_rc_base_url()
@@ -1201,11 +1229,11 @@ async def gateway_confirm(conf: ConfirmationSnapshot):
                     raise HTTPException(status_code=409, detail="Request is already being processed")
                 res_val = entry[1]
                 msg_id = res_val if isinstance(res_val, str) else (res_val.get("msgId") if isinstance(res_val, dict) else "unknown")
+                task_supervisor.mark_posted(conf.immutable_interaction_id, msg_id, cached=True)
                 event = TaskEvent(
                     interaction_id=conf.immutable_interaction_id,
-                    timestamp=time.time(),
                     state=TaskState.POSTED,
-                    details={"msg_id": msg_id, "cached": True}
+                    details={"msg_id": msg_id, "cached": True},
                 )
                 return GatewayResult(
                     schema_version=CURRENT_SCHEMA_VERSION,
@@ -1224,12 +1252,8 @@ async def gateway_confirm(conf: ConfirmationSnapshot):
     if isinstance(msg_id, dict):
         msg_id = msg_id.get("msgId", "unknown")
 
-    event = TaskEvent(
-        interaction_id=conf.immutable_interaction_id,
-        timestamp=time.time(),
-        state=TaskState.POSTED,
-        details={"msg_id": msg_id}
-    )
+    record = task_supervisor.mark_posted(conf.immutable_interaction_id, msg_id)
+    event = record.task_events[-1]
 
     return GatewayResult(
         schema_version=CURRENT_SCHEMA_VERSION,
@@ -1241,6 +1265,15 @@ async def gateway_confirm(conf: ConfirmationSnapshot):
         full_response=f"Message posted successfully (ID: {msg_id})",
         concise_summary=f"Posted to {conf.room_id}: {msg_id}"
     )
+
+
+@app.get("/api/gateway/tasks/{interaction_id}", response_model=TaskRecord)
+async def gateway_task_status(interaction_id: str):
+    """Return durable, source-linked supervision state for one interaction."""
+    record = task_supervisor.get(interaction_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Gateway interaction not found")
+    return record
 
 @app.post("/api/send")
 async def send_message(req: MessageSendRequest):

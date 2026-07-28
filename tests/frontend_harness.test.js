@@ -54,13 +54,26 @@ function loadFrontend() {
     const sandbox = {
         console,
         document,
-        fetch: () => Promise.resolve({ ok: true, json: async () => ({ success: true, messages: [] }) }),
+        fetch: url => Promise.resolve({
+            ok: true,
+            json: async () => url === "/api/gateway/interact"
+                ? {
+                    status: "awaiting_confirmation",
+                    confirmation_snapshot: {
+                        room_id: "room-1",
+                        exact_message: "Test confirmation message",
+                        nonce: "nonce-default"
+                    }
+                }
+                : ({ success: true, messages: [] })
+        }),
         localStorage: {
             getItem: key => storage[key] || null,
             setItem: (key, val) => { storage[key] = val; },
             removeItem: key => { delete storage[key]; }
         },
         setInterval: () => 0,
+        setTimeout: callback => { callback(); return 0; },
         window: {
             VoiceChannelHistoryState: historyState,
             speechSynthesis: { cancel: () => {}, getVoices: () => [], speaking: false },
@@ -157,6 +170,49 @@ test("confirmation gate locks composer text and room switch clears confirmation"
     assert.equal(input.readOnly, false);
     assert.equal(gate.classList.contains("hidden"), true);
     assert.equal(vm.runInContext('confirmationTargetRoomId', app.sandbox), null);
+});
+
+test("browser composer prepares and confirms through gateway contracts", async () => {
+    const app = loadFrontend();
+    const input = app.sandbox.document.getElementById("command-input");
+    const requests = [];
+    input.value = "@codex gateway browser message";
+    vm.runInContext('activeRoomId = "room-gateway";', app.sandbox);
+
+    app.sandbox.fetch = (url, options) => {
+        requests.push({ url, options });
+        if (url === "/api/gateway/interact") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    status: "awaiting_confirmation",
+                    confirmation_snapshot: {
+                        schema_version: "1.0",
+                        immutable_interaction_id: "int-browser",
+                        room_id: "room-gateway",
+                        agent: "codex",
+                        exact_message: "@codex gateway browser message",
+                        permission_tier: "commit",
+                        expires_at: Date.now() / 1000 + 60,
+                        nonce: "nonce-browser"
+                    }
+                })
+            });
+        }
+        return Promise.resolve({
+            ok: true,
+            json: async () => ({ status: "posted", rocket_chat_msg_ids: ["rc-browser"] })
+        });
+    };
+
+    await app.sandbox.showConfirmation();
+    assert.equal(requests[0].url, "/api/gateway/interact");
+    assert.equal(app.sandbox.document.getElementById("btn-confirm-send").disabled, false);
+
+    await app.sandbox.sendDraftedMessage();
+    assert.equal(requests[1].url, "/api/gateway/confirm");
+    assert.equal(JSON.parse(requests[1].options.body).nonce, "nonce-browser");
+    assert.equal(input.value, "");
 });
 
 test("recent stats bar renders formatted agent metrics", () => {

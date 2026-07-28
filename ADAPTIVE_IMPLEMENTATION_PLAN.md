@@ -528,6 +528,7 @@ Status: `VERIFIED` (2026-07-27)
 - Added `/api/gateway/interact` endpoint in `app/main.py` converting text interaction requests into `Interpretation` and immutable `ConfirmationSnapshot` instances inside `GatewayResult`.
 - Added `/api/gateway/confirm` endpoint in `app/main.py` executing confirmed snapshots with nonce deduplication, expiration enforcement, and returning `rocket_chat_msg_ids`.
 - Implemented `cli/gateway_client.py` CLI fixture client adapter for deterministic command-line end-to-end execution.
+- Adapted the existing browser composer to prepare a gateway interaction before confirmation and submit the returned immutable snapshot to `/api/gateway/confirm` rather than `/api/send`.
 - Added comprehensive unit and integration test suite `tests/test_gateway_adapter.py`.
 
 Acceptance:
@@ -536,17 +537,26 @@ Acceptance:
 
 ### M1-03. Task Supervisor
 
-Status: `NOT STARTED`
+Status: `PARTIAL` (persistent state and deterministic interleaved fixtures verified; live ACLI terminal run pending)
 
-- Convert ACLI routing, heartbeat, completion, failure, stop, and superseded messages into
-  one per-interaction state machine.
-- Preserve source message IDs.
+- Added a file-backed `TaskSupervisor` that binds every gateway confirmation to its creating
+  interaction, persists task state atomically under the mounted ACLI state directory, and
+  rejects unknown or forged confirmation snapshots.
+- Converts ACLI routing, heartbeat, completion, failure, stop, and same-agent supersession
+  into room-scoped task transitions while preserving Rocket.Chat source message IDs and
+  deduplicating replayed history events.
+- Added `GET /api/gateway/tasks/{interaction_id}` for clients to retrieve durable task state.
+- Current ACLI messages do not contain an explicit interaction ID. Correlation therefore uses
+  room + selected agent + most-recent active interaction and records a warning when multiple
+  same-agent tasks are eligible. Explicit ACLI correlation IDs remain the required pivot if
+  that ambiguity prevents safe supervision.
 
 Acceptance:
 
 - recorded interleaved fixtures remain correctly isolated;
-- one live ACLI request reaches a terminal state;
 - refresh/restart can recover persisted state.
+- one live confirmed ACLI request reaches a terminal state remains pending because it must be
+  deliberately dispatched to an agent and observed without fabricating completion evidence.
 
 ### M1-04. Mac TTS Adapter
 
@@ -781,9 +791,11 @@ The original three-pane Voice Channel UI can later:
 
 No adaptive-fork decision prevents that work.
 
-## 18. Immediate Next Task After Phase 0
+## 18. Immediate Next Task
 
-Start `M1-01 Gateway Contract Skeleton`.
+Complete the live verification portion of `M1-03 Task Supervisor`: deliberately send one
+confirmed ACLI request, observe its routing and terminal event, and verify the persisted
+interaction state after a gateway restart. Do not mark this complete from mocked events.
 
 Do not begin Omi installation, Cloudflare exposure, ambient audio, or mobile signing
 before the local Mac Phase 1 gate passes.

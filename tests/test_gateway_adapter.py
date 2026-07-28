@@ -90,17 +90,15 @@ class TestGatewayAdapterEndpoints(unittest.TestCase):
         mock_client.__aexit__.return_value = None
         mock_async_client_cls.return_value = mock_client
 
-        future_expiry = time.time() + 300.0
-        conf_payload = {
+        interaction = self.client.post("/api/gateway/interact", json={
             "schema_version": "1.0",
-            "immutable_interaction_id": "int_mock_001",
-            "room_id": "test_room_123",
-            "agent": "codex",
-            "exact_message": "Mocked test message",
-            "permission_tier": "commit",
-            "expires_at": future_expiry,
-            "nonce": "nonce_mock_999"
-        }
+            "interaction_id": "int_mock_001",
+            "raw_input": "Mocked test message",
+            "requested_room_id": "test_room_123",
+            "requested_agent": "codex"
+        })
+        self.assertEqual(interaction.status_code, 200)
+        conf_payload = interaction.json()["confirmation_snapshot"]
         resp = self.client.post("/api/gateway/confirm", json=conf_payload)
         self.assertEqual(resp.status_code, 200)
 
@@ -108,6 +106,26 @@ class TestGatewayAdapterEndpoints(unittest.TestCase):
         self.assertEqual(data["status"], "posted")
         self.assertEqual(data["rocket_chat_msg_ids"], ["rc_mock_msg_999"])
         self.assertIn("rc_mock_msg_999", data["full_response"])
+
+        task_status = self.client.get("/api/gateway/tasks/int_mock_001")
+        self.assertEqual(task_status.status_code, 200)
+        self.assertEqual(task_status.json()["state"], "posted")
+        self.assertEqual(task_status.json()["rocket_chat_msg_ids"], ["rc_mock_msg_999"])
+
+    def test_gateway_confirm_rejects_unknown_snapshot(self):
+        conf_payload = {
+            "schema_version": "1.0",
+            "immutable_interaction_id": "int_unknown",
+            "room_id": "test_room_123",
+            "agent": "codex",
+            "exact_message": "Forged message",
+            "permission_tier": "commit",
+            "expires_at": time.time() + 300,
+            "nonce": "nonce_unknown",
+        }
+        response = self.client.post("/api/gateway/confirm", json=conf_payload)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("unknown", response.json()["detail"])
 
 
 class TestCLIGatewayAdapter(unittest.TestCase):
