@@ -158,6 +158,9 @@ class TaskSupervisor:
                 if task.room_id == room_id
                 and task.state in ACTIVE_STATES
                 and (not agent or task.agent == agent)
+                # History requests include messages from before this interaction.
+                # Never let those older events complete a newly created task.
+                and timestamp >= task.created_at
             ]
             if not candidates:
                 return None

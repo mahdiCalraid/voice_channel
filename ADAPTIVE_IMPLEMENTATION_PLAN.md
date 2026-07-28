@@ -537,7 +537,7 @@ Acceptance:
 
 ### M1-03. Task Supervisor
 
-Status: `PARTIAL` (persistent state and deterministic interleaved fixtures verified; live ACLI terminal run pending)
+Status: `PARTIAL` (persistent state, deterministic interleaved fixtures, restart recovery, and historical-event isolation verified; live ACLI terminal run blocked on the dispatch bridge)
 
 - Added a file-backed `TaskSupervisor` that binds every gateway confirmation to its creating
   interaction, persists task state atomically under the mounted ACLI state directory, and
@@ -550,6 +550,11 @@ Status: `PARTIAL` (persistent state and deterministic interleaved fixtures verif
   room + selected agent + most-recent active interaction and records a warning when multiple
   same-agent tasks are eligible. Explicit ACLI correlation IDs remain the required pivot if
   that ambiguity prevents safe supervision.
+- Live closure attempt (2026-07-28): a gateway-confirmed `@codex` request was persisted and
+  remained `posted` after a gateway restart. The gateway posts with the `acli_bot` identity,
+  however, and ACLI classifies that self-authored message as `system/other` rather than
+  dispatching it. Historical events are now rejected when they predate the interaction; this
+  prevented an earlier false completion during the attempt.
 
 Acceptance:
 
@@ -557,6 +562,24 @@ Acceptance:
 - refresh/restart can recover persisted state.
 - one live confirmed ACLI request reaches a terminal state remains pending because it must be
   deliberately dispatched to an agent and observed without fabricating completion evidence.
+
+### M1-03A. ACLI Dispatch Bridge
+
+Status: `NOT STARTED`
+
+- Define a supported, authenticated gateway-to-ACLI dispatch handoff. It must not impersonate
+  Ed or rely on Rocket.Chat accepting self-authored `acli_bot` messages as user instructions.
+- Carry the gateway `interaction_id` through the handoff and into the ACLI routing event so the
+  supervisor can bind events without room-and-agent guessing.
+- Preserve Rocket.Chat as the auditable transcript and retain the immutable confirmation gate
+  before dispatch.
+
+Acceptance:
+
+- one confirmed gateway request produces an ACLI routing event with the same interaction ID;
+- that request reaches a terminal ACLI event and the persisted task remains terminal after a
+  gateway restart;
+- forged or replayed gateway confirmations cannot dispatch a second ACLI task.
 
 ### M1-04. Mac TTS Adapter
 
@@ -793,9 +816,9 @@ No adaptive-fork decision prevents that work.
 
 ## 18. Immediate Next Task
 
-Complete the live verification portion of `M1-03 Task Supervisor`: deliberately send one
-confirmed ACLI request, observe its routing and terminal event, and verify the persisted
-interaction state after a gateway restart. Do not mark this complete from mocked events.
+Implement `M1-03A ACLI Dispatch Bridge` before attempting to close `M1-03`: the current
+gateway post uses `acli_bot`, whose self-authored message is not dispatched by ACLI. Do not
+mark M1-03 complete from mocked events, historical replay, or an undeliverable bot post.
 
 Do not begin Omi installation, Cloudflare exposure, ambient audio, or mobile signing
 before the local Mac Phase 1 gate passes.

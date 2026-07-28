@@ -9,12 +9,13 @@ from app.contracts import ConfirmationSnapshot, InteractionRequest, TaskEvent, T
 from app.task_supervisor import TaskSupervisor
 
 
-def make_task(supervisor, interaction_id, room_id, agent):
+def make_task(supervisor, interaction_id, room_id, agent, created_at=0):
     request = InteractionRequest(
         interaction_id=interaction_id,
         actor_id="ed",
         client_id="test",
         raw_input=f"@{agent} test task",
+        created_at=created_at,
         requested_room_id=room_id,
         requested_agent=agent,
     )
@@ -54,6 +55,27 @@ class TestTaskSupervisor(unittest.TestCase):
         self.assertEqual(self.supervisor.get(claude.interaction_id).state, TaskState.COMPLETED)
         self.assertIn("error-codex", self.supervisor.get(codex.interaction_id).source_message_ids)
         self.assertIn("result-claude", self.supervisor.get(claude.interaction_id).source_message_ids)
+
+    def test_historical_events_do_not_complete_new_interaction(self):
+        task = make_task(
+            self.supervisor,
+            "int_historical",
+            "room-history",
+            "codex",
+            created_at=100,
+        )
+        historical_timestamp = 99
+
+        result = self.supervisor.ingest_event(
+            "room-history",
+            "old-codex-response",
+            historical_timestamp,
+            {"kind": "agent_response", "agent": "codex"},
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(self.supervisor.get(task.interaction_id).state, TaskState.POSTED)
+        self.assertNotIn("old-codex-response", self.supervisor.get(task.interaction_id).source_message_ids)
 
     def test_source_messages_are_idempotent_and_state_survives_reload(self):
         task = make_task(self.supervisor, "int_reload", "room-b", "grok")
