@@ -565,7 +565,7 @@ Acceptance:
 
 ### M1-03A. Rocket.Chat Dispatch Ingress
 
-Status: `NOT STARTED`
+Status: `PARTIAL` (gateway signed-envelope producer and exact-ID supervisor correlation implemented; dedicated RC identity and ACLI consumer pending)
 
 - Define a supported Rocket.Chat ingress identity or signed message envelope that ACLI accepts
   as an external request. The gateway must communicate with ACLI through Rocket.Chat only; it
@@ -575,6 +575,14 @@ Status: `NOT STARTED`
 - Carry the gateway `interaction_id` in the Rocket.Chat request and ensure ACLI copies it into
   its routing event so the supervisor can bind events without room-and-agent guessing.
 - Retain the immutable confirmation gate before the Rocket.Chat post.
+- Gateway implementation: `app/rc_ingress.py` produces a visible HMAC-SHA256 envelope;
+  `/api/gateway/confirm` uses only `GATEWAY_RC_*` credentials and fails closed unless they
+  name a dedicated non-`acli_bot` Rocket.Chat user. Persisted task state prevents a replay
+  after gateway restart from creating a second Rocket.Chat dispatch. `TaskSupervisor` now
+  prefers an echoed exact interaction ID over room-and-agent correlation.
+- ACLI integration contract: `docs/ROCKET_CHAT_DISPATCH_INGRESS.md` specifies signature
+  validation, replay protection, and lifecycle-event echoing. ACLI-side code is outside this
+  repository and remains the prerequisite for live completion evidence.
 
 Acceptance:
 
@@ -819,10 +827,11 @@ No adaptive-fork decision prevents that work.
 
 ## 18. Immediate Next Task
 
-Implement `M1-03A Rocket.Chat Dispatch Ingress` before attempting to close `M1-03`: the
-current gateway post uses `acli_bot`, whose self-authored message is not dispatched by ACLI.
-The solution must remain `gateway -> Rocket.Chat -> ACLI`, not a direct gateway-to-ACLI link.
-Do not mark M1-03 complete from mocked events, historical replay, or an undeliverable bot post.
+Complete the ACLI-side portion of `M1-03A Rocket.Chat Dispatch Ingress`: provision the
+dedicated Rocket.Chat gateway identity, implement signed-envelope validation and replay
+protection in ACLI, then run one live terminal task. The solution must remain
+`gateway -> Rocket.Chat -> ACLI`, not a direct gateway-to-ACLI link. Do not mark M1-03
+complete from mocked events, historical replay, or an undeliverable bot post.
 
 Do not begin Omi installation, Cloudflare exposure, ambient audio, or mobile signing
 before the local Mac Phase 1 gate passes.

@@ -6,6 +6,7 @@ from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.main import processed_nonces
 from app.contracts import (
     CURRENT_SCHEMA_VERSION,
     InputMode,
@@ -99,7 +100,13 @@ class TestGatewayAdapterEndpoints(unittest.TestCase):
         })
         self.assertEqual(interaction.status_code, 200)
         conf_payload = interaction.json()["confirmation_snapshot"]
-        resp = self.client.post("/api/gateway/confirm", json=conf_payload)
+        with patch.multiple(
+            "app.main",
+            GATEWAY_RC_USER_ID="voice_gateway",
+            GATEWAY_RC_AUTH_TOKEN="gateway-token",
+            GATEWAY_RC_INGRESS_SECRET="x" * 32,
+        ):
+            resp = self.client.post("/api/gateway/confirm", json=conf_payload)
         self.assertEqual(resp.status_code, 200)
 
         data = resp.json()
@@ -111,6 +118,69 @@ class TestGatewayAdapterEndpoints(unittest.TestCase):
         self.assertEqual(task_status.status_code, 200)
         self.assertEqual(task_status.json()["state"], "posted")
         self.assertEqual(task_status.json()["rocket_chat_msg_ids"], ["rc_mock_msg_999"])
+
+        request_headers = mock_client.post.call_args.kwargs["headers"]
+        request_payload = mock_client.post.call_args.kwargs["json"]
+        self.assertEqual(request_headers["X-User-Id"], "voice_gateway")
+        self.assertIn("[voice-gateway/v1; interaction_id=int_mock_001;", request_payload["text"])
+        self.assertIn("Mocked test message", request_payload["text"])
+
+    def test_gateway_confirm_requires_dedicated_ingress_identity(self):
+        interaction = self.client.post("/api/gateway/interact", json={
+            "schema_version": "1.0",
+            "interaction_id": "int_ingress_missing",
+            "raw_input": "Configured ingress required",
+            "requested_room_id": "test_room_123",
+            "requested_agent": "codex",
+        })
+        self.assertEqual(interaction.status_code, 200)
+
+        with patch.multiple(
+            "app.main",
+            GATEWAY_RC_USER_ID="",
+            GATEWAY_RC_AUTH_TOKEN="",
+            GATEWAY_RC_INGRESS_SECRET="",
+        ):
+            response = self.client.post("/api/gateway/confirm", json=interaction.json()["confirmation_snapshot"])
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("ingress is not configured", response.json()["detail"])
+
+    @patch("app.main.httpx.AsyncClient")
+    def test_gateway_confirm_replay_uses_persisted_result_after_nonce_cache_loss(self, mock_async_client_cls):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "success": True,
+            "message": {"_id": "rc_persisted_001"},
+        }
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_async_client_cls.return_value = mock_client
+
+        interaction = self.client.post("/api/gateway/interact", json={
+            "schema_version": "1.0",
+            "interaction_id": "int_persisted_replay",
+            "raw_input": "Persisted replay test",
+            "requested_room_id": "test_room_123",
+            "requested_agent": "codex",
+        })
+        confirmation = interaction.json()["confirmation_snapshot"]
+        ingress_config = {
+            "GATEWAY_RC_USER_ID": "voice_gateway",
+            "GATEWAY_RC_AUTH_TOKEN": "gateway-token",
+            "GATEWAY_RC_INGRESS_SECRET": "x" * 32,
+        }
+        with patch.multiple("app.main", **ingress_config):
+            first = self.client.post("/api/gateway/confirm", json=confirmation)
+            self.assertEqual(first.status_code, 200)
+            processed_nonces.clear()  # Simulate the in-memory cache disappearing on restart.
+            replay = self.client.post("/api/gateway/confirm", json=confirmation)
+
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.json()["rocket_chat_msg_ids"], ["rc_persisted_001"])
+        self.assertEqual(mock_client.post.call_count, 1)
 
     def test_gateway_confirm_rejects_unknown_snapshot(self):
         conf_payload = {

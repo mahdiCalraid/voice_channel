@@ -113,12 +113,20 @@ The Docker wrapper maps these host variables into the backend:
 - `ACLI_RC_USER`
 - `ACLI_RC_USER_ID`
 - `ACLI_RC_AUTH_TOKEN`
+- `GATEWAY_RC_USER_ID`
+- `GATEWAY_RC_AUTH_TOKEN`
+- `GATEWAY_RC_INGRESS_SECRET`
 - `OPENAI_API_KEY`
 - `VC_WORKER`
 
 Do not commit credentials. The existing default Rocket.Chat token in
 `docker-compose.yml` is a known security issue and must be removed and rotated before
 remote exposure.
+
+`GATEWAY_RC_*` is a separate Rocket.Chat service identity for confirmed gateway dispatch.
+It must not reuse `acli_bot`; when absent, gateway confirmation intentionally returns `503`
+instead of posting an ACLI-undeliverable message. See
+[`docs/ROCKET_CHAT_DISPATCH_INGRESS.md`](docs/ROCKET_CHAT_DISPATCH_INGRESS.md).
 
 ## Current Milestone
 

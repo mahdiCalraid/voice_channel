@@ -77,6 +77,25 @@ class TestTaskSupervisor(unittest.TestCase):
         self.assertEqual(self.supervisor.get(task.interaction_id).state, TaskState.POSTED)
         self.assertNotIn("old-codex-response", self.supervisor.get(task.interaction_id).source_message_ids)
 
+    def test_explicit_interaction_id_beats_same_agent_recency_guessing(self):
+        first = make_task(self.supervisor, "int_explicit_first", "room-explicit", "codex")
+        make_task(self.supervisor, "int_explicit_second", "room-explicit", "codex")
+
+        result = self.supervisor.ingest_event(
+            "room-explicit",
+            "result-explicit-first",
+            10,
+            {
+                "kind": "agent_response",
+                "agent": "codex",
+                "interaction_id": first.interaction_id,
+            },
+        )
+
+        self.assertEqual(result.interaction_id, first.interaction_id)
+        self.assertEqual(self.supervisor.get(first.interaction_id).state, TaskState.COMPLETED)
+        self.assertEqual(self.supervisor.get("int_explicit_second").state, TaskState.POSTED)
+
     def test_source_messages_are_idempotent_and_state_survives_reload(self):
         task = make_task(self.supervisor, "int_reload", "room-b", "grok")
         self.supervisor.ingest_event("room-b", "route-grok", 10, {"kind": "routing", "agent": "grok"})

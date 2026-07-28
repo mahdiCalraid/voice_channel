@@ -152,22 +152,39 @@ class TaskSupervisor:
             if source_message_id and source_message_id in self._source_event_index:
                 return self._tasks.get(self._source_event_index[source_message_id])
 
-            candidates = [
-                task
-                for task in self._tasks.values()
-                if task.room_id == room_id
-                and task.state in ACTIVE_STATES
-                and (not agent or task.agent == agent)
-                # History requests include messages from before this interaction.
-                # Never let those older events complete a newly created task.
-                and timestamp >= task.created_at
-            ]
+            explicit_interaction_id = event.get("interaction_id")
+            if explicit_interaction_id:
+                record = self._tasks.get(explicit_interaction_id)
+                # An explicit ID is authoritative only if it still matches this room,
+                # selected agent, and interaction lifetime. Do not fall back to guessing.
+                if (
+                    not record
+                    or record.room_id != room_id
+                    or record.state not in ACTIVE_STATES
+                    or (agent and record.agent != agent)
+                    or timestamp < record.created_at
+                ):
+                    return None
+                candidates = [record]
+            else:
+                candidates = [
+                    task
+                    for task in self._tasks.values()
+                    if task.room_id == room_id
+                    and task.state in ACTIVE_STATES
+                    and (not agent or task.agent == agent)
+                    # History requests include messages from before this interaction.
+                    # Never let those older events complete a newly created task.
+                    and timestamp >= task.created_at
+                ]
             if not candidates:
                 return None
 
             candidates.sort(key=lambda task: task.updated_at, reverse=True)
             record = candidates[0]
             details = {"event_kind": event_kind, "agent": agent, "raw_text": event.get("raw_text", "")}
+            if explicit_interaction_id:
+                details["correlation"] = "explicit_interaction_id"
             if len(candidates) > 1:
                 details["correlation_warning"] = "multiple active tasks match this room and agent"
             if event_kind == "routing":

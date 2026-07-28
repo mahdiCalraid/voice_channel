@@ -27,6 +27,7 @@ from app.contracts import (
     GatewayResult,
 )
 from app.task_supervisor import TaskSupervisor
+from app.rc_ingress import IngressConfigurationError, build_ingress_message, extract_interaction_id
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -62,6 +63,9 @@ RC_USER = os.environ.get("RC_USER", "acli_bot")
 RC_USER_ID = os.environ.get("RC_USER_ID", "acli_bot")
 RC_AUTH_TOKEN = os.environ.get("RC_AUTH_TOKEN", "")
 RC_ROOM_ID = os.environ.get("RC_ROOM_ID", "6a32407ea294f44649684786")
+GATEWAY_RC_USER_ID = os.environ.get("GATEWAY_RC_USER_ID", "")
+GATEWAY_RC_AUTH_TOKEN = os.environ.get("GATEWAY_RC_AUTH_TOKEN", "")
+GATEWAY_RC_INGRESS_SECRET = os.environ.get("GATEWAY_RC_INGRESS_SECRET", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 GATEWAY_TASK_STATE_PATH = os.environ.get("GATEWAY_TASK_STATE_PATH", "acli/gateway_state/tasks.json")
 task_supervisor = TaskSupervisor(GATEWAY_TASK_STATE_PATH)
@@ -138,7 +142,8 @@ def parse_routing(text: str):
             "effort": effort
         },
         "stopped": False,
-        "raw_text": text
+        "raw_text": text,
+        "interaction_id": extract_interaction_id(text),
     }
 
 def parse_heartbeat(text: str):
@@ -451,6 +456,9 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
         classification = classify_message(msg)
         lane = classification["lane"]
         event = classification["event"]
+        interaction_id = extract_interaction_id(msg.get("msg", ""))
+        if interaction_id:
+            event["interaction_id"] = interaction_id
         
         text = msg.get("msg", "")
         is_routing = text.startswith("🔄 Routing to") or "Routing to" in text
@@ -705,6 +713,11 @@ async def get_status():
             "username": rc_username,
             "room_id": RC_ROOM_ID,
             "error": rc_error
+        },
+        "gateway_ingress": {
+            "status": "configured" if all(
+                (GATEWAY_RC_USER_ID, GATEWAY_RC_AUTH_TOKEN, GATEWAY_RC_INGRESS_SECRET)
+            ) and GATEWAY_RC_USER_ID != RC_USER_ID else "not_configured"
         }
     }
 
@@ -1193,17 +1206,42 @@ async def gateway_confirm(conf: ConfirmationSnapshot):
         raise HTTPException(status_code=400, detail="Confirmation snapshot has expired")
     if not task_supervisor.confirmation_matches(conf):
         raise HTTPException(status_code=400, detail="Confirmation snapshot is unknown or does not match its interaction")
+    existing_record = task_supervisor.get(conf.immutable_interaction_id)
+    if existing_record and existing_record.state != TaskState.AWAITING_CONFIRMATION:
+        # Task state is persisted, unlike the in-process nonce cache. A retry after a
+        # restart must return the original result rather than create another RC request.
+        return GatewayResult(
+            schema_version=CURRENT_SCHEMA_VERSION,
+            status=existing_record.state,
+            selected_room_id=existing_record.room_id,
+            selected_agent=existing_record.agent,
+            rocket_chat_msg_ids=existing_record.rocket_chat_msg_ids,
+            task_events=[existing_record.task_events[-1]] if existing_record.task_events else [],
+            full_response="Confirmation was already dispatched.",
+            concise_summary="Reused the persisted dispatch result.",
+        )
+    if not GATEWAY_RC_USER_ID or not GATEWAY_RC_AUTH_TOKEN or not GATEWAY_RC_INGRESS_SECRET:
+        raise HTTPException(status_code=503, detail="Rocket.Chat gateway ingress is not configured")
+    if GATEWAY_RC_USER_ID == RC_USER_ID:
+        raise HTTPException(
+            status_code=503,
+            detail="Rocket.Chat gateway ingress must use a dedicated non-acli_bot identity",
+        )
         
     async def _do_send():
         base_url = get_rc_base_url()
         headers = {
-            "X-Auth-Token": RC_AUTH_TOKEN,
-            "X-User-Id": RC_USER_ID,
+            "X-Auth-Token": GATEWAY_RC_AUTH_TOKEN,
+            "X-User-Id": GATEWAY_RC_USER_ID,
             "Content-Type": "application/json"
         }
+        try:
+            ingress_message = build_ingress_message(conf, GATEWAY_RC_INGRESS_SECRET)
+        except IngressConfigurationError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
         payload = {
             "roomId": conf.room_id,
-            "text": conf.exact_message
+            "text": ingress_message,
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
