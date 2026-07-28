@@ -25,7 +25,14 @@ class TestRocketChatIngress(unittest.TestCase):
         self.assertIn("agent=codex", message)
         self.assertIn(hashlib.sha256(self.confirmation.exact_message.encode("utf-8")).hexdigest(), message)
         self.assertTrue(message.endswith(self.confirmation.exact_message))
-        self.assertEqual(extract_interaction_id(message), "int_ingress_001")
+        self.assertIsNone(extract_interaction_id(message))
+        self.assertEqual(
+            extract_interaction_id("**@codex**: done\n[gateway_interaction_id=int_ingress_001]"),
+            "int_ingress_001",
+        )
+        self.assertIsNone(
+            extract_interaction_id("quoted interaction_id=int_previous_001; not a trailer"),
+        )
 
     def test_short_secret_is_rejected(self):
         with self.assertRaises(IngressConfigurationError):

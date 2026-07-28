@@ -142,6 +142,15 @@ class TestMessageClassification(unittest.TestCase):
         self.assertEqual(res["lane"], "system")
         self.assertEqual(res["event"]["kind"], "membership")
 
+    def test_gateway_envelope_is_a_dispatch_system_message(self):
+        msg = {
+            "u": {"username": "voice_gateway"},
+            "msg": "[voice-gateway/v1; interaction_id=int_001; room_id=room_1; agent=codex; nonce=n; issued_at=1; body_sha256=x; signature=y]\n@codex test",
+        }
+        res = classify_message(msg)
+        self.assertEqual(res["lane"], "system")
+        self.assertEqual(res["event"]["kind"], "gateway_dispatch")
+
     def test_fallback_acli_bot_messages(self):
         msg = {
             "u": {"username": "acli_bot"}, 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import time
 from typing import Optional
 
@@ -12,6 +13,9 @@ from app.contracts import ConfirmationSnapshot
 
 INGRESS_VERSION = "1"
 INGRESS_PREFIX = "[voice-gateway/v1"
+_LIFECYCLE_TRAILER_RE = re.compile(
+    r"(?:^|\n)\[gateway_interaction_id=(?P<interaction_id>[A-Za-z0-9_.-]+)\]\s*$"
+)
 
 
 class IngressConfigurationError(ValueError):
@@ -73,12 +77,6 @@ def build_ingress_message(
 
 
 def extract_interaction_id(text: str) -> Optional[str]:
-    """Extract an interaction ID from the signed envelope ACLI echoes in event text."""
-    if not text:
-        return None
-    marker = "interaction_id="
-    start = text.find(marker)
-    if start == -1:
-        return None
-    value = text[start + len(marker):].split(";", 1)[0].split("]", 1)[0].strip()
-    return value or None
+    """Extract only ACLI's final lifecycle trailer, never a quoted request header."""
+    match = _LIFECYCLE_TRAILER_RE.search(text or "")
+    return match.group("interaction_id") if match else None

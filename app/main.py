@@ -303,6 +303,21 @@ def classify_message(msg: dict) -> dict:
                 "raw_text": text
             }
         }
+
+    # A gateway envelope is an auditable dispatch request, not an agent reply.
+    # This classification is display-only; ACLI performs the actual signature check.
+    if text.startswith("[voice-gateway/v1;"):
+        return {
+            "lane": "system",
+            "event": {
+                "kind": "gateway_dispatch",
+                "agent": None,
+                "model": None,
+                "elapsed_seconds": None,
+                "stopped": False,
+                "raw_text": text,
+            },
+        }
         
     # 2. ACLI Dispatcher System Messages & Agent Relays (usually sent by acli_bot)
     if username == "acli_bot":
