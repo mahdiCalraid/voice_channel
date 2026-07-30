@@ -75,6 +75,10 @@
                         <span class="material-symbols-rounded">record_voice_over</span>
                         <span class="btn-label">Narrator</span>
                     </button>
+
+                    <button class="btn btn-secondary btn-icon" id="btn-open-settings" title="Console Settings">
+                        <span class="material-symbols-rounded">settings</span>
+                    </button>
                 </div>
             </header>
 
@@ -227,6 +231,57 @@
                 </div>
             </div>
         </aside>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay hidden" id="settings-modal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="material-symbols-rounded">settings</span>
+                    <h3>Console & Narrator Settings</h3>
+                </div>
+                <button class="btn btn-icon btn-sm" id="btn-close-settings">
+                    <span class="material-symbols-rounded">close</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label for="setting-font-size">Interface Font Size:</label>
+                    <select id="setting-font-size" class="setting-select">
+                        <option value="normal">Normal (14px)</option>
+                        <option value="medium" selected>Medium (16px)</option>
+                        <option value="large">Large (18px)</option>
+                        <option value="xlarge">Extra Large (20px)</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label for="setting-history-limit">Narrator Context Depth (Messages):</label>
+                    <select id="setting-history-limit" class="setting-select">
+                        <option value="10">Last 10 Messages</option>
+                        <option value="20" selected>Last 20 Messages</option>
+                        <option value="30">Last 30 Messages</option>
+                        <option value="50">Last 50 Messages</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label for="setting-default-agent">Default Target Agent:</label>
+                    <select id="setting-default-agent" class="setting-select">
+                        <option value="codex" selected>Codex (@codex)</option>
+                        <option value="claude">Claude (@claude)</option>
+                        <option value="grok">Grok (@grok)</option>
+                        <option value="gemini">Gemini (@gemini)</option>
+                    </select>
+                </div>
+                <div class="setting-group toggle-group">
+                    <label for="setting-auto-narrate">Auto-narrate new agent responses:</label>
+                    <input type="checkbox" id="setting-auto-narrate" class="setting-checkbox">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="btn-save-settings">Save & Apply</button>
+            </div>
+        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>

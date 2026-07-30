@@ -60,8 +60,81 @@ const btnToggleSidebar = document.getElementById("btn-toggle-sidebar");
 const narratorSidebar = document.getElementById("narrator-sidebar");
 const channelsSidebar = document.getElementById("channels-sidebar");
 
+// Settings Management (U-01, U-02, U-03, U-05)
+const DEFAULT_SETTINGS = {
+    fontSize: "medium",
+    historyLimit: 20,
+    defaultAgent: "codex",
+    autoNarrate: false
+};
+
+function getSettings() {
+    try {
+        const raw = localStorage.getItem("vc_settings");
+        return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : { ...DEFAULT_SETTINGS };
+    } catch (e) {
+        return { ...DEFAULT_SETTINGS };
+    }
+}
+
+function saveSettings(settings) {
+    try {
+        localStorage.setItem("vc_settings", JSON.stringify(settings));
+        applySettings(settings);
+    } catch (e) {
+        console.error("Failed to save settings:", e);
+    }
+}
+
+function applySettings(settings = getSettings()) {
+    document.body.classList.remove("font-normal", "font-medium", "font-large", "font-xlarge");
+    document.body.classList.add("font-" + (settings.fontSize || "medium"));
+}
+
+function initSettingsModal() {
+    const btnOpen = document.getElementById("btn-open-settings");
+    const btnClose = document.getElementById("btn-close-settings");
+    const btnSave = document.getElementById("btn-save-settings");
+    const modal = document.getElementById("settings-modal");
+    
+    const selFontSize = document.getElementById("setting-font-size");
+    const selHistoryLimit = document.getElementById("setting-history-limit");
+    const selDefaultAgent = document.getElementById("setting-default-agent");
+    const chkAutoNarrate = document.getElementById("setting-auto-narrate");
+    
+    if (!btnOpen || !modal) return;
+    
+    btnOpen.addEventListener("click", () => {
+        const settings = getSettings();
+        if (selFontSize) selFontSize.value = settings.fontSize || "medium";
+        if (selHistoryLimit) selHistoryLimit.value = String(settings.historyLimit || 20);
+        if (selDefaultAgent) selDefaultAgent.value = settings.defaultAgent || "codex";
+        if (chkAutoNarrate) chkAutoNarrate.checked = !!settings.autoNarrate;
+        
+        modal.classList.remove("hidden");
+    });
+    
+    const closeModal = () => modal.classList.add("hidden");
+    if (btnClose) btnClose.addEventListener("click", closeModal);
+    
+    if (btnSave) {
+        btnSave.addEventListener("click", () => {
+            const updated = {
+                fontSize: selFontSize ? selFontSize.value : "medium",
+                historyLimit: selHistoryLimit ? parseInt(selHistoryLimit.value, 10) : 20,
+                defaultAgent: selDefaultAgent ? selDefaultAgent.value : "codex",
+                autoNarrate: chkAutoNarrate ? chkAutoNarrate.checked : false
+            };
+            saveSettings(updated);
+            closeModal();
+        });
+    }
+}
+
 // Initialize application
 function init() {
+    applySettings();
+    initSettingsModal();
     activeRoomId = localStorage.getItem("activeRoomId");
 
     initNarratorSidebarState();
@@ -414,7 +487,15 @@ function renderChannelsList(filterText = "") {
     if (!channelsListEl) return;
     
     const term = (filterText || "").trim().toLowerCase();
-    const filtered = roomsList.filter(r => (r.name || "").toLowerCase().includes(term));
+    
+    // Sort channels by most recent activity timestamp descending (U-01)
+    const sortedRooms = [...roomsList].sort((a, b) => {
+        const timeA = new Date(a._updatedAt || a.lm || a.updatedAt || 0).getTime();
+        const timeB = new Date(b._updatedAt || b.lm || b.updatedAt || 0).getTime();
+        return timeB - timeA;
+    });
+    
+    const filtered = sortedRooms.filter(r => (r.name || "").toLowerCase().includes(term));
     
     if (filtered.length === 0) {
         channelsListEl.innerHTML = `
@@ -620,6 +701,32 @@ function handleTranscriptError(targetRoomId, message) {
     }
 }
 
+function checkForAutoNarrate(targetRoomId, newMessages) {
+    const settings = getSettings();
+    if (!settings.autoNarrate) return;
+    
+    if (!newMessages || newMessages.length === 0) return;
+    
+    const state = getRoomState(targetRoomId);
+    const sorted = [...newMessages].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+    const newestMsg = sorted[sorted.length - 1];
+    
+    if (!newestMsg || newestMsg.id === state.lastNarratedId) return;
+    
+    const author = (newestMsg.name || newestMsg.username || "").toLowerCase();
+    const lane = newestMsg.lane;
+    const text = newestMsg.text || "";
+    
+    const isAgent = (lane === "agent") || ["codex", "claude", "grok", "gemini", "voice_gateway"].some(a => author.includes(a));
+    const isSystemOrRouting = author.includes("acli_bot") || text.includes("🔄 Routing") || text.includes("[gateway_");
+    
+    if (isAgent && !isSystemOrRouting) {
+        state.lastNarratedId = newestMsg.id;
+        console.log("Auto-narrating real agent response:", newestMsg.id);
+        handleGenerateDigest({ autoPlay: true });
+    }
+}
+
 async function loadHistory() {
     if (!activeRoomId || activeRoomId === "loading" || activeRoomId === "error") return;
     
@@ -637,6 +744,7 @@ async function loadHistory() {
         
         if (data.success && data.messages) {
             const state = getRoomState(targetRoomId);
+            checkForAutoNarrate(targetRoomId, data.messages);
             if (state.loadingOlder) {
                 // Preserve the pre-prepend viewport; newest page wins while loading.
                 state.pendingLatest = data;
@@ -990,7 +1098,7 @@ function initSpeechSynthesis() {
     ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Ready`;
 }
 
-async function handleGenerateDigest() {
+async function handleGenerateDigest(options = {}) {
     if (!activeRoomId) return;
     const targetRoomId = activeRoomId;
     const targetState = getRoomState(targetRoomId);
@@ -998,9 +1106,12 @@ async function handleGenerateDigest() {
     btnGenerateDigest.disabled = true;
     digestContent.innerHTML = "<em>Generating new digest from recent updates...</em>";
     
+    const settings = getSettings();
+    const limit = settings.historyLimit || 20;
+
     try {
-        // Fetch current messages for target room
-        const histResponse = await fetch(`/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=20`);
+        // Fetch current messages for target room with configurable context depth (U-02)
+        const histResponse = await fetch(`/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=${limit}`);
         if (!histResponse.ok) throw new Error("Failed to fetch messages");
         const histData = await histResponse.json();
         
@@ -1020,7 +1131,8 @@ async function handleGenerateDigest() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
                 messages: histData.messages,
-                roomId: targetRoomId
+                roomId: targetRoomId,
+                history_limit: limit
             })
         });
         
@@ -1032,6 +1144,10 @@ async function handleGenerateDigest() {
         
         currentDigestText = digestData.digest;
         digestContent.innerText = currentDigestText;
+        
+        if (options.autoPlay && currentDigestText) {
+            speakCurrentDigest();
+        }
         
         // Render Auditable Sources List
         const sourceIds = digestData.included_message_ids || [];

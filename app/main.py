@@ -629,6 +629,7 @@ class DigestRequest(BaseModel):
     messages: List[dict]
     style: Optional[str] = "narrator" # e.g. "narrator", "brief", "detailed"
     roomId: Optional[str] = None
+    history_limit: Optional[int] = 20
 
 @app.get("/api/status")
 async def get_status():
@@ -991,10 +992,12 @@ async def generate_digest(req: DigestRequest):
         
     rules = (
         "1. Speak directly to Ed. Refer to him as 'Ed' or 'you'.\n"
-        "2. Summarize what changed, what was completed, and what is currently blocked, relative to the project objectives.\n"
-        "3. Explain how the recent chat relates to the prior summaries and the overall project goals (e.g. 'You asked Codex to do X, and it is now done. Next step is Y.').\n"
-        "4. Keep it extremely crisp and concise (under 200 words). Skip all greeting/intro boilerplate.\n"
-        "5. Do NOT include Markdown formatting like asterisks or hashtags since they will be read literally by the browser's TTS engine."
+        "2. Synthesize what is happening into EXACTLY TWO SHORT PARAGRAPHS.\n"
+        "   - Paragraph 1: High-level overview of the recent conversation context and requests.\n"
+        "   - Paragraph 2: Current progress, actions completed, and active status.\n"
+        "3. Do NOT use bullet points, numbered lists, or Markdown header formatting (no # or *).\n"
+        "4. Keep it crisp, conversational, and under 200 words total.\n"
+        "5. Skip all greeting and sign-off boilerplate."
     )
     with open(task_instructions_path, "w", encoding="utf-8") as f:
         f.write(rules)

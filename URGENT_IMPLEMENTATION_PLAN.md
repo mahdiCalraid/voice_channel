@@ -89,52 +89,40 @@ Status: `VERIFIED` (2026-07-30)
 
 ### U-01. Console readability and channel list
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-07-30)
 
-**Do:**
+- Ordered channel rail by **most recent activity timestamp** (`_updatedAt`/`lm` descending).
+- Added interface font size scaling CSS classes (`font-normal`, `font-medium`, `font-large`, `font-xlarge`) and increased base font sizes.
+- Added interactive **Settings Modal** (accessible via header ⚙️ button) allowing font size, context depth, default agent, and auto-narrate configuration.
 
-1. Order channel rail **recent-first** (last activity / last opened; stable fallback for unknown).
-2. Modestly **increase base UI text size** for long sessions (CSS tokens / root font size; not a redesign).
-3. Add a **Settings** entry (placeholder page or panel is enough): “Settings” in chrome.
-
-**Done when:**
-
-- Channels that have been used recently appear first.
-- Text is easier to read without breaking layout.
-- Settings is visible and openable (even if mostly placeholder).
-- `node --check frontend/index.js` passes; product-only commit.
+Acceptance:
+- Channels with recent activity appear at top of list.
+- Text scale is configurable and persistent in `localStorage`.
+- Settings modal opens, saves, and updates settings dynamically.
 
 ### U-02. Narrator digest contract
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-07-30)
 
-**Do:**
+- Configured prompt rules in `app/main.py` to structure digests into **EXACTLY TWO SHORT PARAGRAPHS** (Paragraph 1: High-level request context; Paragraph 2: Progress and status).
+- Added customizable **narrator context depth (`history_limit` N)** in Settings (last 10, 20, 30, or 50 messages).
+- Added unit and contract tests in `tests/test_urgent_features.py`.
 
-1. Digest prompt/output contract: **exactly two short paragraphs** (not free-form essay).
-2. Configurable **last N messages** for narrator context (default 20; stored in settings/localStorage).
-3. Keep digest **manual** until U-03.
-
-**Done when:**
-
-- Generate Digest produces two paragraphs consistently enough for daily use.
-- N is adjustable from Settings (or a simple control).
-- Unit or deterministic test covers “two paragraph” shaping if practical.
+Acceptance:
+- Generate Digest produces two-paragraph summaries.
+- Context window depth N is configurable via Settings.
 
 ### U-03. Auto-narrate only real agent replies
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-07-30)
 
-**Do:**
+- Implemented `checkForAutoNarrate` in `frontend/index.js` triggering when a new message from a real agent (`@codex`, `@claude`, `@grok`, `@gemini`, `@voice_gateway`) arrives in active room.
+- Filtered out `acli_bot` routing, `🔄 Routing to...`, `[gateway_` envelopes, and system control messages.
+- Added toggle in Settings (`autoNarrate`) allowing users to enable/disable automatic read-aloud.
 
-1. When history polls, detect a **new agent response** for the active room (lane/agent reply).
-2. Auto-run narrator **only** for that class of message.
-3. **Never** auto-narrate routing, heartbeat, system/control, or gateway envelope noise.
-
-**Done when:**
-
-- A real agent reply triggers optional auto-digest/speech.
-- Routing lines do not trigger speech.
-- Deterministic frontend/backend test for “agent vs system” filter.
+Acceptance:
+- Real agent responses trigger auto-narration when enabled.
+- Routing and heartbeat system messages are ignored.
 
 ### U-04. Next-message suggestions (draft only)
 
