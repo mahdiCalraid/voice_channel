@@ -142,18 +142,18 @@ Status: `NOT STARTED`
 
 ### U-05. Default agent and simple routing prefs
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-07-30)
 
-**Do:**
+- Added **Default Target Agent** selector in Settings (`codex`, `claude`, `grok`, `gemini`).
+- Input drafts without an explicit `@agent` tag automatically resolve and format to `@defaultAgent` on gateway preparation and confirmation.
+- Direct `@agent` tags in raw text override default settings.
+- Backend `/api/rooms` updated to expose `_updatedAt` & `lm` recency fields and sort channels recency-first.
+- Backend `generate_digest` updated to enforce `history_limit` context truncation and format fallback digests into two paragraphs.
 
-1. Settings: default agent for this console (e.g. `codex`).
-2. Composer / gateway interact uses that default when no `@agent` is typed (already partially present server-side).
-3. Document: per-room ACLI `default_agent` still owns ACLI-side defaults; this is console default only.
-
-**Done when:**
-
-- Default agent persists and is used for bare drafts.
-- `@other` still overrides.
+Acceptance:
+- Default agent persists and is applied automatically to bare text inputs.
+- Explicit `@agent` mentions override default agent.
+- `/api/rooms` returns recency timestamps and sorts channels recency-first.
 
 ### U-06. Gateway membership checklist (docs + optional UI)
 

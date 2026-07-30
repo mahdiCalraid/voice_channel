@@ -60,6 +60,61 @@ class TestUrgentFeatures(unittest.TestCase):
         self.assertIn("Paragraph 1:", digest)
         self.assertIn("Paragraph 2:", digest)
 
+    @patch("app.main.read_matter_docs")
+    @patch("app.main.read_prior_summaries")
+    @patch("app.main.save_summary")
+    @patch("subprocess.run")
+    def test_fallback_digest_two_paragraphs(self, mock_subproc_run, mock_save, mock_summaries, mock_docs):
+        mock_docs.return_value = "Matter docs"
+        mock_summaries.return_value = []
+        mock_save.return_value = None
+        
+        # Simulate worker failure
+        res = MagicMock()
+        res.returncode = 1
+        res.stderr = "Worker error"
+        mock_subproc_run.return_value = res
+
+        payload = {
+            "messages": [
+                {"id": "msg_001", "name": "Codex", "text": "Task finished", "lane": "agent", "ts": "2026-07-30T02:00:00.000Z"}
+            ],
+            "roomId": "test_room_123",
+            "history_limit": 10
+        }
+
+        resp = self.client.post("/api/digest", json=payload)
+        self.assertEqual(resp.status_code, 200)
+        digest = resp.json().get("digest", "")
+        self.assertIn("\n\n", digest)
+        paragraphs = digest.split("\n\n")
+        self.assertEqual(len(paragraphs), 2)
+
+    @patch("httpx.AsyncClient.get")
+    def test_rooms_endpoint_returns_recency_and_sorts(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "success": True,
+            "update": [
+                {"_id": "r1", "name": "alpha", "t": "c", "lm": "2026-07-30T01:00:00.000Z", "_updatedAt": "2026-07-30T01:00:00.000Z"},
+                {"_id": "r2", "name": "zeta", "t": "c", "lm": "2026-07-30T05:00:00.000Z", "_updatedAt": "2026-07-30T05:00:00.000Z"}
+            ]
+        }
+        mock_get.return_value = mock_resp
+
+        resp = self.client.get("/api/rooms")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data.get("success"))
+        rooms = data.get("rooms", [])
+        self.assertEqual(len(rooms), 2)
+        # Verify recency-first sorting (zeta timestamp > alpha timestamp)
+        self.assertEqual(rooms[0]["name"], "zeta")
+        self.assertEqual(rooms[1]["name"], "alpha")
+        self.assertIn("lm", rooms[0])
+        self.assertIn("_updatedAt", rooms[0])
+
 
 if __name__ == "__main__":
     unittest.main()

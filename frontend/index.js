@@ -1374,8 +1374,16 @@ function showSendFeedback(message, type) {
 }
 
 function showConfirmation() {
-    const text = commandInput.value.trim();
+    let text = commandInput.value.trim();
     if (!text || !activeRoomId) return;
+    
+    // Auto-prepend default target agent if no @agent tag is present (U-05)
+    if (!text.startsWith("@")) {
+        const settings = getSettings();
+        const defAgent = settings.defaultAgent || "codex";
+        text = `@${defAgent} ${text}`;
+        commandInput.value = text;
+    }
     
     confirmationTargetRoomId = activeRoomId;
     confirmationTargetText = text;
@@ -1398,7 +1406,9 @@ function showConfirmation() {
 
 function extractRequestedAgent(text) {
     const match = text.match(/^@([a-zA-Z0-9_]+)/);
-    return match ? match[1] : null;
+    if (match) return match[1];
+    const settings = getSettings();
+    return settings.defaultAgent || "codex";
 }
 
 async function prepareGatewayInteraction(text, roomId) {
@@ -1413,7 +1423,7 @@ async function prepareGatewayInteraction(text, roomId) {
                 input_mode: "text",
                 raw_input: text,
                 requested_room_id: roomId,
-                requested_agent: extractRequestedAgent(text) || undefined
+                requested_agent: extractRequestedAgent(text)
             })
         });
         const data = await response.json();

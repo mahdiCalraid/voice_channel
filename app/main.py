@@ -768,7 +768,7 @@ async def get_rooms():
                 
             raw_rooms = data.get("update", [])
             
-            # Format and filter rooms
+            # Format and filter rooms with recency timestamps (U-01)
             rooms = []
             for room in raw_rooms:
                 room_type = room.get("t")
@@ -776,11 +776,19 @@ async def get_rooms():
                     rooms.append({
                         "id": room.get("_id"),
                         "name": room.get("name") or room.get("fname", "Unnamed"),
-                        "type": room_type
+                        "type": room_type,
+                        "lm": room.get("lm"),
+                        "_updatedAt": room.get("_updatedAt") or room.get("lm")
                     })
             
-            # Sort by name
-            rooms.sort(key=lambda r: r["name"].lower())
+            # Sort rooms recency-first by timestamp descending (fallback to name)
+            rooms.sort(
+                key=lambda r: (
+                    r.get("_updatedAt") or r.get("lm") or "",
+                    r["name"].lower()
+                ),
+                reverse=True
+            )
             
             return {
                 "success": True,
@@ -944,8 +952,10 @@ def save_summary(room_id: str, digest: str):
 async def generate_digest(req: DigestRequest):
     room_id = req.roomId or RC_ROOM_ID
     
-    # Filter messages to only include Lane B (agent) and Lane C (user)
-    lane_b_c = [m for m in req.messages if m.get("lane") in ("agent", "user")]
+    # Enforce history_limit context depth N on backend (U-02)
+    limit = req.history_limit if req.history_limit and req.history_limit > 0 else 20
+    raw_lane_b_c = [m for m in req.messages if m.get("lane") in ("agent", "user")]
+    lane_b_c = raw_lane_b_c[-limit:] if len(raw_lane_b_c) > limit else raw_lane_b_c
     included_message_ids = [m.get("id") for m in lane_b_c if m.get("id")]
     
     if not lane_b_c:
@@ -1087,19 +1097,19 @@ async def generate_digest(req: DigestRequest):
             "prior_summary_used": prior_summary_used
         }
         
-    # Rule-based fallback summary with agent attribution
+    # Rule-based fallback summary with agent attribution in exactly two paragraphs
     logger.warning("Worker failed or returned error. Falling back to rule-based summary.")
-    summary_parts = ["Here is a quick summary of the recent updates:"]
+    p1_parts = ["Ed, here is the context overview of recent updates in this channel."]
     user_counts = {}
     for m in lane_b_c:
-        # Prefer event.agent for Lane B
         agent_name = m.get("event", {}).get("agent") if m.get("lane") == "agent" else None
         author = agent_name or m.get("name") or m.get("username") or "Unknown"
         user_counts[author] = user_counts.get(author, 0) + 1
         
     for user, count in user_counts.items():
-        summary_parts.append(f"{user} worked on {count} updates.")
+        p1_parts.append(f"{user} contributed {count} updates.")
         
+    p2_parts = []
     if lane_b_c:
         last_msg = lane_b_c[-1]
         agent_name = last_msg.get("event", {}).get("agent") if last_msg.get("lane") == "agent" else None
@@ -1107,11 +1117,11 @@ async def generate_digest(req: DigestRequest):
         last_text = last_msg.get("text", "")
         if len(last_text) > 100:
             last_text = last_text[:100] + "..."
-        summary_parts.append(f"The last update was from {last_user}, saying: {last_text}")
+        p2_parts.append(f"Current status: The latest activity was from {last_user}, stating: {last_text}")
     else:
-        summary_parts.append("No active agent replies or user requests in the current window.")
+        p2_parts.append("Current status: No active agent replies or user requests in the current window.")
         
-    fallback_digest = " ".join(summary_parts)
+    fallback_digest = " ".join(p1_parts) + "\n\n" + " ".join(p2_parts)
     
     # Persist fallback summary
     try:
