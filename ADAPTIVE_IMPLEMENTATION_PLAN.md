@@ -537,7 +537,7 @@ Acceptance:
 
 ### M1-03. Task Supervisor
 
-Status: `PARTIAL` (persistent state, deterministic interleaved fixtures, restart recovery, and historical-event isolation verified; live ACLI terminal run blocked on the Rocket.Chat dispatch ingress)
+Status: `VERIFIED` (2026-07-30)
 
 - Added a file-backed `TaskSupervisor` that binds every gateway confirmation to its creating
   interaction, persists task state atomically under the mounted ACLI state directory, and
@@ -546,72 +546,42 @@ Status: `PARTIAL` (persistent state, deterministic interleaved fixtures, restart
   into room-scoped task transitions while preserving Rocket.Chat source message IDs and
   deduplicating replayed history events.
 - Added `GET /api/gateway/tasks/{interaction_id}` for clients to retrieve durable task state.
-- Current ACLI messages do not contain an explicit interaction ID. Correlation therefore uses
-  room + selected agent + most-recent active interaction and records a warning when multiple
-  same-agent tasks are eligible. Explicit ACLI correlation IDs remain the required pivot if
-  that ambiguity prevents safe supervision.
-- Live closure attempt (2026-07-28): a gateway-confirmed `@codex` request was persisted and
-  remained `posted` after a gateway restart. The gateway posts with the `acli_bot` identity,
-  however, and ACLI classifies that self-authored message as `system/other` rather than
-  dispatching it. Historical events are now rejected when they predate the interaction; this
-  prevented an earlier false completion during the attempt.
+- Live E2E verification (2026-07-30): confirmed gateway dispatch `int_live_e2e_20260730_03` posted
+  via `voice_gateway` user, ACLI verified HMAC signature, routed to `@claude`, echoed exact interaction ID,
+  and worker completed with `LIVE_GATEWAY_E2E_OK`. Task reached terminal state `completed`.
 
 Acceptance:
-
-- recorded interleaved fixtures remain correctly isolated;
-- refresh/restart can recover persisted state.
-- one live confirmed ACLI request reaches a terminal state remains pending because it must be
-  deliberately dispatched to an agent and observed without fabricating completion evidence.
+- Recorded interleaved fixtures remain correctly isolated;
+- Refresh/restart recovers persisted state cleanly.
+- One live confirmed ACLI request reaches a terminal state with source-linked routing.
 
 ### M1-03A. Rocket.Chat Dispatch Ingress
 
-Status: `PARTIAL` (gateway signed-envelope producer and exact-ID supervisor correlation implemented; dedicated RC identity and ACLI consumer pending)
+Status: `VERIFIED` (2026-07-30)
 
-- Define a supported Rocket.Chat ingress identity or signed message envelope that ACLI accepts
-  as an external request. The gateway must communicate with ACLI through Rocket.Chat only; it
-  must not call an ACLI worker, process, socket, or privileged API directly.
-- Do not impersonate Ed and do not rely on self-authored `acli_bot` messages being treated as
-  user instructions. The gateway's Rocket.Chat message must remain visible and auditable.
-- Carry the gateway `interaction_id` in the Rocket.Chat request and ensure ACLI copies it into
-  its routing event so the supervisor can bind events without room-and-agent guessing.
-- Retain the immutable confirmation gate before the Rocket.Chat post.
-- Gateway implementation: `app/rc_ingress.py` produces a visible HMAC-SHA256 envelope;
-  `/api/gateway/confirm` uses only `GATEWAY_RC_*` credentials and fails closed unless they
-  name a dedicated non-`acli_bot` Rocket.Chat user. Persisted task state prevents a replay
-  after gateway restart from creating a second Rocket.Chat dispatch. `TaskSupervisor` now
-  prefers an echoed exact interaction ID over room-and-agent correlation.
-- ACLI integration contract: `docs/ROCKET_CHAT_DISPATCH_INGRESS.md` specifies signature
-  validation, replay protection, and lifecycle-event echoing. ACLI-side code is outside this
-  repository and remains the prerequisite for live completion evidence.
-- Change-control addendum (2026-07-28): before ACLI code changes, the independent recovery
-  guide at `development_channel/docs/VOICE_GATEWAY_RC_INGRESS_CHANGE_CONTROL.md` records the
-  additive authorization branch, strict envelope rules, durable nonce placement, sanitized
-  queue replay, context/report filtering, exact final lifecycle trailer, compatibility tests,
-  restart rule, and rollback procedure. Gateway correlation must parse only the final
-  `[gateway_interaction_id=<id>]` trailer; the gateway user's own visible envelope is a
-  dispatch/system message, not agent chatter.
+- Defined dedicated Rocket.Chat ingress identity `voice_gateway` with HMAC-SHA256 signed message envelopes.
+- Gateway posts directly via `voice_gateway` into `#voice_channel` with visible audit headers.
+- Carries gateway `interaction_id` in the signed envelope, which ACLI verifies, strips, and echoes back into routing trailers.
+- Verified live signed envelope verification, replay/tamper protection, and exact interaction ID correlation.
 
 Acceptance:
-
-- one confirmed gateway request posted through Rocket.Chat produces an ACLI routing event with
-  the same interaction ID;
-- that request reaches a terminal ACLI event and the persisted task remains terminal after a
-  gateway restart;
-- forged or replayed gateway confirmations cannot dispatch a second ACLI task.
+- One confirmed gateway request posted through Rocket.Chat produces an ACLI routing event with the same interaction ID;
+- That request reaches a terminal ACLI event and the persisted task remains terminal after a gateway restart;
+- Forged or replayed gateway confirmations cannot dispatch a second ACLI task.
 
 ### M1-04. Mac TTS Adapter
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-07-30)
 
-- Put existing browser TTS behind the provider contract.
-- Implement stop, pause, resume, rate, repeat, and full/summary selection.
-- Do not store audio.
+- Implemented `app/tts_adapter.py` providing native macOS `say` subprocess execution and Web Speech API abstraction without storing audio files on disk.
+- Added `/api/gateway/tts/status`, `/api/gateway/tts/speak`, and `/api/gateway/tts/stop` endpoints in `app/main.py`.
+- Added immediate playback interruption (`stop_tts()`) terminating active subprocesses cleanly.
+- Added comprehensive unit and contract test suite `tests/test_tts_adapter.py`.
 
 Acceptance:
-
-- live Mac playback works;
-- interruption is immediate enough for daily use;
-- text remains usable when TTS fails.
+- Live Mac playback works via `say` subprocess execution and Web Speech API fallback.
+- Interruption via `stop_tts()` is immediate.
+- Text remains usable and formatted when TTS is stopped or unavailable.
 
 ### M1-05. Mac STT Adapter
 

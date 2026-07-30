@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import logging
@@ -25,6 +26,14 @@ from app.contracts import (
     TaskEvent,
     TaskRecord,
     GatewayResult,
+)
+from app.tts_adapter import (
+    TTSRequest,
+    TTSStatus,
+    get_system_voices,
+    stop_tts,
+    is_active_playback,
+    speak_text,
 )
 from app.task_supervisor import TaskSupervisor
 from app.rc_ingress import IngressConfigurationError, build_ingress_message, extract_interaction_id
@@ -1159,12 +1168,18 @@ async def gateway_interact(req: InteractionRequest):
     target_room = req.requested_room_id or RC_ROOM_ID
     target_agent = req.requested_agent or "codex"
     
+    raw_text = req.raw_input.strip()
+    if target_agent and not raw_text.startswith(f"@{target_agent}"):
+        refined_draft = f"@{target_agent} {raw_text}"
+    else:
+        refined_draft = raw_text
+    
     interp = Interpretation(
         schema_version=CURRENT_SCHEMA_VERSION,
         selected_action="post_message",
         selected_room_id=target_room,
         selected_agent=target_agent,
-        refined_draft=req.raw_input.strip(),
+        refined_draft=refined_draft,
         confidence_score=1.0,
         requires_clarification=False,
         audit_explanation="Interaction converted to message post draft.",
@@ -1327,6 +1342,29 @@ async def gateway_task_status(interaction_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="Gateway interaction not found")
     return record
+
+
+@app.get("/api/gateway/tts/status", response_model=TTSStatus)
+async def gateway_tts_status():
+    voices = get_system_voices()
+    return TTSStatus(
+        engine="macos_say" if sys.platform == "darwin" else "web_speech_api",
+        is_available=True,
+        active_playback=is_active_playback(),
+        available_voices=voices
+    )
+
+@app.post("/api/gateway/tts/speak")
+async def gateway_tts_speak(req: TTSRequest):
+    res = await speak_text(req)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "TTS execution failed"))
+    return res
+
+@app.post("/api/gateway/tts/stop")
+async def gateway_tts_stop():
+    stopped = stop_tts()
+    return {"stopped": stopped}
 
 @app.post("/api/send")
 async def send_message(req: MessageSendRequest):

@@ -47,7 +47,7 @@ class TestGatewayAdapterEndpoints(unittest.TestCase):
         conf = metadata["confirmation_snapshot"]
         self.assertEqual(conf["room_id"], "test_room_123")
         self.assertEqual(conf["agent"], "codex")
-        self.assertEqual(conf["exact_message"], "Send status update to team")
+        self.assertEqual(conf["exact_message"], "@codex Send status update to team")
         self.assertEqual(conf["permission_tier"], "commit")
         self.assertTrue(conf["nonce"].startswith("nonce_"))
 
