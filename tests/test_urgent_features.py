@@ -18,6 +18,22 @@ class TestUrgentFeatures(unittest.TestCase):
         req_default = DigestRequest(messages=[])
         self.assertEqual(req_default.history_limit, 20)
 
+    def test_frontend_shell_and_assets_disable_stale_browser_cache(self):
+        shell = self.client.get("/")
+        self.assertEqual(shell.status_code, 200)
+        self.assertEqual(shell.headers.get("cache-control"), "no-store, max-age=0")
+        self.assertIn("index.js?v=response-assistant-1", shell.text)
+        self.assertIn("history_state.js?v=response-assistant-1", shell.text)
+
+        for asset_path in ("/index.js", "/history_state.js", "/index.css"):
+            with self.subTest(asset_path=asset_path):
+                asset = self.client.get(asset_path)
+                self.assertEqual(asset.status_code, 200)
+                self.assertEqual(
+                    asset.headers.get("cache-control"),
+                    "no-store, max-age=0",
+                )
+
     @patch("app.main.read_matter_docs")
     @patch("app.main.read_prior_summaries")
     @patch("app.main.save_summary")

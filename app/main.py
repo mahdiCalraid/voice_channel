@@ -1643,18 +1643,24 @@ async def send_message(req: MessageSendRequest):
         return await _do_send()
 
 # Route to serve frontend assets
+FRONTEND_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
+
+
 @app.get("/")
 async def get_index():
-    return FileResponse("frontend/index.html")
+    # The console is a continuously running local tab.  Do not let the browser
+    # keep an older UI shell after a product update; stale JavaScript can make a
+    # deployed backend feature look completely inactive.
+    return FileResponse("frontend/index.html", headers=FRONTEND_CACHE_HEADERS)
 
 @app.get("/index.css")
 async def get_css():
-    return FileResponse("frontend/index.css")
+    return FileResponse("frontend/index.css", headers=FRONTEND_CACHE_HEADERS)
 
 @app.get("/index.js")
 async def get_js():
-    return FileResponse("frontend/index.js")
+    return FileResponse("frontend/index.js", headers=FRONTEND_CACHE_HEADERS)
 
 @app.get("/history_state.js")
 async def get_history_state_js():
-    return FileResponse("frontend/history_state.js")
+    return FileResponse("frontend/history_state.js", headers=FRONTEND_CACHE_HEADERS)

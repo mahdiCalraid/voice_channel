@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
-    <link rel="stylesheet" href="index.css">
+    <link rel="stylesheet" href="index.css?v=response-assistant-1">
 </head>
 <body>
     <div class="app-layout">
@@ -190,10 +190,14 @@
                 <div class="narrator-card">
                     <div class="card-title-row">
                         <span class="badge" id="digest-badge">Latest Digest</span>
+                        <span class="assistant-status is-on" id="assistant-status">
+                            <span class="assistant-status-dot"></span>
+                            Automatic: waiting
+                        </span>
                     </div>
 
                     <div class="digest-text-container">
-                        <p id="digest-content">No digest loaded. Click "Generate Digest" below to fetch the latest updates from the channel and read them aloud.</p>
+                        <p id="digest-content">Automatic assistance is on. Waiting for the next real agent response; you can also generate a digest manually.</p>
 
                         <div class="digest-sources-container" id="digest-sources-container" style="display: none;">
                             <button class="sources-toggle" id="sources-toggle">
@@ -286,7 +290,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="history_state.js"></script>
-    <script src="index.js"></script>
+    <script src="history_state.js?v=response-assistant-1"></script>
+    <script src="index.js?v=response-assistant-1"></script>
 </body>
 </html>

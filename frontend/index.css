@@ -1460,6 +1460,39 @@ body {
 
 .card-title-row {
     margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.assistant-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+.assistant-status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.assistant-status.is-on,
+.assistant-status.is-ready {
+    color: #6ee7b7;
+}
+
+.assistant-status.is-working {
+    color: #fbbf24;
+}
+
+.assistant-status.is-error {
+    color: #fca5a5;
 }
 
 /* Responsive Rules */
@@ -1606,4 +1639,3 @@ body.font-xlarge { font-size: 20px; }
     display: flex;
     justify-content: flex-end;
 }
-

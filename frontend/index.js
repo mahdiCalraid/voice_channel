@@ -48,6 +48,7 @@ const sourcesToggle = document.getElementById("sources-toggle");
 const sourcesToggleText = document.getElementById("sources-toggle-text");
 const sourcesArrow = document.getElementById("sources-arrow");
 const sourcesList = document.getElementById("sources-list");
+const assistantStatus = document.getElementById("assistant-status");
 
 // New Three-Pane DOM Elements
 const channelsListEl = document.getElementById("channels-list");
@@ -98,6 +99,23 @@ function saveSettings(settings) {
 function applySettings(settings = getSettings()) {
     document.body.classList.remove("font-normal", "font-medium", "font-large", "font-xlarge");
     document.body.classList.add("font-" + (settings.fontSize || "medium"));
+    if (settings.autoNarrate) {
+        setAssistantStatus("Automatic: waiting", "on");
+    } else {
+        setAssistantStatus("Automatic: off", "off");
+    }
+}
+
+function setAssistantStatus(text, state = "on") {
+    if (!assistantStatus) return;
+    assistantStatus.className = "assistant-status is-" + state;
+    assistantStatus.innerHTML = '<span class="assistant-status-dot"></span>' + escapeHTML(text);
+}
+
+function emptyNarratorText() {
+    return getSettings().autoNarrate
+        ? "Automatic assistance is on. Waiting for the next real agent response; you can also generate a digest manually."
+        : 'Automatic assistance is off. Click "Generate Digest" to create narration and a next-message draft manually.';
 }
 
 function initSettingsModal() {
@@ -426,7 +444,7 @@ function restoreRoomUIData(roomId) {
         if (currentDigestText) {
             digestContent.innerText = currentDigestText;
         } else {
-            digestContent.innerText = 'No digest loaded. Click "Generate Digest" below to fetch the latest updates from the channel and read them aloud.';
+            digestContent.innerText = emptyNarratorText();
         }
     }
     
@@ -1200,6 +1218,10 @@ async function handleGenerateDigest(options = {}) {
     targetState.digestLoading = true;
     targetState.responseAssistantLoading = true;
     btnGenerateDigest.disabled = true;
+    setAssistantStatus(
+        options.triggerMessageId ? "Automatic: reviewing reply" : "Assistant: reviewing channel",
+        "working"
+    );
     digestContent.innerHTML = "<em>Reviewing the response and preparing narration plus the next draft...</em>";
     
     const settings = getSettings();
@@ -1244,6 +1266,9 @@ async function handleGenerateDigest(options = {}) {
         targetState.lastAssistedId = digestData.trigger_message_id || options.triggerMessageId || null;
         targetState.failedAssistantId = null;
         targetState.assistantRetryAt = 0;
+        if (targetRoomId === activeRoomId) {
+            setAssistantStatus("Automatic: draft ready", "ready");
+        }
 
         const inserted = applySuggestedDraft(targetRoomId, digestData.suggested_message);
         targetState.suggestionPhase = digestData.phase || "";
@@ -1310,6 +1335,7 @@ async function handleGenerateDigest(options = {}) {
         if (targetRoomId === activeRoomId) {
             console.error("Response assistance failed:", err);
             digestContent.innerText = "Could not generate narration and next-message draft. The console will retry on a later poll.";
+            setAssistantStatus("Automatic: retry scheduled", "error");
         }
         if (options.triggerMessageId) {
             targetState.failedAssistantId = options.triggerMessageId;
