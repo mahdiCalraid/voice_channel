@@ -313,6 +313,35 @@ body {
     font-weight: 300;
 }
 
+.digest-edit-hint {
+    margin-bottom: 0.55rem;
+    color: var(--text-muted);
+    font-size: calc(var(--system-font-size) * 0.65);
+    line-height: 1.3;
+}
+
+.digest-editor {
+    min-height: 5.5rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    cursor: text;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 0.45rem 0.55rem;
+    margin: -0.45rem -0.55rem 0;
+    outline: none;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.digest-editor:hover {
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+.digest-editor:focus {
+    border-color: var(--primary);
+    background: rgba(255, 255, 255, 0.035);
+}
+
 .playback-controls {
     display: flex;
     justify-content: space-between;
@@ -329,9 +358,19 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.45rem;
-    min-height: 42px;
-    padding: 0.55rem 1rem;
+    gap: 0.3rem;
+    min-height: 36px;
+    padding: 0.4rem 0.75rem;
+    font-size: calc(var(--system-font-size) * 0.78);
+}
+
+.btn-narration-play .material-symbols-rounded {
+    font-size: calc(var(--system-font-size) * 1.05);
+}
+
+.btn-narration-play:disabled {
+    opacity: 0.4;
+    cursor: default;
 }
 
 .speed-control {

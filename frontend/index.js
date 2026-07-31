@@ -308,6 +308,33 @@ function emptyNarratorText() {
         : 'Automatic assistance is off. Click "Generate Digest" to create narration and a next-message draft manually.';
 }
 
+function narrationTextFromEditor() {
+    if (!digestContent) return "";
+    return String(digestContent.innerText || "")
+        .replace(/\u00a0/g, " ")
+        .trim();
+}
+
+function updateNarrationPlayState() {
+    if (!btnPlayPause) return;
+    const hasNarration = Boolean(String(currentDigestText || "").trim());
+    btnPlayPause.disabled = !hasNarration;
+    btnPlayPause.title = hasNarration
+        ? "Play or pause summary narration"
+        : "Nothing to play yet";
+}
+
+function handleNarrationEdit() {
+    currentDigestText = narrationTextFromEditor();
+    if (activeRoomId) {
+        getRoomState(activeRoomId).digestText = currentDigestText;
+    }
+    if (window.speechSynthesis.speaking || currentUtterance) {
+        handleStop();
+    }
+    updateNarrationPlayState();
+}
+
 function initSettingsModal() {
     const btnOpen = document.getElementById("btn-open-settings");
     const btnClose = document.getElementById("btn-close-settings");
@@ -584,6 +611,10 @@ function init() {
     btnPlayPause.addEventListener("click", handlePlayPause);
     btnStop.addEventListener("click", handleStop);
     speedRange.addEventListener("input", handleSpeedChange);
+    if (digestContent) {
+        digestContent.addEventListener("input", handleNarrationEdit);
+    }
+    updateNarrationPlayState();
     btnMic.addEventListener("click", toggleSpeechInput);
     btnPreSend.addEventListener("click", showConfirmation);
     btnCancelSend.addEventListener("click", hideConfirmation);
@@ -844,6 +875,7 @@ function restoreRoomUIData(roomId) {
             digestContent.innerText = emptyNarratorText();
         }
     }
+    updateNarrationPlayState();
     
     if (sourcesList) {
         sourcesList.innerHTML = state.digestSourcesHtml || "";
@@ -1806,6 +1838,7 @@ async function handleGenerateDigest(options = {}) {
         if (targetRoomId === activeRoomId) {
             currentDigestText = targetState.digestText;
             digestContent.innerText = currentDigestText;
+            updateNarrationPlayState();
             sourcesToggleText.innerText = targetState.sourcesToggleText;
             sourcesList.innerHTML = targetState.digestSourcesHtml;
             bindSourceItemHandlers();
@@ -1919,11 +1952,9 @@ function speakText(text) {
 }
 
 function handlePlayPause() {
-    if (!currentDigestText) {
-        // If no digest loaded, generate one first
-        handleGenerateDigest();
-        return;
-    }
+    // Generation is intentionally separate: an empty Play control is inert.
+    // Generate Digest creates both the narration and suggested reply.
+    if (!String(currentDigestText || "").trim()) return;
     
     if (window.speechSynthesis.speaking) {
         if (window.speechSynthesis.paused) {

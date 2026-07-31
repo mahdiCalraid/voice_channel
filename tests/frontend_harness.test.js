@@ -159,6 +159,83 @@ test("automatic assistance prepares the digest and draft without starting narrat
     assert.deepEqual(app.spoken, ["The requested work is complete."]);
 });
 
+test("editable narration is saved per room and Play reads the edited words", async () => {
+    const app = loadFrontend({ enableSpeech: true });
+    vm.runInContext(`
+        activeRoomId = "room-edit-narration";
+        currentDigestText = "Original summary.";
+        digestContent.innerText = currentDigestText;
+        updateNarrationPlayState();
+    `, app.sandbox);
+
+    const editor = app.sandbox.document.getElementById("digest-content");
+    const play = app.sandbox.document.getElementById("btn-play-pause");
+    editor.innerText = "Edited summary for careful review.";
+    app.sandbox.handleNarrationEdit();
+
+    assert.equal(play.disabled, false);
+    assert.equal(
+        vm.runInContext('getRoomState("room-edit-narration").digestText', app.sandbox),
+        "Edited summary for careful review."
+    );
+    app.sandbox.handlePlayPause();
+    assert.deepEqual(app.spoken, ["Edited summary for careful review."]);
+});
+
+test("Play is compact and inert until Generate Digest creates narration and a suggestion", async () => {
+    const app = loadFrontend({ enableSpeech: true });
+    let responseAssistantRequests = 0;
+    vm.runInContext(`
+        activeRoomId = "room-empty-narration";
+        roomsList = [{ id: "room-empty-narration", name: "voice_channel" }];
+        currentDigestText = "";
+        updateNarrationPlayState();
+    `, app.sandbox);
+    app.sandbox.fetch = url => {
+        if (url.startsWith("/api/history")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    messages: [{ id: "message-1", lane: "agent", text: "Work complete" }]
+                })
+            });
+        }
+        if (url === "/api/response-assistant") {
+            responseAssistantRequests += 1;
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    digest: "Generated narration.",
+                    suggested_message: "@grok Please review the work.",
+                    included_message_ids: ["message-1"]
+                })
+            });
+        }
+        throw new Error("Unexpected request: " + url);
+    };
+
+    const play = app.sandbox.document.getElementById("btn-play-pause");
+    assert.equal(play.disabled, true);
+    app.sandbox.handlePlayPause();
+    await Promise.resolve();
+    assert.equal(responseAssistantRequests, 0);
+    assert.equal(app.spoken.length, 0);
+
+    await app.sandbox.handleGenerateDigest();
+    assert.equal(responseAssistantRequests, 1);
+    assert.equal(play.disabled, false);
+    assert.equal(
+        app.sandbox.document.getElementById("digest-content").innerText,
+        "Generated narration."
+    );
+    assert.equal(
+        app.sandbox.document.getElementById("command-input").value,
+        "@grok Please review the work."
+    );
+    assert.equal(app.spoken.length, 0);
+});
+
 test("composer divider clamps, persists, and restores both pane boundaries", () => {
     const app = loadFrontend();
     vm.runInContext(`
