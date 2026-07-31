@@ -282,6 +282,59 @@ test("composer divider clamps, persists, and restores both pane boundaries", () 
     );
 });
 
+test("narrator divider clamps, persists, and keeps the conversation pane visible", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        window.innerWidth = 1400;
+        channelsSidebar.offsetWidth = 280;
+        narratorSidebar.offsetWidth = 340;
+        narratorResizeHandle.offsetWidth = 12;
+        initNarratorResizer();
+    `, app.sandbox);
+    const sidebar = app.sandbox.document.getElementById("narrator-sidebar");
+    const handle = app.sandbox.document.getElementById("narrator-resize-handle");
+
+    assert.equal(typeof handle.listeners.pointerdown, "function");
+    assert.equal(typeof handle.listeners.keydown, "function");
+    // 1,400px viewport − 280px channels − 12px grip − 380px conversation.
+    assert.equal(app.sandbox.setNarratorWidth(999, true), 728);
+    assert.equal(sidebar.style.getPropertyValue("--narrator-sidebar-width"), "728px");
+    assert.equal(app.storage.vc_narrator_width_px, "728");
+    assert.equal(handle.getAttribute("aria-valuemax"), "728");
+    assert.equal(app.sandbox.setNarratorWidth(1, true), 340);
+
+    handle.listeners.pointerdown({
+        button: 0,
+        pointerId: 8,
+        clientX: 1000,
+        preventDefault: () => {}
+    });
+    // Moving the left edge left expands the right-aligned narrator panel.
+    app.documentListeners.pointermove({ pointerId: 8, clientX: 800, preventDefault: () => {} });
+    app.documentListeners.pointerup({ pointerId: 8 });
+    assert.equal(sidebar.style.getPropertyValue("--narrator-sidebar-width"), "540px");
+    assert.equal(app.storage.vc_narrator_width_px, "540");
+
+    handle.listeners.keydown({ key: "ArrowRight", preventDefault: () => {} });
+    assert.equal(sidebar.style.getPropertyValue("--narrator-sidebar-width"), "516px");
+    handle.listeners.keydown({ key: "End", preventDefault: () => {} });
+    assert.equal(sidebar.style.getPropertyValue("--narrator-sidebar-width"), "728px");
+
+    const restored = loadFrontend({ storage: { vc_narrator_width_px: "520" } });
+    vm.runInContext(`
+        window.innerWidth = 1400;
+        channelsSidebar.offsetWidth = 280;
+        narratorSidebar.offsetWidth = 340;
+        narratorResizeHandle.offsetWidth = 12;
+        initNarratorResizer();
+    `, restored.sandbox);
+    assert.equal(
+        restored.sandbox.document.getElementById("narrator-sidebar").style
+            .getPropertyValue("--narrator-sidebar-width"),
+        "520px"
+    );
+});
+
 test("stale room history response is ignored when user switches rooms mid-flight", async () => {
     const app = loadFrontend();
     let resolveStale;

@@ -1541,9 +1541,49 @@ body.is-resizing-composer {
 }
 
 /* 3. Right Narrator Sidebar (Gemini Sidecar) */
+.narrator-resize-handle {
+    flex: 0 0 12px;
+    width: 12px;
+    cursor: col-resize;
+    touch-action: none;
+    background: rgba(13, 17, 28, 0.9);
+    border-left: 1px solid rgba(255, 255, 255, 0.04);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    outline: none;
+    position: relative;
+    z-index: 21;
+}
+
+.narrator-resize-grip {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 4px;
+    height: min(96px, 28%);
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.55);
+    transform: translate(-50%, -50%);
+    transition: height 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.narrator-resize-handle:hover .narrator-resize-grip,
+.narrator-resize-handle:focus-visible .narrator-resize-grip,
+body.is-resizing-narrator .narrator-resize-grip {
+    height: min(128px, 38%);
+    background: var(--primary);
+    box-shadow: 0 0 12px var(--primary-glow);
+}
+
+body.is-resizing-narrator {
+    cursor: col-resize;
+    user-select: none;
+}
+
 .narrator-sidebar {
-    width: 340px;
-    min-width: 340px;
+    --narrator-sidebar-width: 340px;
+    flex: 0 0 var(--narrator-sidebar-width);
+    width: var(--narrator-sidebar-width);
+    min-width: var(--narrator-sidebar-width);
     height: 100%;
     background: rgba(13, 17, 28, 0.95);
     border-left: 1px solid var(--card-border);
@@ -1554,7 +1594,7 @@ body.is-resizing-composer {
 }
 
 .narrator-sidebar.collapsed {
-    margin-right: -340px;
+    margin-right: calc(-1 * var(--narrator-sidebar-width));
     transform: translateX(100%);
 }
 
@@ -1630,6 +1670,10 @@ body.is-resizing-composer {
 
 /* Responsive Rules */
 @media (max-width: 1100px) {
+    .narrator-resize-handle {
+        display: none;
+    }
+
     .narrator-sidebar {
         position: absolute;
         right: 0;

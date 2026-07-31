@@ -63,6 +63,7 @@ const channelsSidebar = document.getElementById("channels-sidebar");
 const transcriptFeedContainer = document.querySelector(".transcript-feed-container");
 const composerContainer = document.getElementById("composer-container");
 const composerResizeHandle = document.getElementById("composer-resize-handle");
+const narratorResizeHandle = document.getElementById("narrator-resize-handle");
 
 // Keep automatic digest generation and smart drafts enabled, but require Ed to
 // press Play before speech starts. A future setting can flip this feature flag.
@@ -76,6 +77,14 @@ const MIN_COMPOSER_HEIGHT_PX = 250;
 const MIN_CONVERSATION_HEIGHT_PX = 180;
 const COMPOSER_KEYBOARD_STEP_PX = 24;
 let composerResizeState = null;
+
+// The narrator starts at its historical 340px width. It can grow only while
+// leaving the fixed channel rail and a useful part of the conversation visible.
+const NARRATOR_WIDTH_STORAGE_KEY = "vc_narrator_width_px";
+const MIN_NARRATOR_WIDTH_PX = 340;
+const MIN_CONVERSATION_WIDTH_PX = 380;
+const NARRATOR_KEYBOARD_STEP_PX = 24;
+let narratorResizeState = null;
 
 // Settings Management (U-01, U-02, U-03, U-05)
 const SETTINGS_VERSION = 3;
@@ -585,11 +594,149 @@ function initComposerResizer() {
     }
 }
 
+function elementWidth(element) {
+    if (!element) return 0;
+    if (typeof element.getBoundingClientRect === "function") {
+        const rect = element.getBoundingClientRect();
+        if (rect && Number.isFinite(rect.width) && rect.width > 0) return rect.width;
+    }
+    const inlineWidth = parseFloat(element.style && element.style.width);
+    if (Number.isFinite(inlineWidth) && inlineWidth > 0) return inlineWidth;
+    return Number(element.offsetWidth || element.clientWidth || 0);
+}
+
+function viewportWidth() {
+    const width = Number(window.innerWidth || (document.documentElement && document.documentElement.clientWidth));
+    return Number.isFinite(width) && width > 0 ? width : 0;
+}
+
+function currentNarratorWidth() {
+    if (!narratorSidebar) return MIN_NARRATOR_WIDTH_PX;
+    const storedWidth = parseFloat(
+        narratorSidebar.style && narratorSidebar.style.getPropertyValue
+            ? narratorSidebar.style.getPropertyValue("--narrator-sidebar-width")
+            : ""
+    );
+    return Number.isFinite(storedWidth) && storedWidth > 0
+        ? storedWidth
+        : (elementWidth(narratorSidebar) || MIN_NARRATOR_WIDTH_PX);
+}
+
+function getNarratorResizeBounds() {
+    const width = viewportWidth();
+    const channelWidth = elementWidth(channelsSidebar) || 280;
+    const handleWidth = elementWidth(narratorResizeHandle) || 12;
+    // At smaller viewports the narrator becomes an overlay, so its desktop
+    // resizing limit is irrelevant. Keep the current size stable in that mode.
+    const maximum = width > 1100
+        ? Math.max(MIN_NARRATOR_WIDTH_PX, width - channelWidth - handleWidth - MIN_CONVERSATION_WIDTH_PX)
+        : MIN_NARRATOR_WIDTH_PX;
+    return { minimum: MIN_NARRATOR_WIDTH_PX, maximum };
+}
+
+function setNarratorWidth(requestedWidth, persist = true) {
+    if (!narratorSidebar) return null;
+    const bounds = getNarratorResizeBounds();
+    const numericWidth = Number(requestedWidth);
+    const width = Math.round(Math.min(bounds.maximum, Math.max(
+        bounds.minimum,
+        Number.isFinite(numericWidth) ? numericWidth : currentNarratorWidth()
+    )));
+    narratorSidebar.style.setProperty("--narrator-sidebar-width", width + "px");
+    if (narratorResizeHandle) {
+        narratorResizeHandle.setAttribute("aria-valuemin", String(bounds.minimum));
+        narratorResizeHandle.setAttribute("aria-valuemax", String(Math.round(bounds.maximum)));
+        narratorResizeHandle.setAttribute("aria-valuenow", String(width));
+    }
+    if (persist) {
+        try {
+            localStorage.setItem(NARRATOR_WIDTH_STORAGE_KEY, String(width));
+        } catch (e) {
+            console.warn("Could not persist narrator width:", e);
+        }
+    }
+    return width;
+}
+
+function beginNarratorResize(event) {
+    if (!narratorSidebar || !narratorResizeHandle) return;
+    if (typeof event.button === "number" && event.button !== 0) return;
+    narratorResizeState = {
+        pointerId: event.pointerId,
+        startX: Number(event.clientX || 0),
+        startWidth: currentNarratorWidth()
+    };
+    document.body.classList.add("is-resizing-narrator");
+    if (typeof narratorResizeHandle.setPointerCapture === "function" && event.pointerId != null) {
+        narratorResizeHandle.setPointerCapture(event.pointerId);
+    }
+    if (typeof event.preventDefault === "function") event.preventDefault();
+}
+
+function resizeNarratorFromPointer(event) {
+    if (!narratorResizeState) return;
+    if (
+        narratorResizeState.pointerId != null
+        && event.pointerId != null
+        && event.pointerId !== narratorResizeState.pointerId
+    ) return;
+    // The narrator is right-aligned: moving its left edge left makes it wider.
+    const delta = narratorResizeState.startX - Number(event.clientX || 0);
+    setNarratorWidth(narratorResizeState.startWidth + delta, false);
+    if (typeof event.preventDefault === "function") event.preventDefault();
+}
+
+function finishNarratorResize(event = {}) {
+    if (!narratorResizeState) return;
+    if (
+        narratorResizeState.pointerId != null
+        && event.pointerId != null
+        && event.pointerId !== narratorResizeState.pointerId
+    ) return;
+    narratorResizeState = null;
+    document.body.classList.remove("is-resizing-narrator");
+    setNarratorWidth(currentNarratorWidth(), true);
+}
+
+function resizeNarratorFromKeyboard(event) {
+    if (!narratorSidebar) return;
+    const bounds = getNarratorResizeBounds();
+    let nextWidth = null;
+    if (event.key === "ArrowLeft") nextWidth = currentNarratorWidth() + NARRATOR_KEYBOARD_STEP_PX;
+    if (event.key === "ArrowRight") nextWidth = currentNarratorWidth() - NARRATOR_KEYBOARD_STEP_PX;
+    if (event.key === "Home") nextWidth = bounds.minimum;
+    if (event.key === "End") nextWidth = bounds.maximum;
+    if (nextWidth === null) return;
+    setNarratorWidth(nextWidth, true);
+    if (typeof event.preventDefault === "function") event.preventDefault();
+}
+
+function initNarratorResizer() {
+    if (!narratorResizeHandle || !narratorSidebar) return;
+    if (narratorResizeHandle.dataset.resizeInitialized === "true") return;
+    narratorResizeHandle.dataset.resizeInitialized = "true";
+    narratorResizeHandle.addEventListener("pointerdown", beginNarratorResize);
+    narratorResizeHandle.addEventListener("keydown", resizeNarratorFromKeyboard);
+    document.addEventListener("pointermove", resizeNarratorFromPointer);
+    document.addEventListener("pointerup", finishNarratorResize);
+    document.addEventListener("pointercancel", finishNarratorResize);
+    if (typeof window.addEventListener === "function") {
+        window.addEventListener("resize", () => setNarratorWidth(currentNarratorWidth(), false));
+    }
+    try {
+        const savedWidth = Number(localStorage.getItem(NARRATOR_WIDTH_STORAGE_KEY));
+        setNarratorWidth(savedWidth > 0 ? savedWidth : currentNarratorWidth(), false);
+    } catch (e) {
+        setNarratorWidth(currentNarratorWidth(), false);
+    }
+}
+
 // Initialize application
 function init() {
     applySettings();
     initSettingsModal();
     initComposerResizer();
+    initNarratorResizer();
     activeRoomId = localStorage.getItem("activeRoomId");
 
     initNarratorSidebarState();

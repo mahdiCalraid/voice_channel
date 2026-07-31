@@ -22,14 +22,15 @@ class TestUrgentFeatures(unittest.TestCase):
         shell = self.client.get("/")
         self.assertEqual(shell.status_code, 200)
         self.assertEqual(shell.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("index.js?v=composer-layout-1", shell.text)
-        self.assertIn("index.css?v=composer-layout-1", shell.text)
+        self.assertIn("index.js?v=narrator-resize-1", shell.text)
+        self.assertIn("index.css?v=narrator-resize-1", shell.text)
         self.assertIn("history_state.js?v=response-assistant-3", shell.text)
         self.assertIn('id="setting-system-font-size"', shell.text)
         self.assertIn('id="setting-chat-font-family"', shell.text)
         self.assertIn('id="setting-chat-font-size"', shell.text)
         self.assertIn('id="setting-chat-line-height"', shell.text)
         self.assertIn('id="composer-resize-handle"', shell.text)
+        self.assertIn('id="narrator-resize-handle"', shell.text)
         self.assertIn('id="digest-content"', shell.text)
         self.assertIn('contenteditable="plaintext-only"', shell.text)
         self.assertIn("Editable narration", shell.text)
@@ -45,6 +46,8 @@ class TestUrgentFeatures(unittest.TestCase):
         self.assertIn(".composer-input-row .input-wrapper", stylesheet.text)
         self.assertIn("flex: 1 1 0;", stylesheet.text)
         self.assertIn("min-height: 250px;", stylesheet.text)
+        self.assertIn(".narrator-resize-handle", stylesheet.text)
+        self.assertIn("--narrator-sidebar-width", stylesheet.text)
 
         for asset_path in ("/index.js", "/history_state.js", "/index.css"):
             with self.subTest(asset_path=asset_path):
