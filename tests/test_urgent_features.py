@@ -22,8 +22,8 @@ class TestUrgentFeatures(unittest.TestCase):
         shell = self.client.get("/")
         self.assertEqual(shell.status_code, 200)
         self.assertEqual(shell.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("index.js?v=response-assistant-1", shell.text)
-        self.assertIn("history_state.js?v=response-assistant-1", shell.text)
+        self.assertIn("index.js?v=response-assistant-3", shell.text)
+        self.assertIn("history_state.js?v=response-assistant-3", shell.text)
 
         for asset_path in ("/index.js", "/history_state.js", "/index.css"):
             with self.subTest(asset_path=asset_path):

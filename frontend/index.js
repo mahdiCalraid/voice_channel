@@ -70,6 +70,96 @@ const DEFAULT_SETTINGS = {
     autoNarrate: true
 };
 
+const AUTOMATIC_ASSISTANCE_LEASE_MS = 90 * 1000;
+const AUTOMATIC_ASSISTANCE_DONE_MS = 60 * 60 * 1000;
+const responseAssistantTabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+function automaticAssistantStorageKey(kind, roomId, triggerMessageId) {
+    return `vc_response_assistant_${kind}_${encodeURIComponent(roomId)}_${encodeURIComponent(triggerMessageId)}`;
+}
+
+function isAutomaticAssistanceCompleted(roomId, triggerMessageId) {
+    try {
+        const key = automaticAssistantStorageKey("done", roomId, triggerMessageId);
+        const completedAt = Number(localStorage.getItem(key) || 0);
+        if (!completedAt) return false;
+        if (Date.now() - completedAt <= AUTOMATIC_ASSISTANCE_DONE_MS) return true;
+        localStorage.removeItem(key);
+    } catch (e) {
+        console.warn("Could not read the cross-tab response-assistant marker:", e);
+    }
+    return false;
+}
+
+function tryClaimAutomaticAssistance(roomId, triggerMessageId) {
+    if (isAutomaticAssistanceCompleted(roomId, triggerMessageId)) {
+        return { claimed: false, coordinated: true };
+    }
+    try {
+        const key = automaticAssistantStorageKey("lease", roomId, triggerMessageId);
+        const now = Date.now();
+        const existing = JSON.parse(localStorage.getItem(key) || "null");
+        if (
+            existing
+            && existing.owner !== responseAssistantTabId
+            && Number(existing.expiresAt || 0) > now
+        ) {
+            return { claimed: false, coordinated: true };
+        }
+        const claim = {
+            owner: responseAssistantTabId,
+            expiresAt: now + AUTOMATIC_ASSISTANCE_LEASE_MS
+        };
+        localStorage.setItem(key, JSON.stringify(claim));
+        const stored = JSON.parse(localStorage.getItem(key) || "null");
+        return {
+            claimed: Boolean(stored && stored.owner === responseAssistantTabId),
+            coordinated: true
+        };
+    } catch (e) {
+        // The backend idempotency key remains authoritative when storage is
+        // unavailable (private mode, quota errors, or a restricted webview).
+        console.warn("Cross-tab response-assistant lease is unavailable:", e);
+        return { claimed: true, coordinated: false };
+    }
+}
+
+function ownsAutomaticAssistanceClaim(roomId, triggerMessageId) {
+    try {
+        const key = automaticAssistantStorageKey("lease", roomId, triggerMessageId);
+        const stored = JSON.parse(localStorage.getItem(key) || "null");
+        return Boolean(
+            stored
+            && stored.owner === responseAssistantTabId
+            && Number(stored.expiresAt || 0) > Date.now()
+        );
+    } catch (e) {
+        console.warn("Could not verify the cross-tab response-assistant lease:", e);
+        return false;
+    }
+}
+
+function markAutomaticAssistanceCompleted(roomId, triggerMessageId) {
+    try {
+        const key = automaticAssistantStorageKey("done", roomId, triggerMessageId);
+        localStorage.setItem(key, String(Date.now()));
+    } catch (e) {
+        console.warn("Could not save the cross-tab response-assistant marker:", e);
+    }
+}
+
+function releaseAutomaticAssistanceClaim(roomId, triggerMessageId) {
+    try {
+        const key = automaticAssistantStorageKey("lease", roomId, triggerMessageId);
+        const stored = JSON.parse(localStorage.getItem(key) || "null");
+        if (stored && stored.owner === responseAssistantTabId) {
+            localStorage.removeItem(key);
+        }
+    } catch (e) {
+        console.warn("Could not release the cross-tab response-assistant lease:", e);
+    }
+}
+
 function getSettings() {
     try {
         const raw = localStorage.getItem("vc_settings");
@@ -789,6 +879,11 @@ function checkForAutoNarrate(targetRoomId, newRealResponses) {
     );
     const newestMsg = sorted[sorted.length - 1];
     if (!isRealAgentResponse(newestMsg) || newestMsg.id === state.lastAssistedId) return;
+    if (isAutomaticAssistanceCompleted(targetRoomId, newestMsg.id)) {
+        state.lastAssistedId = newestMsg.id;
+        state.pendingAssistantTriggerId = null;
+        return;
+    }
     if (state.failedAssistantId === newestMsg.id && Date.now() < (state.assistantRetryAt || 0)) return;
 
     if (state.responseAssistantLoading) {
@@ -1209,11 +1304,31 @@ async function handleGenerateDigest(options = {}) {
     if (!activeRoomId) return;
     const targetRoomId = activeRoomId;
     const targetState = getRoomState(targetRoomId);
+    const automaticTriggerId = options.triggerMessageId || null;
+    let automaticClaimed = false;
+    let automaticCoordinationAvailable = false;
+    let automaticDeferredToOtherTab = false;
     if (targetState.responseAssistantLoading) {
-        if (options.triggerMessageId) {
-            targetState.pendingAssistantTriggerId = options.triggerMessageId;
+        if (automaticTriggerId) {
+            targetState.pendingAssistantTriggerId = automaticTriggerId;
         }
         return;
+    }
+    if (automaticTriggerId) {
+        if (isAutomaticAssistanceCompleted(targetRoomId, automaticTriggerId)) {
+            targetState.lastAssistedId = automaticTriggerId;
+            targetState.pendingAssistantTriggerId = null;
+            return;
+        }
+        const claim = tryClaimAutomaticAssistance(targetRoomId, automaticTriggerId);
+        automaticClaimed = claim.claimed;
+        automaticCoordinationAvailable = claim.coordinated;
+        if (!automaticClaimed) {
+            // Keep the response pending while another tab owns the short lease.
+            // A later poll will observe its completion marker or retry after expiry.
+            targetState.pendingAssistantTriggerId = automaticTriggerId;
+            return;
+        }
     }
     targetState.digestLoading = true;
     targetState.responseAssistantLoading = true;
@@ -1254,20 +1369,76 @@ async function handleGenerateDigest(options = {}) {
                 messages: histData.messages,
                 roomId: targetRoomId,
                 room_name: getRoomName(targetRoomId),
-                trigger_message_id: options.triggerMessageId || null,
+                trigger_message_id: automaticTriggerId,
                 history_limit: limit
             })
         });
         
         const digestData = await digestResponse.json();
         if (!digestResponse.ok) throw new Error(digestData.detail || "Failed to generate response assistance");
+
+        const automaticAlreadyCompleted = Boolean(
+            automaticTriggerId
+            && isAutomaticAssistanceCompleted(targetRoomId, automaticTriggerId)
+        );
+        const ownsCoordinatedClaim = Boolean(
+            automaticTriggerId
+            && automaticCoordinationAvailable
+            && ownsAutomaticAssistanceClaim(targetRoomId, automaticTriggerId)
+        );
+        const automaticActionAllowed = !automaticTriggerId || (
+            automaticCoordinationAvailable
+                ? (ownsCoordinatedClaim && !automaticAlreadyCompleted)
+                : digestData.automatic_action_allowed !== false
+        );
+
+        if (!automaticActionAllowed) {
+            // A completed marker proves another tab applied the result. Without
+            // one, retain the trigger so a later poll can recover after the
+            // current owner's bounded lease expires.
+            if (automaticAlreadyCompleted) {
+                targetState.lastAssistedId = digestData.trigger_message_id || automaticTriggerId;
+                targetState.failedAssistantId = null;
+                targetState.assistantRetryAt = 0;
+                targetState.pendingAssistantTriggerId = null;
+            } else {
+                targetState.pendingAssistantTriggerId = automaticTriggerId;
+                automaticDeferredToOtherTab = true;
+            }
+            if (targetRoomId === activeRoomId) {
+                setAssistantStatus(
+                    automaticAlreadyCompleted
+                        ? "Automatic: handled in another tab"
+                        : "Automatic: another tab is handling this reply",
+                    "on"
+                );
+                digestContent.innerText = automaticAlreadyCompleted
+                    ? "This response was already narrated and drafted by another console tab."
+                    : "Another console tab currently owns this response. This tab will recover the cached result if that tab does not finish.";
+            }
+            return;
+        }
+
+        // A cached replay can safely restore the visible digest and draft after
+        // an abandoned browser lease. It must not replay audio automatically:
+        // the backend cannot prove whether the departed tab started speaking.
+        const recoveredCachedResult = Boolean(
+            automaticTriggerId
+            && automaticCoordinationAvailable
+            && digestData.automatic_action_allowed === false
+        );
         
         targetState.digestText = digestData.digest;
         targetState.lastAssistedId = digestData.trigger_message_id || options.triggerMessageId || null;
         targetState.failedAssistantId = null;
         targetState.assistantRetryAt = 0;
         if (targetRoomId === activeRoomId) {
-            setAssistantStatus("Automatic: draft ready", "ready");
+            setAssistantStatus(
+                recoveredCachedResult
+                    ? "Automatic: recovered draft ready; press Play for audio"
+                    : "Automatic: draft ready",
+                "ready"
+            );
         }
 
         const inserted = applySuggestedDraft(targetRoomId, digestData.suggested_message);
@@ -1326,9 +1497,16 @@ async function handleGenerateDigest(options = {}) {
             }
         }
 
-        if (targetRoomId === activeRoomId && options.autoPlay !== false) {
+        if (
+            targetRoomId === activeRoomId
+            && options.autoPlay !== false
+            && !recoveredCachedResult
+        ) {
             handleStop();
             speakText(currentDigestText);
+        }
+        if (automaticTriggerId) {
+            markAutomaticAssistanceCompleted(targetRoomId, automaticTriggerId);
         }
         
     } catch (err) {
@@ -1342,6 +1520,9 @@ async function handleGenerateDigest(options = {}) {
             targetState.assistantRetryAt = Date.now() + 30000;
         }
     } finally {
+        if (automaticClaimed && automaticTriggerId) {
+            releaseAutomaticAssistanceClaim(targetRoomId, automaticTriggerId);
+        }
         targetState.digestLoading = false;
         targetState.responseAssistantLoading = false;
         if (targetRoomId === activeRoomId) {
@@ -1352,6 +1533,7 @@ async function handleGenerateDigest(options = {}) {
             pendingTrigger
             && pendingTrigger !== targetState.lastAssistedId
             && targetRoomId === activeRoomId
+            && !automaticDeferredToOtherTab
         ) {
             targetState.pendingAssistantTriggerId = null;
             handleGenerateDigest({ autoPlay: true, triggerMessageId: pendingTrigger });

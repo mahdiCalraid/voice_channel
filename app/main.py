@@ -642,6 +642,21 @@ class ResponseAssistantRequest(DigestRequest):
     room_name: Optional[str] = None
     trigger_message_id: Optional[str] = None
 
+
+# Automatic response assistance is idempotent for a bounded window. The cache is
+# deliberately process-local: the console runs one API process, and this prevents
+# duplicate model work/saves when multiple tabs race or a client retries. Manual
+# requests have no trigger_message_id and intentionally bypass this cache.
+RESPONSE_ASSISTANT_IDEMPOTENCY_TTL_SECONDS = int(
+    os.environ.get("VC_RESPONSE_ASSISTANT_IDEMPOTENCY_TTL_SECONDS", "3600")
+)
+RESPONSE_ASSISTANT_IDEMPOTENCY_MAX_ENTRIES = int(
+    os.environ.get("VC_RESPONSE_ASSISTANT_IDEMPOTENCY_MAX_ENTRIES", "1024")
+)
+response_assistant_idempotency_lock = asyncio.Lock()
+response_assistant_inflight: Dict[tuple, asyncio.Task] = {}
+response_assistant_results: Dict[tuple, tuple] = {}
+
 @app.get("/api/status")
 async def get_status():
     base_url = get_rc_base_url()
@@ -1147,8 +1162,7 @@ async def generate_digest(req: DigestRequest):
     }
 
 
-@app.post("/api/response-assistant")
-async def generate_response_assistant(req: ResponseAssistantRequest):
+async def _generate_response_assistant_once(req: ResponseAssistantRequest):
     """Generate one grounded narrator digest and one editable next-message draft."""
     import uuid
 
@@ -1343,6 +1357,92 @@ async def generate_response_assistant(req: ResponseAssistantRequest):
     finally:
         if os.path.exists(job_dir):
             shutil.rmtree(job_dir, ignore_errors=True)
+
+
+def _prune_response_assistant_results(now: float) -> None:
+    expired = [
+        key
+        for key, (created_at, _result) in response_assistant_results.items()
+        if now - created_at > RESPONSE_ASSISTANT_IDEMPOTENCY_TTL_SECONDS
+    ]
+    for key in expired:
+        response_assistant_results.pop(key, None)
+
+    overflow = len(response_assistant_results) - RESPONSE_ASSISTANT_IDEMPOTENCY_MAX_ENTRIES
+    if overflow > 0:
+        oldest = sorted(
+            response_assistant_results,
+            key=lambda key: response_assistant_results[key][0],
+        )[:overflow]
+        for key in oldest:
+            response_assistant_results.pop(key, None)
+
+
+async def _run_and_cache_response_assistant(key: tuple, req: ResponseAssistantRequest) -> dict:
+    try:
+        result = await _generate_response_assistant_once(req)
+        async with response_assistant_idempotency_lock:
+            response_assistant_results[key] = (time.monotonic(), dict(result))
+            _prune_response_assistant_results(time.monotonic())
+        return result
+    finally:
+        async with response_assistant_idempotency_lock:
+            current = response_assistant_inflight.get(key)
+            if current is asyncio.current_task():
+                response_assistant_inflight.pop(key, None)
+
+
+@app.post("/api/response-assistant")
+async def generate_response_assistant(req: ResponseAssistantRequest):
+    """Generate grounded assistance, once per automatic response trigger.
+
+    A manual Generate Digest request omits trigger_message_id, so every manual
+    request still generates, saves, drafts, and narrates normally. Automatic
+    requests share one in-flight task/result for (room_id, trigger_message_id).
+    Only the first caller is authorized to apply automatic UI actions when the
+    client has no cross-tab coordination. A coordinated browser may use a
+    replayed cached result to restore a digest/draft after an abandoned tab
+    lease; that recovery does not regenerate or save here.
+    """
+    trigger_message_id = (req.trigger_message_id or "").strip()
+    if not trigger_message_id:
+        result = await _generate_response_assistant_once(req)
+        return {
+            **result,
+            "idempotency_replayed": False,
+            "automatic_action_allowed": True,
+        }
+
+    room_id = req.roomId or RC_ROOM_ID
+    key = (room_id, trigger_message_id)
+    created = False
+    cached_result = None
+    async with response_assistant_idempotency_lock:
+        now = time.monotonic()
+        _prune_response_assistant_results(now)
+        cached = response_assistant_results.get(key)
+        if cached is not None:
+            cached_result = dict(cached[1])
+            task = None
+        else:
+            task = response_assistant_inflight.get(key)
+            if task is None:
+                task = asyncio.create_task(_run_and_cache_response_assistant(key, req))
+                response_assistant_inflight[key] = task
+                created = True
+
+    if cached_result is not None:
+        result = cached_result
+    else:
+        # A disconnected first browser must not cancel the shared generation and
+        # cause another tab to save a second digest.
+        result = await asyncio.shield(task)
+
+    return {
+        **result,
+        "idempotency_replayed": not created,
+        "automatic_action_allowed": created,
+    }
 
 
 # A simple thread-safe in-memory cache for nonces.

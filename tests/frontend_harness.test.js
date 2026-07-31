@@ -37,7 +37,7 @@ function element() {
     };
 }
 
-function loadFrontend() {
+function loadFrontend(options = {}) {
     const elements = new Map();
     const document = {
         readyState: "loading",
@@ -50,7 +50,9 @@ function loadFrontend() {
         querySelector: selector => element(),
         querySelectorAll: () => [],
     };
-    const storage = {};
+    const storage = options.storage || {};
+    const storageWrites = [];
+    const spoken = [];
     const sandbox = {
         console,
         document,
@@ -69,20 +71,33 @@ function loadFrontend() {
         }),
         localStorage: {
             getItem: key => storage[key] || null,
-            setItem: (key, val) => { storage[key] = val; },
+            setItem: (key, val) => {
+                storage[key] = val;
+                storageWrites.push({ key, val });
+            },
             removeItem: key => { delete storage[key]; }
         },
         setInterval: () => 0,
         setTimeout: callback => { callback(); return 0; },
         window: {
             VoiceChannelHistoryState: historyState,
-            speechSynthesis: { cancel: () => {}, getVoices: () => [], speaking: false },
+            speechSynthesis: {
+                cancel: () => {},
+                getVoices: () => [],
+                speak: utterance => { spoken.push(utterance.text); },
+                speaking: false
+            },
         },
     };
+    if (options.enableSpeech) {
+        sandbox.SpeechSynthesisUtterance = function SpeechSynthesisUtterance(text) {
+            this.text = text;
+        };
+    }
     vm.createContext(sandbox);
     const source = fs.readFileSync(path.join(__dirname, "..", "frontend", "index.js"), "utf8");
     vm.runInContext(source, sandbox);
-    return { elements, sandbox, storage };
+    return { elements, sandbox, spoken, storage, storageWrites };
 }
 
 test("stale room history response is ignored when user switches rooms mid-flight", async () => {
@@ -400,6 +415,230 @@ test("polling ignores the initial backlog and auto-assists only a newly arrived 
 
     assert.equal(requests.filter(request => request.url === "/api/response-assistant").length, 1);
     assert.equal(input.value, "@grok Review AGY's completed task.");
+});
+
+test("two tabs produce at most one automatic request, saved draft, and narration", async () => {
+    const sharedStorage = {};
+    const firstTab = loadFrontend({ storage: sharedStorage, enableSpeech: true });
+    const secondTab = loadFrontend({ storage: sharedStorage, enableSpeech: true });
+    const requests = [];
+    const agentResponse = {
+        id: "agent-cross-tab",
+        lane: "agent",
+        username: "acli_bot",
+        text: "**@agy**: implementation complete",
+        timestamp: "2026-07-30T12:00:00Z",
+        event: { kind: "agent_response", agent: "agy" }
+    };
+
+    for (const app of [firstTab, secondTab]) {
+        vm.runInContext(`
+            activeRoomId = "room-cross-tab";
+            roomsList = [{ id: "room-cross-tab", name: "voice_channel" }];
+        `, app.sandbox);
+        app.sandbox.fetch = (url, options) => {
+            requests.push({ url, options });
+            if (url.startsWith("/api/history")) {
+                return Promise.resolve({
+                    ok: true,
+                    json: async () => ({ success: true, messages: [agentResponse] })
+                });
+            }
+            if (url === "/api/response-assistant") {
+                return Promise.resolve({
+                    ok: true,
+                    json: async () => ({
+                        digest: "AGY completed the work.\n\nGrok should review it.",
+                        phase: "review",
+                        suggested_message: "@grok Review AGY's completed work.",
+                        trigger_message_id: "agent-cross-tab",
+                        included_message_ids: ["agent-cross-tab"],
+                        automatic_action_allowed: true,
+                        idempotency_replayed: false
+                    })
+                });
+            }
+            throw new Error("Unexpected request: " + url);
+        };
+    }
+
+    await Promise.all([
+        firstTab.sandbox.handleGenerateDigest({
+            autoPlay: true,
+            triggerMessageId: "agent-cross-tab"
+        }),
+        secondTab.sandbox.handleGenerateDigest({
+            autoPlay: true,
+            triggerMessageId: "agent-cross-tab"
+        })
+    ]);
+
+    assert.equal(requests.filter(request => request.url === "/api/response-assistant").length, 1);
+    assert.equal(
+        [firstTab, secondTab].filter(app => (
+            app.sandbox.document.getElementById("command-input").value
+            === "@grok Review AGY's completed work."
+        )).length,
+        1
+    );
+    assert.equal(
+        [...firstTab.storageWrites, ...secondTab.storageWrites]
+            .filter(write => write.key === "vc_draft_room-cross-tab").length,
+        1
+    );
+    assert.equal(firstTab.spoken.length + secondTab.spoken.length, 1);
+});
+
+test("backend suppression stays authoritative when cross-tab storage is unavailable", async () => {
+    const app = loadFrontend({ enableSpeech: true });
+    vm.runInContext(`
+        activeRoomId = "room-replay";
+        roomsList = [{ id: "room-replay", name: "voice_channel" }];
+    `, app.sandbox);
+    app.sandbox.localStorage.getItem = () => { throw new Error("storage unavailable"); };
+    app.sandbox.localStorage.setItem = () => { throw new Error("storage unavailable"); };
+    app.sandbox.localStorage.removeItem = () => { throw new Error("storage unavailable"); };
+    app.sandbox.fetch = (url) => {
+        if (url.startsWith("/api/history")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    messages: [{
+                        id: "agent-replayed",
+                        lane: "agent",
+                        text: "already handled",
+                        event: { kind: "agent_response", agent: "agy" }
+                    }]
+                })
+            });
+        }
+        if (url === "/api/response-assistant") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    digest: "Duplicate digest.\n\nDuplicate next step.",
+                    suggested_message: "@grok Duplicate draft.",
+                    trigger_message_id: "agent-replayed",
+                    automatic_action_allowed: false,
+                    idempotency_replayed: true
+                })
+            });
+        }
+        throw new Error("Unexpected request: " + url);
+    };
+
+    await app.sandbox.handleGenerateDigest({
+        autoPlay: true,
+        triggerMessageId: "agent-replayed"
+    });
+
+    assert.equal(app.sandbox.document.getElementById("command-input").value, "");
+    assert.equal(app.spoken.length, 0);
+    assert.equal(
+        app.storageWrites.filter(write => write.key === "vc_draft_room-replay").length,
+        0
+    );
+});
+
+test("an expired winner lease hands cached digest and draft to another tab without replaying audio", async () => {
+    const sharedStorage = {};
+    const firstTab = loadFrontend({ storage: sharedStorage, enableSpeech: true });
+    const secondTab = loadFrontend({ storage: sharedStorage, enableSpeech: true });
+    const agentResponse = {
+        id: "agent-abandoned-tab",
+        lane: "agent",
+        username: "acli_bot",
+        text: "**@agy**: implementation complete",
+        timestamp: "2026-07-30T12:00:00Z",
+        event: { kind: "agent_response", agent: "agy" }
+    };
+    const result = {
+        digest: "AGY completed the implementation.\n\nGrok should review it.",
+        phase: "review",
+        suggested_message: "@grok Review the recovered implementation result.",
+        trigger_message_id: "agent-abandoned-tab",
+        included_message_ids: ["agent-abandoned-tab"]
+    };
+    let resolveFirstResponse;
+    const firstResponse = new Promise(resolve => { resolveFirstResponse = resolve; });
+    let assistantRequests = 0;
+
+    for (const app of [firstTab, secondTab]) {
+        vm.runInContext(`
+            activeRoomId = "room-abandoned-tab";
+            roomsList = [{ id: "room-abandoned-tab", name: "voice_channel" }];
+        `, app.sandbox);
+        app.sandbox.fetch = (url) => {
+            if (url.startsWith("/api/history")) {
+                return Promise.resolve({
+                    ok: true,
+                    json: async () => ({ success: true, messages: [agentResponse] })
+                });
+            }
+            if (url === "/api/response-assistant") {
+                assistantRequests += 1;
+                if (assistantRequests === 1) return firstResponse;
+                return Promise.resolve({
+                    ok: true,
+                    json: async () => ({
+                        ...result,
+                        automatic_action_allowed: false,
+                        idempotency_replayed: true
+                    })
+                });
+            }
+            throw new Error("Unexpected request: " + url);
+        };
+    }
+
+    const abandonedRun = firstTab.sandbox.handleGenerateDigest({
+        autoPlay: true,
+        triggerMessageId: "agent-abandoned-tab"
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const leaseKey = Object.keys(sharedStorage).find(key => (
+        key.startsWith("vc_response_assistant_lease_")
+    ));
+    assert.ok(leaseKey);
+    const expiredLease = JSON.parse(sharedStorage[leaseKey]);
+    expiredLease.expiresAt = 0;
+    sharedStorage[leaseKey] = JSON.stringify(expiredLease);
+
+    await secondTab.sandbox.handleGenerateDigest({
+        autoPlay: true,
+        triggerMessageId: "agent-abandoned-tab"
+    });
+
+    resolveFirstResponse({
+        ok: true,
+        json: async () => ({
+            ...result,
+            automatic_action_allowed: true,
+            idempotency_replayed: false
+        })
+    });
+    await abandonedRun;
+
+    assert.equal(assistantRequests, 2);
+    assert.equal(
+        secondTab.sandbox.document.getElementById("command-input").value,
+        "@grok Review the recovered implementation result."
+    );
+    assert.equal(firstTab.sandbox.document.getElementById("command-input").value, "");
+    assert.equal(
+        [...firstTab.storageWrites, ...secondTab.storageWrites]
+            .filter(write => write.key === "vc_draft_room-abandoned-tab").length,
+        1
+    );
+    assert.equal(firstTab.spoken.length + secondTab.spoken.length, 0);
+    assert.equal(
+        secondTab.sandbox.document.getElementById("assistant-status").innerHTML.includes(
+            "Automatic: recovered draft ready; press Play for audio"
+        ),
+        true
+    );
 });
 
 test("a transient response-assistant failure is retried from the next poll after backoff", async () => {

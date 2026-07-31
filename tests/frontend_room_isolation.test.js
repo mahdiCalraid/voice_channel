@@ -39,6 +39,7 @@ function element() {
 
 function loadFrontend() {
     const elements = new Map();
+    const storage = {};
     const sourcesList = element();
     elements.set("sources-list", sourcesList);
     const targetMessage = element();
@@ -62,7 +63,11 @@ function loadFrontend() {
         console,
         document,
         fetch: () => Promise.resolve({ ok: true, json: async () => ({ success: true, messages: [] }) }),
-        localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+        localStorage: {
+            getItem: key => storage[key] || null,
+            setItem: (key, value) => { storage[key] = value; },
+            removeItem: key => { delete storage[key]; }
+        },
         setInterval: () => 0,
         window: {
             VoiceChannelHistoryState: historyState,

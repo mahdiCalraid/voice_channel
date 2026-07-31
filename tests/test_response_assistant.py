@@ -3,12 +3,15 @@
 import json
 import os
 import tempfile
+import asyncio
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+import app.main as main_module
+from app.main import ResponseAssistantRequest, app
 from app.supervision_strategy import (
     fallback_suggestion,
     normalize_two_paragraph_digest,
@@ -133,6 +136,8 @@ class TestSupervisionStrategy(unittest.TestCase):
 
 class TestResponseAssistantEndpoint(unittest.TestCase):
     def setUp(self):
+        main_module.response_assistant_inflight.clear()
+        main_module.response_assistant_results.clear()
         self.client = TestClient(app)
         self.payload = {
             "messages": [
@@ -208,7 +213,139 @@ class TestResponseAssistantEndpoint(unittest.TestCase):
         self.assertTrue(data["suggested_message"].startswith("@grok "))
         self.assertEqual(data["trigger_message_id"], "agent-2")
         self.assertEqual(data["project_context_files"], ["NORTH_STAR.md"])
+        self.assertFalse(data["idempotency_replayed"])
+        self.assertTrue(data["automatic_action_allowed"])
+
+        replay = self.client.post("/api/response-assistant", json=self.payload)
+        self.assertEqual(replay.status_code, 200)
+        replay_data = replay.json()
+        self.assertEqual(replay_data["digest"], data["digest"])
+        self.assertEqual(replay_data["suggested_message"], data["suggested_message"])
+        self.assertTrue(replay_data["idempotency_replayed"])
+        self.assertFalse(replay_data["automatic_action_allowed"])
+        mock_run.assert_called_once()
         mock_save.assert_called_once()
+
+    @patch("app.main.save_summary")
+    @patch("app.main.read_prior_summaries", return_value=[])
+    @patch("app.main.read_project_context", return_value=("", []))
+    @patch("app.main.resolve_channel_profile", return_value=CODING_PROFILE)
+    @patch("subprocess.run")
+    def test_concurrent_automatic_requests_share_one_generation_and_save(
+        self,
+        mock_run,
+        _mock_profile,
+        _mock_context,
+        _mock_summaries,
+        mock_save,
+    ):
+        def slow_failure(*_args, **_kwargs):
+            time.sleep(0.05)
+            result = MagicMock()
+            result.returncode = 1
+            result.stderr = "test fallback"
+            return result
+
+        mock_run.side_effect = slow_failure
+
+        async def make_requests():
+            request = ResponseAssistantRequest(**self.payload)
+            return await asyncio.gather(
+                main_module.generate_response_assistant(request),
+                main_module.generate_response_assistant(request),
+            )
+
+        first, second = asyncio.run(make_requests())
+        self.assertEqual(first["digest"], second["digest"])
+        self.assertEqual(first["suggested_message"], second["suggested_message"])
+        self.assertEqual(
+            sorted([first["automatic_action_allowed"], second["automatic_action_allowed"]]),
+            [False, True],
+        )
+        mock_run.assert_called_once()
+        mock_save.assert_called_once()
+
+    def test_cancelled_creator_does_not_cancel_shared_result_for_waiting_tab(self):
+        async def scenario():
+            started = asyncio.Event()
+            finish = asyncio.Event()
+            generation_count = 0
+
+            async def delayed_generation(_request):
+                nonlocal generation_count
+                generation_count += 1
+                started.set()
+                await finish.wait()
+                return {
+                    "digest": "The shared result completed.\n\nThe waiting tab can recover it.",
+                    "suggested_message": "@grok Review the shared result.",
+                    "trigger_message_id": "agent-2",
+                }
+
+            request = ResponseAssistantRequest(**self.payload)
+            with patch.object(
+                main_module,
+                "_generate_response_assistant_once",
+                new=delayed_generation,
+            ):
+                creator = asyncio.create_task(
+                    main_module.generate_response_assistant(request)
+                )
+                await started.wait()
+                waiting_tab = asyncio.create_task(
+                    main_module.generate_response_assistant(request)
+                )
+                await asyncio.sleep(0)
+
+                creator.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await creator
+
+                finish.set()
+                joined = await waiting_tab
+                replay = await main_module.generate_response_assistant(request)
+
+            return generation_count, joined, replay
+
+        generation_count, joined, replay = asyncio.run(scenario())
+
+        self.assertEqual(generation_count, 1)
+        self.assertEqual(joined["digest"], replay["digest"])
+        self.assertTrue(joined["idempotency_replayed"])
+        self.assertFalse(joined["automatic_action_allowed"])
+        self.assertTrue(replay["idempotency_replayed"])
+        self.assertFalse(replay["automatic_action_allowed"])
+        self.assertEqual(len(main_module.response_assistant_results), 1)
+
+    @patch("app.main.save_summary")
+    @patch("app.main.read_prior_summaries", return_value=[])
+    @patch("app.main.read_project_context", return_value=("", []))
+    @patch("app.main.resolve_channel_profile", return_value=CODING_PROFILE)
+    @patch("subprocess.run")
+    def test_manual_requests_bypass_automatic_idempotency(
+        self,
+        mock_run,
+        _mock_profile,
+        _mock_context,
+        _mock_summaries,
+        mock_save,
+    ):
+        result = MagicMock()
+        result.returncode = 1
+        result.stderr = "test fallback"
+        mock_run.return_value = result
+        payload = {**self.payload, "trigger_message_id": None}
+
+        responses = [
+            self.client.post("/api/response-assistant", json=payload),
+            self.client.post("/api/response-assistant", json=payload),
+        ]
+
+        self.assertTrue(all(response.status_code == 200 for response in responses))
+        self.assertTrue(all(response.json()["automatic_action_allowed"] for response in responses))
+        self.assertTrue(all(not response.json()["idempotency_replayed"] for response in responses))
+        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(mock_save.call_count, 2)
 
     def test_trigger_must_be_real_agent_response(self):
         payload = {**self.payload, "trigger_message_id": "system-1"}
