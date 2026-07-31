@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
-    <link rel="stylesheet" href="index.css?v=response-assistant-3">
+    <link rel="stylesheet" href="index.css?v=console-typography-1">
 </head>
 <body>
     <div class="app-layout">
@@ -201,7 +201,7 @@
 
                         <div class="digest-sources-container" id="digest-sources-container" style="display: none;">
                             <button class="sources-toggle" id="sources-toggle">
-                                <span class="material-symbols-rounded" style="font-size: 1.1rem !important;">list_alt</span>
+                                <span class="material-symbols-rounded" style="font-size: calc(var(--system-font-size) * 1.1) !important;">list_alt</span>
                                 <span id="sources-toggle-text">Show Sources (0)</span>
                                 <span class="material-symbols-rounded toggle-arrow" id="sources-arrow">expand_more</span>
                             </button>
@@ -250,38 +250,111 @@
                 </button>
             </div>
             <div class="modal-body">
-                <div class="setting-group">
-                    <label for="setting-font-size">Interface Font Size:</label>
-                    <select id="setting-font-size" class="setting-select">
-                        <option value="normal">Normal (14px)</option>
-                        <option value="medium" selected>Medium (16px)</option>
-                        <option value="large">Large (18px)</option>
-                        <option value="xlarge">Extra Large (20px)</option>
-                    </select>
-                </div>
-                <div class="setting-group">
-                    <label for="setting-history-limit">Narrator Context Depth (Messages):</label>
-                    <select id="setting-history-limit" class="setting-select">
-                        <option value="10">Last 10 Messages</option>
-                        <option value="20" selected>Last 20 Messages</option>
-                        <option value="30">Last 30 Messages</option>
-                        <option value="50">Last 50 Messages</option>
-                    </select>
-                </div>
-                <div class="setting-group">
-                    <label for="setting-default-agent">Default Target Agent:</label>
-                    <select id="setting-default-agent" class="setting-select">
-                        <option value="codex" selected>Codex (@codex)</option>
-                        <option value="claude">Claude (@claude)</option>
-                        <option value="grok">Grok (@grok)</option>
-                        <option value="agy">AGY (@agy)</option>
-                        <option value="gemini">Gemini (@gemini)</option>
-                    </select>
-                </div>
-                <div class="setting-group toggle-group">
-                    <label for="setting-auto-narrate">Auto-narrate and draft the next message after real agent responses:</label>
-                    <input type="checkbox" id="setting-auto-narrate" class="setting-checkbox" checked>
-                </div>
+                <section class="settings-section" aria-labelledby="system-font-heading">
+                    <div class="settings-section-heading">
+                        <h4 id="system-font-heading">System</h4>
+                        <p>Channel list, headers, controls, composer, and narrator.</p>
+                    </div>
+                    <div class="setting-group">
+                        <label for="setting-system-font-size">System Font Size</label>
+                        <select id="setting-system-font-size" class="setting-select typography-setting">
+                            <option value="normal">Normal (16px)</option>
+                            <option value="medium" selected>Medium (20px)</option>
+                            <option value="large">Large (26px)</option>
+                            <option value="xlarge">Extra Large (35px)</option>
+                        </select>
+                    </div>
+                </section>
+
+                <section class="settings-section" aria-labelledby="chat-font-heading">
+                    <div class="settings-section-heading">
+                        <h4 id="chat-font-heading">Chat Box</h4>
+                        <p>Message authors, timestamps, system events, and conversation text.</p>
+                    </div>
+                    <div class="settings-grid">
+                        <div class="setting-group settings-grid-wide">
+                            <label for="setting-chat-font-family">Font</label>
+                            <select id="setting-chat-font-family" class="setting-select typography-setting">
+                                <option value="outfit">Outfit</option>
+                                <option value="system">System Sans</option>
+                                <option value="arial">Arial</option>
+                                <option value="verdana">Verdana</option>
+                                <option value="trebuchet">Trebuchet MS</option>
+                                <option value="georgia">Georgia</option>
+                                <option value="times">Times New Roman</option>
+                                <option value="jetbrains">JetBrains Mono</option>
+                            </select>
+                        </div>
+                        <div class="setting-group">
+                            <label for="setting-chat-font-size">Size</label>
+                            <div class="setting-with-unit">
+                                <input id="setting-chat-font-size" class="setting-input typography-setting" type="number" min="12" max="36" step="1" value="18">
+                                <span>px</span>
+                            </div>
+                        </div>
+                        <div class="setting-group">
+                            <label for="setting-chat-font-weight">Weight</label>
+                            <select id="setting-chat-font-weight" class="setting-select typography-setting">
+                                <option value="300">Light</option>
+                                <option value="400" selected>Normal</option>
+                                <option value="500">Medium</option>
+                                <option value="600">Semi Bold</option>
+                            </select>
+                        </div>
+                        <div class="setting-group settings-grid-wide">
+                            <div class="setting-label-row">
+                                <label for="setting-chat-line-height">Line Spacing</label>
+                                <output id="setting-chat-line-height-value" for="setting-chat-line-height">1.60</output>
+                            </div>
+                            <input id="setting-chat-line-height" class="setting-range typography-setting" type="range" min="1" max="2.4" step="0.05" value="1.6">
+                        </div>
+                        <div class="setting-group settings-grid-wide">
+                            <div class="setting-label-row">
+                                <label for="setting-chat-paragraph-spacing">Paragraph Spacing</label>
+                                <output id="setting-chat-paragraph-spacing-value" for="setting-chat-paragraph-spacing">8px</output>
+                            </div>
+                            <input id="setting-chat-paragraph-spacing" class="setting-range typography-setting" type="range" min="0" max="28" step="1" value="8">
+                        </div>
+                        <div class="setting-group settings-grid-wide">
+                            <div class="setting-label-row">
+                                <label for="setting-chat-letter-spacing">Character Spacing</label>
+                                <output id="setting-chat-letter-spacing-value" for="setting-chat-letter-spacing">0px</output>
+                            </div>
+                            <input id="setting-chat-letter-spacing" class="setting-range typography-setting" type="range" min="-0.5" max="2" step="0.1" value="0">
+                        </div>
+                    </div>
+                </section>
+
+                <section class="settings-section" aria-labelledby="behavior-heading">
+                    <div class="settings-section-heading">
+                        <h4 id="behavior-heading">Behavior</h4>
+                    </div>
+                    <div class="settings-grid">
+                        <div class="setting-group">
+                            <label for="setting-history-limit">Narrator Context Depth</label>
+                            <select id="setting-history-limit" class="setting-select">
+                                <option value="10">Last 10 Messages</option>
+                                <option value="20" selected>Last 20 Messages</option>
+                                <option value="30">Last 30 Messages</option>
+                                <option value="50">Last 50 Messages</option>
+                            </select>
+                        </div>
+                        <div class="setting-group">
+                            <label for="setting-default-agent">Default Target Agent</label>
+                            <select id="setting-default-agent" class="setting-select">
+                                <option value="codex" selected>Codex (@codex)</option>
+                                <option value="claude">Claude (@claude)</option>
+                                <option value="grok">Grok (@grok)</option>
+                                <option value="agy">AGY (@agy)</option>
+                                <option value="gemini">Gemini (@gemini)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="setting-group toggle-group">
+                        <label for="setting-auto-narrate">Auto-narrate and draft the next message after real agent responses</label>
+                        <input type="checkbox" id="setting-auto-narrate" class="setting-checkbox" checked>
+                    </div>
+                </section>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-primary" id="btn-save-settings">Save & Apply</button>
@@ -291,6 +364,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="history_state.js?v=response-assistant-3"></script>
-    <script src="index.js?v=response-assistant-3"></script>
+    <script src="index.js?v=console-typography-1"></script>
 </body>
 </html>

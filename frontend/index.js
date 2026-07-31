@@ -62,9 +62,32 @@ const narratorSidebar = document.getElementById("narrator-sidebar");
 const channelsSidebar = document.getElementById("channels-sidebar");
 
 // Settings Management (U-01, U-02, U-03, U-05)
+const SETTINGS_VERSION = 3;
+const SYSTEM_FONT_SIZES = {
+    normal: 16,
+    medium: 20,
+    large: 26,
+    xlarge: 35
+};
+const CHAT_FONT_FAMILIES = {
+    outfit: "'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    system: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    arial: "Arial, Helvetica, sans-serif",
+    verdana: "Verdana, Geneva, sans-serif",
+    trebuchet: "'Trebuchet MS', Arial, sans-serif",
+    georgia: "Georgia, 'Times New Roman', serif",
+    times: "'Times New Roman', Times, serif",
+    jetbrains: "'JetBrains Mono', Menlo, Consolas, monospace"
+};
 const DEFAULT_SETTINGS = {
-    settingsVersion: 2,
-    fontSize: "medium",
+    settingsVersion: SETTINGS_VERSION,
+    systemFontSize: "medium",
+    chatFontFamily: "outfit",
+    chatFontSize: 18,
+    chatLineHeight: 1.6,
+    chatParagraphSpacing: 8,
+    chatFontWeight: 400,
+    chatLetterSpacing: 0,
     historyLimit: 20,
     defaultAgent: "codex",
     autoNarrate: true
@@ -184,27 +207,76 @@ function getSettings() {
         // setting once so the automatic narrator + suggestion loop is actually on.
         if (!stored.settingsVersion || stored.settingsVersion < 2) {
             stored.autoNarrate = true;
-            stored.settingsVersion = 2;
         }
-        return { ...DEFAULT_SETTINGS, ...stored };
+        if (!stored.settingsVersion || stored.settingsVersion < SETTINGS_VERSION) {
+            stored.systemFontSize = stored.systemFontSize || stored.fontSize || "medium";
+        }
+        stored.settingsVersion = SETTINGS_VERSION;
+        return normalizeSettings({ ...DEFAULT_SETTINGS, ...stored });
     } catch (e) {
         return { ...DEFAULT_SETTINGS };
     }
 }
 
+function clampSettingNumber(value, fallback, minimum, maximum) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(maximum, Math.max(minimum, parsed));
+}
+
+function normalizeSettings(settings = {}) {
+    const systemFontSize = Object.prototype.hasOwnProperty.call(SYSTEM_FONT_SIZES, settings.systemFontSize)
+        ? settings.systemFontSize
+        : DEFAULT_SETTINGS.systemFontSize;
+    const chatFontFamily = Object.prototype.hasOwnProperty.call(CHAT_FONT_FAMILIES, settings.chatFontFamily)
+        ? settings.chatFontFamily
+        : DEFAULT_SETTINGS.chatFontFamily;
+    return {
+        ...DEFAULT_SETTINGS,
+        ...settings,
+        settingsVersion: SETTINGS_VERSION,
+        systemFontSize,
+        chatFontFamily,
+        chatFontSize: clampSettingNumber(settings.chatFontSize, DEFAULT_SETTINGS.chatFontSize, 12, 36),
+        chatLineHeight: clampSettingNumber(settings.chatLineHeight, DEFAULT_SETTINGS.chatLineHeight, 1, 2.4),
+        chatParagraphSpacing: clampSettingNumber(
+            settings.chatParagraphSpacing,
+            DEFAULT_SETTINGS.chatParagraphSpacing,
+            0,
+            28
+        ),
+        chatFontWeight: clampSettingNumber(settings.chatFontWeight, DEFAULT_SETTINGS.chatFontWeight, 300, 600),
+        chatLetterSpacing: clampSettingNumber(
+            settings.chatLetterSpacing,
+            DEFAULT_SETTINGS.chatLetterSpacing,
+            -0.5,
+            2
+        )
+    };
+}
+
 function saveSettings(settings) {
     try {
-        localStorage.setItem("vc_settings", JSON.stringify(settings));
-        applySettings(settings);
+        const normalized = normalizeSettings(settings);
+        localStorage.setItem("vc_settings", JSON.stringify(normalized));
+        applySettings(normalized);
     } catch (e) {
         console.error("Failed to save settings:", e);
     }
 }
 
 function applySettings(settings = getSettings()) {
+    const normalized = normalizeSettings(settings);
     document.body.classList.remove("font-normal", "font-medium", "font-large", "font-xlarge");
-    document.body.classList.add("font-" + (settings.fontSize || "medium"));
-    if (settings.autoNarrate) {
+    document.body.classList.add("font-" + normalized.systemFontSize);
+    document.body.style.setProperty("--system-font-size", SYSTEM_FONT_SIZES[normalized.systemFontSize] + "px");
+    document.body.style.setProperty("--chat-font-family", CHAT_FONT_FAMILIES[normalized.chatFontFamily]);
+    document.body.style.setProperty("--chat-font-size", normalized.chatFontSize + "px");
+    document.body.style.setProperty("--chat-line-height", String(normalized.chatLineHeight));
+    document.body.style.setProperty("--chat-paragraph-spacing", normalized.chatParagraphSpacing + "px");
+    document.body.style.setProperty("--chat-font-weight", String(normalized.chatFontWeight));
+    document.body.style.setProperty("--chat-letter-spacing", normalized.chatLetterSpacing + "px");
+    if (normalized.autoNarrate) {
         setAssistantStatus("Automatic: waiting", "on");
     } else {
         setAssistantStatus("Automatic: off", "off");
@@ -229,37 +301,108 @@ function initSettingsModal() {
     const btnSave = document.getElementById("btn-save-settings");
     const modal = document.getElementById("settings-modal");
     
-    const selFontSize = document.getElementById("setting-font-size");
+    const selSystemFontSize = document.getElementById("setting-system-font-size");
+    const selChatFontFamily = document.getElementById("setting-chat-font-family");
+    const inputChatFontSize = document.getElementById("setting-chat-font-size");
+    const inputChatLineHeight = document.getElementById("setting-chat-line-height");
+    const inputChatParagraphSpacing = document.getElementById("setting-chat-paragraph-spacing");
+    const selChatFontWeight = document.getElementById("setting-chat-font-weight");
+    const inputChatLetterSpacing = document.getElementById("setting-chat-letter-spacing");
+    const outputChatLineHeight = document.getElementById("setting-chat-line-height-value");
+    const outputChatParagraphSpacing = document.getElementById("setting-chat-paragraph-spacing-value");
+    const outputChatLetterSpacing = document.getElementById("setting-chat-letter-spacing-value");
     const selHistoryLimit = document.getElementById("setting-history-limit");
     const selDefaultAgent = document.getElementById("setting-default-agent");
     const chkAutoNarrate = document.getElementById("setting-auto-narrate");
+    const typographyControls = [
+        selSystemFontSize,
+        selChatFontFamily,
+        inputChatFontSize,
+        inputChatLineHeight,
+        inputChatParagraphSpacing,
+        selChatFontWeight,
+        inputChatLetterSpacing
+    ].filter(Boolean);
+    let settingsBeforePreview = null;
     
     if (!btnOpen || !modal) return;
     
-    btnOpen.addEventListener("click", () => {
-        const settings = getSettings();
-        if (selFontSize) selFontSize.value = settings.fontSize || "medium";
+    const updateTypographyOutputs = () => {
+        if (outputChatLineHeight && inputChatLineHeight) {
+            outputChatLineHeight.value = Number(inputChatLineHeight.value).toFixed(2);
+        }
+        if (outputChatParagraphSpacing && inputChatParagraphSpacing) {
+            outputChatParagraphSpacing.value = inputChatParagraphSpacing.value + "px";
+        }
+        if (outputChatLetterSpacing && inputChatLetterSpacing) {
+            outputChatLetterSpacing.value = inputChatLetterSpacing.value + "px";
+        }
+    };
+
+    const settingsFromForm = (baseSettings = getSettings()) => normalizeSettings({
+        ...baseSettings,
+        settingsVersion: SETTINGS_VERSION,
+        systemFontSize: selSystemFontSize ? selSystemFontSize.value : DEFAULT_SETTINGS.systemFontSize,
+        chatFontFamily: selChatFontFamily ? selChatFontFamily.value : DEFAULT_SETTINGS.chatFontFamily,
+        chatFontSize: inputChatFontSize ? inputChatFontSize.value : DEFAULT_SETTINGS.chatFontSize,
+        chatLineHeight: inputChatLineHeight ? inputChatLineHeight.value : DEFAULT_SETTINGS.chatLineHeight,
+        chatParagraphSpacing: inputChatParagraphSpacing
+            ? inputChatParagraphSpacing.value
+            : DEFAULT_SETTINGS.chatParagraphSpacing,
+        chatFontWeight: selChatFontWeight ? selChatFontWeight.value : DEFAULT_SETTINGS.chatFontWeight,
+        chatLetterSpacing: inputChatLetterSpacing
+            ? inputChatLetterSpacing.value
+            : DEFAULT_SETTINGS.chatLetterSpacing,
+        historyLimit: selHistoryLimit ? parseInt(selHistoryLimit.value, 10) : 20,
+        defaultAgent: selDefaultAgent ? selDefaultAgent.value : "codex",
+        autoNarrate: chkAutoNarrate ? chkAutoNarrate.checked : false
+    });
+
+    const populateSettingsForm = settings => {
+        if (selSystemFontSize) selSystemFontSize.value = settings.systemFontSize;
+        if (selChatFontFamily) selChatFontFamily.value = settings.chatFontFamily;
+        if (inputChatFontSize) inputChatFontSize.value = String(settings.chatFontSize);
+        if (inputChatLineHeight) inputChatLineHeight.value = String(settings.chatLineHeight);
+        if (inputChatParagraphSpacing) {
+            inputChatParagraphSpacing.value = String(settings.chatParagraphSpacing);
+        }
+        if (selChatFontWeight) selChatFontWeight.value = String(settings.chatFontWeight);
+        if (inputChatLetterSpacing) inputChatLetterSpacing.value = String(settings.chatLetterSpacing);
         if (selHistoryLimit) selHistoryLimit.value = String(settings.historyLimit || 20);
         if (selDefaultAgent) selDefaultAgent.value = settings.defaultAgent || "codex";
         if (chkAutoNarrate) chkAutoNarrate.checked = !!settings.autoNarrate;
-        
+        updateTypographyOutputs();
+    };
+
+    btnOpen.addEventListener("click", () => {
+        const settings = getSettings();
+        settingsBeforePreview = settings;
+        populateSettingsForm(settings);
         modal.classList.remove("hidden");
     });
-    
-    const closeModal = () => modal.classList.add("hidden");
-    if (btnClose) btnClose.addEventListener("click", closeModal);
+
+    const closeModal = (revertPreview = true) => {
+        if (revertPreview && settingsBeforePreview) applySettings(settingsBeforePreview);
+        settingsBeforePreview = null;
+        modal.classList.add("hidden");
+    };
+    if (btnClose) btnClose.addEventListener("click", () => closeModal(true));
+
+    const previewTypography = () => {
+        updateTypographyOutputs();
+        applySettings(settingsFromForm(settingsBeforePreview || getSettings()));
+    };
+    typographyControls.forEach(control => {
+        control.addEventListener("input", previewTypography);
+        control.addEventListener("change", previewTypography);
+    });
     
     if (btnSave) {
         btnSave.addEventListener("click", () => {
-            const updated = {
-                settingsVersion: 2,
-                fontSize: selFontSize ? selFontSize.value : "medium",
-                historyLimit: selHistoryLimit ? parseInt(selHistoryLimit.value, 10) : 20,
-                defaultAgent: selDefaultAgent ? selDefaultAgent.value : "codex",
-                autoNarrate: chkAutoNarrate ? chkAutoNarrate.checked : false
-            };
+            const updated = settingsFromForm(settingsBeforePreview || getSettings());
             saveSettings(updated);
-            closeModal();
+            settingsBeforePreview = null;
+            closeModal(false);
         });
     }
 }
@@ -1026,15 +1169,15 @@ function renderTranscript(messages, state = null) {
         if (state.loadingOlder) {
             loadOlderBtnHtml = `
                 <div class="load-older-container" style="text-align: center; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 16px;">
-                    <span class="material-symbols-rounded spinning" style="font-size: 1.1rem; vertical-align: middle; display: inline-block;">progress_activity</span>
-                    <span style="font-size: 0.85rem; opacity: 0.8; vertical-align: middle; margin-left: 4px;">Loading older messages...</span>
+                    <span class="material-symbols-rounded spinning" style="font-size: calc(var(--system-font-size) * 1.1); vertical-align: middle; display: inline-block;">progress_activity</span>
+                    <span style="font-size: calc(var(--system-font-size) * 0.85); opacity: 0.8; vertical-align: middle; margin-left: 4px;">Loading older messages...</span>
                 </div>
             `;
         } else {
             loadOlderBtnHtml = `
                 <div class="load-older-container" style="text-align: center; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 16px;">
-                    <button id="btn-load-older" class="btn btn-secondary btn-sm" onclick="handleLoadOlder()" style="padding: 6px 14px; font-size: 0.8rem; height: auto;">
-                        <span class="material-symbols-rounded" style="font-size: 1.1rem; vertical-align: middle; margin-right: 4px;">history</span>Load Older Messages
+                    <button id="btn-load-older" class="btn btn-secondary btn-sm" onclick="handleLoadOlder()" style="padding: 6px 14px; font-size: calc(var(--system-font-size) * 0.8); height: auto;">
+                        <span class="material-symbols-rounded" style="font-size: calc(var(--system-font-size) * 1.1); vertical-align: middle; margin-right: 4px;">history</span>Load Older Messages
                     </button>
                 </div>
             `;
@@ -1123,7 +1266,7 @@ function renderStats(stats) {
             const elapsedStr = data.current_elapsed > 0 ? ` for ${formatDuration(data.current_elapsed)}` : "";
             return `
                 <div class="stats-item working">
-                    <span class="material-symbols-rounded spinning" style="font-size: 0.8rem; display: inline-block;">sync</span>
+                    <span class="material-symbols-rounded spinning" style="font-size: calc(var(--system-font-size) * 0.8); display: inline-block;">sync</span>
                     <span class="agent-name">@${displayName}</span>
                     <span class="stats-val">working${elapsedStr}</span>
                 </div>
@@ -1141,7 +1284,7 @@ function renderStats(stats) {
     if (items.trim() === "") {
         statsBar.style.display = "none";
     } else {
-        statsBar.innerHTML = `<span class="stats-label" style="font-weight: 600; opacity: 0.7; font-size: 0.8rem; margin-right: 12px; display: inline-flex; align-items: center; gap: 4px;"><span class="material-symbols-rounded" style="font-size: 0.95rem;">history</span> Recent Window Stats:</span>` + items;
+        statsBar.innerHTML = `<span class="stats-label" style="font-weight: 600; opacity: 0.7; font-size: calc(var(--system-font-size) * 0.8); margin-right: 12px; display: inline-flex; align-items: center; gap: 4px;"><span class="material-symbols-rounded" style="font-size: calc(var(--system-font-size) * 0.95);">history</span> Recent Window Stats:</span>` + items;
         statsBar.style.display = "flex";
     }
 }

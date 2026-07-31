@@ -21,6 +21,13 @@
     
     --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --system-font-size: 20px;
+    --chat-font-family: var(--font-sans);
+    --chat-font-size: 18px;
+    --chat-line-height: 1.6;
+    --chat-paragraph-spacing: 8px;
+    --chat-font-weight: 400;
+    --chat-letter-spacing: 0px;
     
     --glow-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
 }
@@ -40,6 +47,7 @@ body {
     display: flex;
     justify-content: center;
     overflow-x: hidden;
+    font-size: var(--system-font-size);
 }
 
 /* Custom Scrollbars */
@@ -88,7 +96,7 @@ body {
 }
 
 .logo-icon {
-    font-size: 2.5rem;
+    font-size: calc(var(--system-font-size) * 2.5);
     background: linear-gradient(135deg, var(--primary), var(--accent));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -96,7 +104,7 @@ body {
 }
 
 .logo-text h1 {
-    font-size: 1.5rem;
+    font-size: calc(var(--system-font-size) * 1.5);
     font-weight: 700;
     letter-spacing: -0.5px;
     background: linear-gradient(to right, #fff, var(--text-muted));
@@ -105,7 +113,7 @@ body {
 }
 
 .logo-text .tagline {
-    font-size: 0.8rem;
+    font-size: calc(var(--system-font-size) * 0.8);
     color: var(--text-muted);
     font-weight: 400;
 }
@@ -123,7 +131,7 @@ body {
     background: rgba(0, 0, 0, 0.2);
     border: 1px solid rgba(255, 255, 255, 0.05);
     border-radius: 50px;
-    font-size: 0.85rem;
+    font-size: calc(var(--system-font-size) * 0.85);
     color: var(--text-muted);
 }
 
@@ -218,18 +226,18 @@ body {
 
 .header-icon {
     color: var(--primary);
-    font-size: 1.6rem;
+    font-size: calc(var(--system-font-size) * 1.6);
 }
 
 .card-header h2 {
-    font-size: 1.2rem;
+    font-size: calc(var(--system-font-size) * 1.2);
     font-weight: 600;
     color: #fff;
     flex-grow: 1;
 }
 
 .badge {
-    font-size: 0.75rem;
+    font-size: calc(var(--system-font-size) * 0.75);
     font-weight: 600;
     padding: 0.25rem 0.6rem;
     border-radius: 4px;
@@ -300,7 +308,7 @@ body {
 
 #digest-content {
     line-height: 1.6;
-    font-size: 0.95rem;
+    font-size: calc(var(--system-font-size) * 0.95);
     color: var(--text-main);
     font-weight: 300;
 }
@@ -322,7 +330,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
-    font-size: 0.85rem;
+    font-size: calc(var(--system-font-size) * 0.85);
 }
 
 .control-row {
@@ -333,7 +341,7 @@ body {
 }
 
 .control-row span {
-    font-size: 1.1rem;
+    font-size: calc(var(--system-font-size) * 1.1);
 }
 
 #speed-range {
@@ -401,7 +409,10 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 0.8rem;
+    font-family: var(--chat-font-family);
+    font-size: max(12px, calc(var(--chat-font-size) * 0.72));
+    line-height: var(--chat-line-height);
+    letter-spacing: var(--chat-letter-spacing);
 }
 
 .chat-author {
@@ -418,8 +429,11 @@ body {
 }
 
 .chat-body {
-    font-size: 0.9rem;
-    line-height: 1.5;
+    font-family: var(--chat-font-family);
+    font-size: var(--chat-font-size);
+    line-height: var(--chat-line-height);
+    font-weight: var(--chat-font-weight);
+    letter-spacing: var(--chat-letter-spacing);
     color: var(--text-main);
     white-space: pre-wrap;
     word-break: break-word;
@@ -437,7 +451,7 @@ body {
 }
 
 .shortcuts-panel h3 {
-    font-size: 0.85rem;
+    font-size: calc(var(--system-font-size) * 0.85);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-muted);
@@ -465,7 +479,7 @@ body {
     border-radius: 12px;
     color: var(--text-main);
     cursor: pointer;
-    font-size: 0.8rem;
+    font-size: calc(var(--system-font-size) * 0.8);
     font-weight: 500;
     transition: all 0.2s ease;
 }
@@ -483,7 +497,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.75rem;
+    font-size: calc(var(--system-font-size) * 0.75);
     font-weight: 700;
     color: #fff;
 }
@@ -505,7 +519,7 @@ body {
     color: var(--text-muted);
     padding: 0.4rem 0.8rem;
     border-radius: 8px;
-    font-size: 0.8rem;
+    font-size: calc(var(--system-font-size) * 0.8);
     cursor: pointer;
     transition: all 0.2s ease;
 }
@@ -544,7 +558,7 @@ body {
     outline: none;
     color: var(--text-main);
     font-family: var(--font-sans);
-    font-size: 0.95rem;
+    font-size: calc(var(--system-font-size) * 0.95);
     padding: 1rem;
     resize: none;
 }
@@ -579,14 +593,14 @@ body {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    font-size: 0.8rem;
+    font-size: calc(var(--system-font-size) * 0.8);
     color: var(--text-muted);
     font-weight: 500;
 }
 
 .warning-icon {
     color: var(--danger);
-    font-size: 1.1rem;
+    font-size: calc(var(--system-font-size) * 1.1);
 }
 
 .confirmation-actions {
@@ -596,7 +610,7 @@ body {
 }
 
 .send-feedback {
-    font-size: 0.85rem;
+    font-size: calc(var(--system-font-size) * 0.85);
     padding: 0.5rem 1rem;
     margin-left: 1rem;
     border-radius: 8px;
@@ -653,7 +667,7 @@ body {
     padding: 0.75rem 1.25rem;
     font-family: var(--font-sans);
     font-weight: 600;
-    font-size: 0.9rem;
+    font-size: calc(var(--system-font-size) * 0.9);
     cursor: pointer;
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -712,7 +726,7 @@ body {
 
 .btn-sm {
     padding: 0.4rem 0.8rem;
-    font-size: 0.8rem;
+    font-size: calc(var(--system-font-size) * 0.8);
     border-radius: 6px;
 }
 
@@ -747,7 +761,7 @@ body {
 }
 
 .room-select-icon {
-    font-size: 1rem !important;
+    font-size: var(--system-font-size) !important;
 }
 
 #room-select {
@@ -756,7 +770,7 @@ body {
     outline: none;
     color: var(--accent);
     font-family: var(--font-sans);
-    font-size: 0.8rem;
+    font-size: calc(var(--system-font-size) * 0.8);
     font-weight: 600;
     cursor: pointer;
 }
@@ -777,12 +791,15 @@ body {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.05);
     color: var(--text-muted);
-    font-size: 0.8rem;
-    font-family: var(--font-sans);
+    font-size: max(12px, calc(var(--chat-font-size) * 0.82));
+    line-height: var(--chat-line-height);
+    font-family: var(--chat-font-family);
+    font-weight: var(--chat-font-weight);
+    letter-spacing: var(--chat-letter-spacing);
 }
 
 .system-event-chip .system-icon {
-    font-size: 1rem !important;
+    font-size: 1.15em !important;
     color: var(--accent);
 }
 
@@ -845,7 +862,7 @@ body {
 }
 
 .system-event-chip .system-time {
-    font-size: 0.75rem;
+    font-size: 0.85em;
     opacity: 0.6;
 }
 
@@ -865,23 +882,27 @@ body {
     margin-top: 0.5rem;
     margin-bottom: 0.25rem;
     color: var(--text-main);
-    font-size: 1.1rem;
+    font-size: 1.1em;
 }
-.chat-body h1 { font-size: 1.3rem; }
-.chat-body h2 { font-size: 1.2rem; }
+.chat-body h1 { font-size: 1.3em; }
+.chat-body h2 { font-size: 1.2em; }
 
 .chat-body p {
-    margin: 0 0 0.5rem 0;
-    line-height: 1.5;
+    margin: 0 0 var(--chat-paragraph-spacing) 0;
+    line-height: inherit;
+}
+
+.chat-body p:last-child {
+    margin-bottom: 0;
 }
 
 .chat-body ul, .chat-body ol {
-    margin: 0 0 0.5rem 1.2rem;
+    margin: 0 0 var(--chat-paragraph-spacing) 1.2rem;
     padding: 0;
 }
 
 .chat-body li {
-    margin-bottom: 0.2rem;
+    margin-bottom: calc(var(--chat-paragraph-spacing) * 0.4);
 }
 
 .chat-body code {
@@ -906,14 +927,14 @@ body {
     background: transparent;
     padding: 0;
     color: inherit;
-    font-size: 0.85rem;
+    font-size: 0.85em;
 }
 
 .chat-body table {
     width: 100%;
     border-collapse: collapse;
     margin: 0.5rem 0;
-    font-size: 0.85rem;
+    font-size: 0.85em;
 }
 
 .chat-body th, .chat-body td {
@@ -929,7 +950,7 @@ body {
 
 .chat-body blockquote {
     border-left: 3px solid rgba(255, 255, 255, 0.2);
-    margin: 0.5rem 0;
+    margin: var(--chat-paragraph-spacing) 0;
     padding-left: 0.6rem;
     color: var(--text-muted);
     font-style: italic;
@@ -937,14 +958,14 @@ body {
 
 /* Agent Response Time Badge */
 .response-time-badge {
-    font-size: 0.7rem;
+    font-size: 0.85em;
     background: rgba(99, 102, 241, 0.15);
     color: #818cf8;
     padding: 0.1rem 0.35rem;
     border-radius: 4px;
     margin-left: 0.5rem;
     border: 1px solid rgba(99, 102, 241, 0.2);
-    font-family: var(--font-sans);
+    font-family: var(--chat-font-family);
 }
 
 /* Statistics Bar Styling */
@@ -956,7 +977,7 @@ body {
     padding: 0.5rem 1.2rem;
     background: rgba(255, 255, 255, 0.02);
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    font-size: 0.72rem;
+    font-size: calc(var(--system-font-size) * 0.72);
     color: var(--text-muted);
     min-height: 28px;
 }
@@ -1025,7 +1046,7 @@ body {
     border: none;
     outline: none;
     color: var(--text-muted);
-    font-size: 0.78rem;
+    font-size: calc(var(--system-font-size) * 0.78);
     font-family: var(--font-sans);
     cursor: pointer;
     padding: 0;
@@ -1037,7 +1058,7 @@ body {
 }
 
 .sources-toggle .toggle-arrow {
-    font-size: 1.1rem !important;
+    font-size: calc(var(--system-font-size) * 1.1) !important;
     transition: transform 0.2s;
 }
 
@@ -1061,7 +1082,7 @@ body {
 }
 
 .source-item {
-    font-size: 0.72rem;
+    font-size: calc(var(--system-font-size) * 0.72);
     background: rgba(255, 255, 255, 0.015);
     border: 1px solid rgba(255, 255, 255, 0.03);
     padding: 0.35rem 0.6rem;
@@ -1142,7 +1163,7 @@ body {
 }
 
 .brand-title {
-    font-size: 1.1rem;
+    font-size: calc(var(--system-font-size) * 1.1);
     font-weight: 700;
     letter-spacing: -0.3px;
     background: linear-gradient(to right, #fff, var(--text-muted));
@@ -1151,7 +1172,7 @@ body {
 }
 
 .brand-subtitle {
-    font-size: 0.7rem;
+    font-size: calc(var(--system-font-size) * 0.7);
     color: var(--text-muted);
 }
 
@@ -1166,7 +1187,7 @@ body {
     left: 1.6rem;
     top: 50%;
     transform: translateY(-50%);
-    font-size: 1.1rem;
+    font-size: calc(var(--system-font-size) * 1.1);
     color: var(--text-muted);
 }
 
@@ -1178,7 +1199,7 @@ body {
     border-radius: 8px;
     color: var(--text-main);
     font-family: var(--font-sans);
-    font-size: 0.85rem;
+    font-size: calc(var(--system-font-size) * 0.85);
     outline: none;
     transition: border-color 0.2s;
 }
@@ -1196,7 +1217,7 @@ body {
 
 .sidebar-section-title {
     padding: 0.8rem 1.2rem 0.4rem;
-    font-size: 0.68rem;
+    font-size: calc(var(--system-font-size) * 0.68);
     font-weight: 700;
     letter-spacing: 0.8px;
     color: var(--text-dark);
@@ -1233,7 +1254,7 @@ body {
 }
 
 .channel-item .channel-icon {
-    font-size: 1.1rem;
+    font-size: calc(var(--system-font-size) * 1.1);
     color: var(--text-dark);
 }
 
@@ -1248,7 +1269,7 @@ body {
 }
 
 .channel-name {
-    font-size: 0.9rem;
+    font-size: calc(var(--system-font-size) * 0.9);
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
@@ -1260,7 +1281,7 @@ body {
     align-items: center;
     gap: 0.5rem;
     padding: 1rem;
-    font-size: 0.85rem;
+    font-size: calc(var(--system-font-size) * 0.85);
     color: var(--text-muted);
 }
 
@@ -1276,7 +1297,7 @@ body {
 }
 
 .workspace-header {
-    height: 64px;
+    height: auto;
     min-height: 64px;
     padding: 0 1.5rem;
     display: flex;
@@ -1299,7 +1320,7 @@ body {
 }
 
 .room-hash {
-    font-size: 1.5rem;
+    font-size: calc(var(--system-font-size) * 1.5);
     color: var(--accent);
 }
 
@@ -1309,14 +1330,14 @@ body {
 }
 
 .room-details h2 {
-    font-size: 1.1rem;
+    font-size: calc(var(--system-font-size) * 1.1);
     font-weight: 700;
     color: var(--text-main);
     line-height: 1.2;
 }
 
 .room-subtitle {
-    font-size: 0.75rem;
+    font-size: calc(var(--system-font-size) * 0.75);
     color: var(--text-muted);
 }
 
@@ -1336,7 +1357,7 @@ body {
     align-items: center;
     gap: 0.5rem;
     padding: 0.45rem 0.9rem;
-    font-size: 0.85rem;
+    font-size: calc(var(--system-font-size) * 0.85);
 }
 
 .btn-narrator-toggle.active {
@@ -1384,7 +1405,7 @@ body {
 }
 
 .toolbar-label {
-    font-size: 0.75rem;
+    font-size: calc(var(--system-font-size) * 0.75);
     color: var(--text-muted);
     font-weight: 600;
 }
@@ -1398,7 +1419,7 @@ body {
 .composer-toolbar .avatar {
     width: 22px;
     height: 22px;
-    font-size: 0.65rem;
+    font-size: calc(var(--system-font-size) * 0.65);
 }
 
 .composer-input-row {
@@ -1441,7 +1462,7 @@ body {
 }
 
 .title-with-icon h2 {
-    font-size: 1.1rem;
+    font-size: calc(var(--system-font-size) * 1.1);
     font-weight: 600;
 }
 
@@ -1471,7 +1492,7 @@ body {
     align-items: center;
     gap: 0.4rem;
     color: var(--text-muted);
-    font-size: 0.72rem;
+    font-size: calc(var(--system-font-size) * 0.72);
     white-space: nowrap;
 }
 
@@ -1524,11 +1545,12 @@ body {
     }
 }
 
-/* Font Size Modifier Classes (U-01) */
-body.font-normal { font-size: 14px; }
-body.font-medium { font-size: 16px; }
-body.font-large { font-size: 18px; }
-body.font-xlarge { font-size: 20px; }
+/* System typography presets. Component text uses --system-font-size directly so
+   changing a preset affects hard-coded labels and controls immediately. */
+body.font-normal { --system-font-size: 16px; }
+body.font-medium { --system-font-size: 20px; }
+body.font-large { --system-font-size: 26px; }
+body.font-xlarge { --system-font-size: 35px; }
 
 /* Settings Modal Styles (U-01, U-02, U-03, U-05) */
 .modal-overlay {
@@ -1558,7 +1580,8 @@ body.font-xlarge { font-size: 20px; }
     border: 1px solid var(--card-border-glow);
     border-radius: 16px;
     width: 100%;
-    max-width: 480px;
+    max-width: 760px;
+    max-height: calc(100vh - 3rem);
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
     display: flex;
     flex-direction: column;
@@ -1581,7 +1604,7 @@ body.font-xlarge { font-size: 20px; }
 }
 
 .modal-title h3 {
-    font-size: 1.15rem;
+    font-size: calc(var(--system-font-size) * 1.15);
     font-weight: 600;
     color: var(--text-main);
 }
@@ -1591,6 +1614,40 @@ body.font-xlarge { font-size: 20px; }
     display: flex;
     flex-direction: column;
     gap: 1.25rem;
+    overflow-y: auto;
+}
+
+.settings-section {
+    padding: 1rem;
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.02);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.settings-section-heading h4 {
+    color: var(--primary);
+    font-size: var(--system-font-size);
+    font-weight: 600;
+}
+
+.settings-section-heading p {
+    color: var(--text-muted);
+    font-size: calc(var(--system-font-size) * 0.75);
+    line-height: 1.35;
+    margin-top: 0.2rem;
+}
+
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.settings-grid-wide {
+    grid-column: 1 / -1;
 }
 
 .setting-group {
@@ -1606,24 +1663,57 @@ body.font-xlarge { font-size: 20px; }
 }
 
 .setting-group label {
-    font-size: 0.95rem;
+    font-size: calc(var(--system-font-size) * 0.95);
     font-weight: 500;
     color: var(--text-main);
 }
 
-.setting-select {
+.setting-select,
+.setting-input {
     background: rgba(10, 15, 30, 0.8);
     border: 1px solid var(--card-border);
     border-radius: 8px;
     padding: 0.6rem 0.8rem;
     color: var(--text-main);
-    font-size: 0.95rem;
+    font-size: calc(var(--system-font-size) * 0.95);
     font-family: var(--font-sans);
     outline: none;
 }
 
-.setting-select:focus {
+.setting-select:focus,
+.setting-input:focus {
     border-color: var(--primary);
+}
+
+.setting-with-unit {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.setting-with-unit .setting-input {
+    width: 100%;
+    min-width: 0;
+}
+
+.setting-with-unit span,
+.setting-label-row output {
+    color: var(--text-muted);
+    font-size: calc(var(--system-font-size) * 0.8);
+    font-variant-numeric: tabular-nums;
+}
+
+.setting-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+}
+
+.setting-range {
+    width: 100%;
+    accent-color: var(--primary);
+    cursor: pointer;
 }
 
 .setting-checkbox {
@@ -1638,4 +1728,22 @@ body.font-xlarge { font-size: 20px; }
     border-top: 1px solid var(--card-border);
     display: flex;
     justify-content: flex-end;
+}
+
+@media (max-width: 640px) {
+    .modal-overlay {
+        padding: 0.75rem;
+    }
+
+    .modal-card {
+        max-height: calc(100vh - 1.5rem);
+    }
+
+    .settings-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .settings-grid-wide {
+        grid-column: auto;
+    }
 }

@@ -17,6 +17,10 @@ function classList() {
 
 function element() {
     const listeners = {};
+    const styleValues = { display: "none" };
+    styleValues.setProperty = (name, value) => { styleValues[name] = value; };
+    styleValues.getPropertyValue = name => styleValues[name] || "";
+    styleValues.removeProperty = name => { delete styleValues[name]; };
     return {
         classList: classList(),
         dataset: {},
@@ -26,7 +30,7 @@ function element() {
         offsetWidth: 1,
         readOnly: false,
         scrollTop: 0,
-        style: { display: "none" },
+        style: styleValues,
         value: "",
         listeners,
         addEventListener: (name, handler) => { listeners[name] = handler; },
@@ -39,7 +43,9 @@ function element() {
 
 function loadFrontend(options = {}) {
     const elements = new Map();
+    const body = element();
     const document = {
+        body,
         readyState: "loading",
         addEventListener: () => {},
         createElement: () => element(),
@@ -163,6 +169,91 @@ test("narrator sidebar toggle opens, closes, and persists state in localStorage"
     app.storage["narratorOpen"] = "true";
     vm.runInContext('initNarratorSidebarState();', app.sandbox);
     assert.equal(sidebar.classList.contains("collapsed"), false);
+});
+
+test("legacy interface font preference migrates to the split typography settings", () => {
+    const app = loadFrontend({
+        storage: {
+            vc_settings: JSON.stringify({
+                settingsVersion: 2,
+                fontSize: "large",
+                historyLimit: 30,
+                defaultAgent: "claude",
+                autoNarrate: false
+            })
+        }
+    });
+
+    const settings = vm.runInContext("getSettings()", app.sandbox);
+    assert.equal(settings.settingsVersion, 3);
+    assert.equal(settings.systemFontSize, "large");
+    assert.equal(settings.chatFontFamily, "outfit");
+    assert.equal(settings.chatFontSize, 18);
+
+    app.sandbox.applySettings(settings);
+    assert.equal(app.sandbox.document.body.classList.contains("font-large"), true);
+    assert.equal(app.sandbox.document.body.style.getPropertyValue("--system-font-size"), "26px");
+    assert.equal(app.sandbox.document.body.style.getPropertyValue("--chat-font-size"), "18px");
+});
+
+test("system and chat typography preview immediately, revert on close, and persist on save", () => {
+    const app = loadFrontend();
+    app.sandbox.applySettings();
+    app.sandbox.initSettingsModal();
+
+    const open = app.sandbox.document.getElementById("btn-open-settings");
+    const close = app.sandbox.document.getElementById("btn-close-settings");
+    const save = app.sandbox.document.getElementById("btn-save-settings");
+    const systemSize = app.sandbox.document.getElementById("setting-system-font-size");
+    const chatFamily = app.sandbox.document.getElementById("setting-chat-font-family");
+    const chatSize = app.sandbox.document.getElementById("setting-chat-font-size");
+    const lineHeight = app.sandbox.document.getElementById("setting-chat-line-height");
+    const paragraphSpacing = app.sandbox.document.getElementById("setting-chat-paragraph-spacing");
+    const fontWeight = app.sandbox.document.getElementById("setting-chat-font-weight");
+    const letterSpacing = app.sandbox.document.getElementById("setting-chat-letter-spacing");
+
+    open.listeners.click();
+    systemSize.value = "xlarge";
+    chatFamily.value = "georgia";
+    chatSize.value = "24";
+    lineHeight.value = "1.9";
+    paragraphSpacing.value = "14";
+    fontWeight.value = "500";
+    letterSpacing.value = "0.4";
+    lineHeight.listeners.input();
+
+    const bodyStyle = app.sandbox.document.body.style;
+    assert.equal(bodyStyle.getPropertyValue("--system-font-size"), "35px");
+    assert.equal(bodyStyle.getPropertyValue("--chat-font-family"), "Georgia, 'Times New Roman', serif");
+    assert.equal(bodyStyle.getPropertyValue("--chat-font-size"), "24px");
+    assert.equal(bodyStyle.getPropertyValue("--chat-line-height"), "1.9");
+    assert.equal(bodyStyle.getPropertyValue("--chat-paragraph-spacing"), "14px");
+    assert.equal(bodyStyle.getPropertyValue("--chat-font-weight"), "500");
+    assert.equal(bodyStyle.getPropertyValue("--chat-letter-spacing"), "0.4px");
+    assert.equal(app.storage.vc_settings, undefined);
+
+    close.listeners.click();
+    assert.equal(bodyStyle.getPropertyValue("--system-font-size"), "20px");
+    assert.equal(bodyStyle.getPropertyValue("--chat-font-size"), "18px");
+
+    open.listeners.click();
+    systemSize.value = "xlarge";
+    chatFamily.value = "georgia";
+    chatSize.value = "24";
+    lineHeight.value = "1.9";
+    paragraphSpacing.value = "14";
+    fontWeight.value = "500";
+    letterSpacing.value = "0.4";
+    chatSize.listeners.input();
+    save.listeners.click();
+
+    const persisted = JSON.parse(app.storage.vc_settings);
+    assert.equal(persisted.settingsVersion, 3);
+    assert.equal(persisted.systemFontSize, "xlarge");
+    assert.equal(persisted.chatFontFamily, "georgia");
+    assert.equal(persisted.chatFontSize, 24);
+    assert.equal(persisted.chatLineHeight, 1.9);
+    assert.equal(bodyStyle.getPropertyValue("--system-font-size"), "35px");
 });
 
 test("confirmation gate locks composer text and room switch clears confirmation", () => {
