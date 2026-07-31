@@ -234,3 +234,238 @@ test("recent stats bar renders formatted agent metrics", () => {
     assert.equal(statsBar.innerHTML.includes("3 runs"), true);
     assert.equal(statsBar.innerHTML.includes("12 msgs"), true);
 });
+
+test("combined response assistant puts a suggestion in an empty composer without sending", async () => {
+    const app = loadFrontend();
+    const input = app.sandbox.document.getElementById("command-input");
+    const requests = [];
+    vm.runInContext(`
+        activeRoomId = "room-assist";
+        roomsList = [{ id: "room-assist", name: "voice_channel" }];
+    `, app.sandbox);
+
+    app.sandbox.fetch = (url, options) => {
+        requests.push({ url, options });
+        if (url.startsWith("/api/history")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    messages: [{
+                        id: "agent-new",
+                        lane: "agent",
+                        username: "acli_bot",
+                        name: "ACLI Bot",
+                        text: "**@agy**: implementation complete",
+                        timestamp: "2026-07-30T12:00:00Z",
+                        event: { kind: "agent_response", agent: "agy" }
+                    }]
+                })
+            });
+        }
+        if (url === "/api/response-assistant") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    digest: "AGY completed the work.\n\nGrok should review it.",
+                    phase: "review",
+                    suggested_message: "@grok Please independently review AGY's implementation.",
+                    trigger_message_id: "agent-new",
+                    included_message_ids: ["agent-new"]
+                })
+            });
+        }
+        throw new Error("Unexpected request: " + url);
+    };
+
+    await app.sandbox.handleGenerateDigest({ autoPlay: false, triggerMessageId: "agent-new" });
+
+    assert.equal(input.value, "@grok Please independently review AGY's implementation.");
+    assert.equal(requests.some(request => request.url === "/api/response-assistant"), true);
+    assert.equal(requests.some(request => request.url === "/api/gateway/confirm"), false);
+    assert.equal(requests.some(request => request.url.includes("count=100")), true);
+    const requestBody = JSON.parse(requests.find(request => request.url === "/api/response-assistant").options.body);
+    assert.equal(requestBody.room_name, "voice_channel");
+    assert.equal(requestBody.trigger_message_id, "agent-new");
+});
+
+test("AI suggestion never overwrites Ed's existing draft", () => {
+    const app = loadFrontend();
+    const input = app.sandbox.document.getElementById("command-input");
+    input.value = "@claude Ed is already editing this";
+    vm.runInContext(`
+        activeRoomId = "room-preserve";
+        getRoomState("room-preserve").draftText = "@claude Ed is already editing this";
+    `, app.sandbox);
+
+    const inserted = vm.runInContext(
+        'applySuggestedDraft("room-preserve", "@grok Generated suggestion")',
+        app.sandbox
+    );
+
+    assert.equal(inserted, false);
+    assert.equal(input.value, "@claude Ed is already editing this");
+});
+
+test("AI suggestion never changes draft state while confirmation locks the composer", () => {
+    const app = loadFrontend();
+    const input = app.sandbox.document.getElementById("command-input");
+    input.value = "@codex exact message awaiting confirmation";
+    input.readOnly = true;
+    vm.runInContext(`
+        activeRoomId = "room-confirming";
+        const state = getRoomState("room-confirming");
+        state.draftText = "@codex exact message awaiting confirmation";
+        state.lastInsertedSuggestion = "@codex exact message awaiting confirmation";
+    `, app.sandbox);
+
+    const inserted = vm.runInContext(
+        'applySuggestedDraft("room-confirming", "@grok A newer generated suggestion")',
+        app.sandbox
+    );
+
+    assert.equal(inserted, false);
+    assert.equal(input.value, "@codex exact message awaiting confirmation");
+    assert.equal(
+        vm.runInContext('getRoomState("room-confirming").draftText', app.sandbox),
+        "@codex exact message awaiting confirmation"
+    );
+});
+
+test("polling ignores the initial backlog and auto-assists only a newly arrived real response", async () => {
+    const app = loadFrontend();
+    const input = app.sandbox.document.getElementById("command-input");
+    const requests = [];
+    let pollNumber = 0;
+    vm.runInContext(`
+        activeRoomId = "room-auto";
+        roomsList = [{ id: "room-auto", name: "voice_channel" }];
+        localStorage.setItem("vc_settings", JSON.stringify({
+            settingsVersion: 2,
+            fontSize: "medium",
+            historyLimit: 20,
+            defaultAgent: "codex",
+            autoNarrate: true
+        }));
+    `, app.sandbox);
+
+    app.sandbox.fetch = (url, options) => {
+        requests.push({ url, options });
+        if (url.startsWith("/api/history")) {
+            pollNumber += 1;
+            const messages = [{
+                id: "user-existing",
+                lane: "user",
+                username: "ed",
+                text: "Existing request",
+                timestamp: "2026-07-30T11:00:00Z",
+                event: { kind: "user_message" }
+            }];
+            if (pollNumber >= 2) {
+                messages.push({
+                    id: "agent-arrived",
+                    lane: "agent",
+                    username: "acli_bot",
+                    text: "**@agy**: done",
+                    timestamp: "2026-07-30T12:00:00Z",
+                    event: { kind: "agent_response", agent: "agy" }
+                });
+            }
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({ success: true, messages, has_more: false, stats: {} })
+            });
+        }
+        if (url === "/api/response-assistant") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    digest: "AGY completed the task.\n\nThe implementation now needs review.",
+                    phase: "review",
+                    suggested_message: "@grok Review AGY's completed task.",
+                    trigger_message_id: "agent-arrived",
+                    included_message_ids: ["user-existing", "agent-arrived"]
+                })
+            });
+        }
+        throw new Error("Unexpected request: " + url);
+    };
+
+    await app.sandbox.loadHistory();
+    assert.equal(requests.filter(request => request.url === "/api/response-assistant").length, 0);
+
+    await app.sandbox.loadHistory();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(requests.filter(request => request.url === "/api/response-assistant").length, 1);
+    assert.equal(input.value, "@grok Review AGY's completed task.");
+});
+
+test("a transient response-assistant failure is retried from the next poll after backoff", async () => {
+    const app = loadFrontend();
+    const requests = [];
+    const agentResponse = {
+        id: "agent-retry",
+        lane: "agent",
+        username: "acli_bot",
+        text: "**@agy**: done",
+        timestamp: "2026-07-30T12:00:00Z",
+        event: { kind: "agent_response", agent: "agy" }
+    };
+    vm.runInContext(`
+        activeRoomId = "room-retry";
+        roomsList = [{ id: "room-retry", name: "voice_channel" }];
+        const state = getRoomState("room-retry");
+        state.pollInitialized = true;
+        state.messageMap["agent-retry"] = ${JSON.stringify(agentResponse)};
+        state.orderedIds = ["agent-retry"];
+        state.failedAssistantId = "agent-retry";
+        state.assistantRetryAt = 0;
+        localStorage.setItem("vc_settings", JSON.stringify({
+            settingsVersion: 2,
+            fontSize: "medium",
+            historyLimit: 20,
+            defaultAgent: "codex",
+            autoNarrate: true
+        }));
+    `, app.sandbox);
+
+    app.sandbox.fetch = (url, options) => {
+        requests.push({ url, options });
+        if (url.startsWith("/api/history")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    messages: [agentResponse],
+                    has_more: false,
+                    stats: {}
+                })
+            });
+        }
+        if (url === "/api/response-assistant") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    digest: "AGY completed the work.\n\nGrok should review it.",
+                    phase: "review",
+                    suggested_message: "@grok Review AGY's completed work.",
+                    trigger_message_id: "agent-retry",
+                    included_message_ids: ["agent-retry"]
+                })
+            });
+        }
+        throw new Error("Unexpected request: " + url);
+    };
+
+    await app.sandbox.loadHistory();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(requests.filter(request => request.url === "/api/response-assistant").length, 1);
+    assert.equal(
+        vm.runInContext('getRoomState("room-retry").lastAssistedId', app.sandbox),
+        "agent-retry"
+    );
+});

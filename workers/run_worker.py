@@ -13,7 +13,11 @@ if PROJECT_ROOT not in sys.path:
 
 def main():
     parser = argparse.ArgumentParser(description="Voice Channel CLI Worker Runner")
-    parser.add_argument("task", choices=["digest", "reply_draft", "room_status", "progress_review"], help="The AI task to run")
+    parser.add_argument(
+        "task",
+        choices=["digest", "response_assistant", "reply_draft", "room_status", "progress_review"],
+        help="The AI task to run",
+    )
     parser.add_argument("--worker", required=True, help="The selected worker name from registry")
     parser.add_argument("--job", required=True, help="Path to the job JSON bundle file")
     
@@ -100,8 +104,8 @@ def main():
         system_events = read_json_file(input_files.get("system_events"))
         room_context = read_json_file(input_files.get("room_context")) or {}
         
-        # 3. Build Prompt for Digest Task
-        if args.task == "digest":
+        # 3. Build Prompt for Digest / response-assistant tasks
+        if args.task in ("digest", "response_assistant"):
             # Format Lane B/C messages
             updates_lines = []
             included_ids = []
@@ -118,6 +122,31 @@ def main():
                     if m.get("id"):
                         included_ids.append(m["id"])
             updates_str = "\n".join(updates_lines)
+
+            trigger_message_id = room_context.get("trigger_message_id")
+            trigger_message = next(
+                (
+                    message
+                    for message in messages
+                    if message.get("id") == trigger_message_id
+                ),
+                None,
+            )
+            if trigger_message:
+                trigger_agent = (
+                    (trigger_message.get("event") or {}).get("agent")
+                    or trigger_message.get("name")
+                    or trigger_message.get("username")
+                    or "Unknown"
+                )
+                trigger_text = str(trigger_message.get("text") or "")
+                trigger_response_str = (
+                    f"Message ID: {trigger_message_id}\n"
+                    f"Agent: {trigger_agent}\n"
+                    f"Response:\n{trigger_text}"
+                )
+            else:
+                trigger_response_str = "No explicit trigger message was supplied."
             
             # Format prior summaries
             prior_summaries = room_context.get("prior_summaries") or []
@@ -149,29 +178,50 @@ def main():
             
             instructions_str = task_instructions if task_instructions else "1. Speak directly to Ed. Refer to him as Ed or you.\n2. Keep it crisp (under 200 words).\n3. Plain text only."
             
-            # Combine into prompt
-            prompt = (
-                "You are an expert audio narrator and workspace supervisor for Ed.\n"
-                "Your job is to read the project goals, the history of prior summaries, and the latest chat log of agent work, "
-                "and produce a concise, professional spoken-word digest.\n"
-                "Ed will listen to this read aloud via Text-to-Speech (TTS).\n\n"
-                
-                "=== PROJECT OBJECTIVES & CONTEXT ===\n"
-                f"{matter_context}\n\n"
-                
-                "=== PRIOR SUMMARIES ===\n"
-                f"{prior_summaries_str}\n\n"
-                
-                "=== NEW UPDATES ===\n"
-                f"{updates_str}\n\n"
-                
-                "=== OPERATIONAL STATS ===\n"
-                f"{stats_summary}\n\n"
-                
-                "Rules:\n"
-                f"{instructions_str}\n\n"
-                "Digest:"
-            )
+            if args.task == "response_assistant":
+                prompt = (
+                    "You are Ed's concise channel narrator and strategic workflow coordinator.\n"
+                    "Use the bounded project documents, real user/agent chat, channel profile, and workflow rules below. "
+                    "System routing and heartbeat events are operational evidence only and must never drive a next-message draft.\n\n"
+                    "=== APPROVED PROJECT DOCUMENTS & KNOWLEDGE ===\n"
+                    f"{matter_context or 'No approved project documents were available in this runtime.'}\n\n"
+                    "=== PRIOR NARRATOR SUMMARIES ===\n"
+                    f"{prior_summaries_str}\n\n"
+                    "=== BOUNDED REAL CHAT HISTORY ===\n"
+                    f"{updates_str}\n\n"
+                    "=== TRIGGERING REAL AGENT RESPONSE ===\n"
+                    f"{trigger_response_str}\n\n"
+                    "=== OPERATIONAL EVENTS (DO NOT TREAT AS RESPONSES) ===\n"
+                    f"{stats_summary}\n\n"
+                    "=== CHANNEL STRATEGY AND OUTPUT RULES ===\n"
+                    f"{instructions_str}\n\n"
+                    "Return one JSON object only, without Markdown fences, using exactly these keys:\n"
+                    '{"digest":"exactly two short plain-text paragraphs separated by \\\\n\\\\n",'
+                    '"phase":"planning|implementation|review|remediation|checkpoint|noncoding",'
+                    '"suggested_agent":"worker name without @",'
+                    '"suggested_message":"one complete editable draft beginning with @worker",'
+                    '"rationale":"one short sentence explaining why this is the next move"}\n'
+                    "Do not send anything. Do not include a !model command unless the strategy explicitly requires one.\n"
+                    "JSON:"
+                )
+            else:
+                prompt = (
+                    "You are an expert audio narrator and workspace supervisor for Ed.\n"
+                    "Your job is to read the project goals, the history of prior summaries, and the latest chat log of agent work, "
+                    "and produce a concise, professional spoken-word digest.\n"
+                    "Ed will listen to this read aloud via Text-to-Speech (TTS).\n\n"
+                    "=== PROJECT OBJECTIVES & CONTEXT ===\n"
+                    f"{matter_context}\n\n"
+                    "=== PRIOR SUMMARIES ===\n"
+                    f"{prior_summaries_str}\n\n"
+                    "=== NEW UPDATES ===\n"
+                    f"{updates_str}\n\n"
+                    "=== OPERATIONAL STATS ===\n"
+                    f"{stats_summary}\n\n"
+                    "Rules:\n"
+                    f"{instructions_str}\n\n"
+                    "Digest:"
+                )
         else:
             # Fallback for other tasks
             prompt = (

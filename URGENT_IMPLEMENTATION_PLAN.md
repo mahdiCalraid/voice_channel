@@ -116,9 +116,14 @@ Acceptance:
 
 Status: `VERIFIED` (2026-07-30)
 
-- Implemented `checkForAutoNarrate` in `frontend/index.js` triggering when a new message from a real agent (`@codex`, `@claude`, `@grok`, `@gemini`, `@voice_gateway`) arrives in active room.
-- Filtered out `acli_bot` routing, `🔄 Routing to...`, `[gateway_` envelopes, and system control messages.
-- Added toggle in Settings (`autoNarrate`) allowing users to enable/disable automatic read-aloud.
+- Implemented `checkForAutoNarrate` in `frontend/index.js`, triggering only when
+  the backend classifies a newly arrived item as `event.kind=agent_response`.
+- Initial room history is treated as a baseline, so opening or refreshing a room
+  does not narrate old replies.
+- Routing, heartbeat, gateway-envelope, membership, model-status, and other system
+  events cannot trigger the response assistant.
+- The Settings toggle now controls the combined automatic narration + draft flow,
+  which is enabled by default and retries transient failures after a short delay.
 
 Acceptance:
 - Real agent responses trigger auto-narration when enabled.
@@ -126,19 +131,25 @@ Acceptance:
 
 ### U-04. Next-message suggestions (draft only)
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-07-31)
 
-**Do:**
-
-1. After a digest (or agent reply), offer **2–3 AI suggestions** for Ed’s next message.
-2. Click inserts into the **editable composer** only.
-3. **Never** auto-send. Confirm gate remains mandatory.
-
-**Done when:**
-
-- Click-to-draft works.
-- Confirm path still requires explicit confirm.
-- No suggestion posts without confirm.
+- Added `/api/response-assistant`, which makes one bounded AI call for both the
+  two-paragraph narrator digest and one strategic next-message draft.
+- Automatic response assistance defaults to the authenticated Codex worker on the
+  lightweight Luna model for low latency. `VC_RESPONSE_ASSISTANT_WORKER` and
+  `VC_RESPONSE_ASSISTANT_MODEL` can select another registered provider/model without
+  changing the regular narrator worker.
+- The call is grounded in the configured last N real chat messages, the triggering
+  agent response, prior narrator summaries, registered matter documents, channel
+  classification, and Ed's coding/non-coding workflow rules.
+- Coding suggestions infer planning, implementation, review, remediation, or
+  checkpoint phase and rotate among Codex, Claude, Grok, and AGY accordingly.
+- Non-coding channels use their registered default worker and a conservative,
+  low-risk next step.
+- The generated message is inserted only when the composer is empty (or still holds
+  the previous generated suggestion); Ed's own in-progress draft is never overwritten.
+- Suggestions are never posted automatically. They still go through the existing
+  immutable preview and explicit confirmation gate.
 
 ### U-05. Default agent and simple routing prefs
 

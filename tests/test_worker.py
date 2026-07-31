@@ -98,6 +98,76 @@ class TestWorkerRunner(unittest.TestCase):
         self.assertEqual(res["worker"], "openai")
         self.assertEqual(res["output"], "This is a mock OpenAI summary.")
         self.assertEqual(res["included_message_ids"], ["m1", "m2"])
+
+    @patch("workers.providers.openai_provider.OpenAIProvider.execute")
+    def test_run_worker_response_assistant_builds_combined_json_prompt(self, mock_execute):
+        output = json.dumps({
+            "digest": "Implementation is complete.\n\nIndependent review is next.",
+            "phase": "review",
+            "suggested_agent": "grok",
+            "suggested_message": "@grok Review the implementation.",
+            "rationale": "Review follows implementation.",
+        })
+        mock_execute.return_value = output
+
+        job_dir = os.path.join(self.temp_dir, "job_response_assistant")
+        os.makedirs(job_dir, exist_ok=True)
+        with open(os.path.join(job_dir, "messages.json"), "w") as f:
+            json.dump([
+                {
+                    "id": "agent-1",
+                    "lane": "agent",
+                    "text": "Implementation complete",
+                    "event": {"kind": "agent_response", "agent": "agy"},
+                }
+            ], f)
+        with open(os.path.join(job_dir, "matter.md"), "w") as f:
+            f.write("Matter knowledge")
+        with open(os.path.join(job_dir, "instructions.md"), "w") as f:
+            f.write("Use the coding review sequence.")
+        with open(os.path.join(job_dir, "room.json"), "w") as f:
+            json.dump({"prior_summaries": []}, f)
+
+        job_path = os.path.join(job_dir, "job.json")
+        with open(job_path, "w") as f:
+            json.dump({
+                "room_id": "test_room",
+                "model": "gpt-4o-mini",
+                "input_files": {
+                    "messages": "messages.json",
+                    "matter_context": "matter.md",
+                    "task_instructions": "instructions.md",
+                    "room_context": "room.json",
+                },
+            }, f)
+
+        from workers.run_worker import main
+        argv = [
+            "run_worker.py",
+            "response_assistant",
+            "--worker",
+            "openai",
+            "--job",
+            job_path,
+        ]
+        with patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 0)
+
+        prompt = mock_execute.call_args.args[1]
+        self.assertIn("strategic workflow coordinator", prompt)
+        self.assertIn("BOUNDED REAL CHAT HISTORY", prompt)
+        self.assertIn("TRIGGERING REAL AGENT RESPONSE", prompt)
+        self.assertIn("Implementation complete", prompt)
+        self.assertIn("Return one JSON object only", prompt)
+        self.assertIn("Use the coding review sequence.", prompt)
+
+        with open(os.path.join(job_dir, "result.json"), "r") as f:
+            result = json.load(f)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["task"], "response_assistant")
+        self.assertEqual(result["output"], output)
         
     @patch("subprocess.run")
     @patch("shutil.which")

@@ -1,0 +1,36 @@
+services:
+  voice-channel:
+    environment:
+      - AUTOMATIC_SYSTEM_DIR=/automatic_system
+      - VOICE_GATEWAY_PROJECTS_ROOT=/approved_projects
+      - VC_RESPONSE_ASSISTANT_WORKER=${VC_RESPONSE_ASSISTANT_WORKER:-codex}
+      - VC_RESPONSE_ASSISTANT_MODEL=${VC_RESPONSE_ASSISTANT_MODEL:-gpt-5.6-luna}
+    volumes:
+      # Strategy/configuration and every project folder explicitly registered in
+      # automatic_system/channels.json. All are read-only; application code further
+      # restricts reads to a fixed list of matter and project document names.
+      - /Users/ed/King/automatic_system:/automatic_system:ro
+      - /Users/ed/King/attention_manager:/approved_projects/attention_manager:ro
+      - /Users/ed/King/business_home:/approved_projects/business_home:ro
+      - /Users/ed/King/clawd_2/development_channel:/approved_projects/clawd_2/development_channel:ro
+      - /Users/ed/King/clawd_2/capturer:/approved_projects/clawd_2/capturer:ro
+      - /Users/ed/King/clawd_2/cp:/approved_projects/clawd_2/cp:ro
+      - /Users/ed/King/clawd_2/video_call:/approved_projects/clawd_2/video_call:ro
+      - /Users/ed/King/business_outreach:/approved_projects/business_outreach:ro
+      - "/Users/ed/King/life plan:/approved_projects/life plan:ro"
+      - /Users/ed/King/costHealth_master:/approved_projects/costHealth_master:ro
+      - /Users/ed/King/content_creation:/approved_projects/content_creation:ro
+      - /Users/ed/King/sec_folder/sec_dev:/approved_projects/sec_folder/sec_dev:ro
+      - /Users/ed/King/clawd_2/market_review:/approved_projects/clawd_2/market_review:ro
+      - /Users/ed/King/clawd_2/public_repos:/approved_projects/clawd_2/public_repos:ro
+      - /Users/ed/King/openclaw/Projects/costhealth_acli:/approved_projects/openclaw/Projects/costhealth_acli:ro
+      - /Users/ed/King/openclaw/Projects/truth_scrapper:/approved_projects/openclaw/Projects/truth_scrapper:ro
+      - /Users/ed/King/health_content_creation:/approved_projects/health_content_creation:ro
+      - /Users/ed/King/Job_Hunting:/approved_projects/Job_Hunting:ro
+      - /Users/ed/King/clawd_2/IronMan:/approved_projects/clawd_2/IronMan:ro
+      - /Users/ed/King/clawd_2/production_repo:/approved_projects/clawd_2/production_repo:ro
+      - /Users/ed/King/pool3:/approved_projects/pool3:ro
+      - /Users/ed/King/activity_report:/approved_projects/activity_report:ro
+      - /Users/ed/King/clawd_2/voice_channel:/approved_projects/clawd_2/voice_channel:ro
+      - /Users/ed/King/Meeting_Confrences:/approved_projects/Meeting_Confrences:ro
+      - /Users/ed/King/clawd_2/TV_and_memory:/approved_projects/clawd_2/TV_and_memory:ro

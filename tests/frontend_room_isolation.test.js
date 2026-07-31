@@ -62,7 +62,7 @@ function loadFrontend() {
         console,
         document,
         fetch: () => Promise.resolve({ ok: true, json: async () => ({ success: true, messages: [] }) }),
-        localStorage: { getItem: () => null, setItem: () => {} },
+        localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
         setInterval: () => 0,
         window: {
             VoiceChannelHistoryState: historyState,
@@ -104,6 +104,73 @@ test("a digest abandoned by a room switch releases the originating room", async 
     await digestPromise;
 
     assert.equal(vm.runInContext('getRoomState("room-a").digestLoading', app.sandbox), false);
+});
+
+test("response assistance finishing after a room switch updates only its originating room", async () => {
+    const app = loadFrontend();
+    let resolveAssistant;
+    const assistantPromise = new Promise(resolve => { resolveAssistant = resolve; });
+    vm.runInContext(`
+        activeRoomId = "room-a";
+        roomsList = [
+            { id: "room-a", name: "voice_channel" },
+            { id: "room-b", name: "business.dev" }
+        ];
+    `, app.sandbox);
+
+    app.sandbox.fetch = (url) => {
+        if (url.startsWith("/api/history")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    messages: [{
+                        id: "agent-a",
+                        lane: "agent",
+                        username: "acli_bot",
+                        name: "ACLI Bot",
+                        text: "**@agy**: completed",
+                        event: { kind: "agent_response", agent: "agy" }
+                    }]
+                })
+            });
+        }
+        if (url === "/api/response-assistant") return assistantPromise;
+        throw new Error("Unexpected request: " + url);
+    };
+
+    const generation = app.sandbox.handleGenerateDigest({
+        autoPlay: false,
+        triggerMessageId: "agent-a"
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    vm.runInContext('selectRoom("room-b");', app.sandbox);
+    app.sandbox.document.getElementById("command-input").value = "@codex room B draft";
+
+    resolveAssistant({
+        ok: true,
+        json: async () => ({
+            digest: "AGY completed room A work.\n\nGrok should review room A.",
+            phase: "review",
+            suggested_message: "@grok Review room A.",
+            trigger_message_id: "agent-a",
+            included_message_ids: ["agent-a"]
+        })
+    });
+    await generation;
+
+    assert.equal(
+        vm.runInContext('getRoomState("room-a").digestText', app.sandbox),
+        "AGY completed room A work.\n\nGrok should review room A."
+    );
+    assert.equal(
+        vm.runInContext('getRoomState("room-a").draftText', app.sandbox),
+        "@grok Review room A."
+    );
+    assert.equal(
+        app.sandbox.document.getElementById("command-input").value,
+        "@codex room B draft"
+    );
 });
 
 test("unsent draft is persisted to localStorage and restored for active room", () => {

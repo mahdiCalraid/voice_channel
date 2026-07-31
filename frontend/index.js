@@ -62,16 +62,25 @@ const channelsSidebar = document.getElementById("channels-sidebar");
 
 // Settings Management (U-01, U-02, U-03, U-05)
 const DEFAULT_SETTINGS = {
+    settingsVersion: 2,
     fontSize: "medium",
     historyLimit: 20,
     defaultAgent: "codex",
-    autoNarrate: false
+    autoNarrate: true
 };
 
 function getSettings() {
     try {
         const raw = localStorage.getItem("vc_settings");
-        return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : { ...DEFAULT_SETTINGS };
+        if (!raw) return { ...DEFAULT_SETTINGS };
+        const stored = JSON.parse(raw);
+        // U-03 originally shipped disabled by default. Migrate that placeholder
+        // setting once so the automatic narrator + suggestion loop is actually on.
+        if (!stored.settingsVersion || stored.settingsVersion < 2) {
+            stored.autoNarrate = true;
+            stored.settingsVersion = 2;
+        }
+        return { ...DEFAULT_SETTINGS, ...stored };
     } catch (e) {
         return { ...DEFAULT_SETTINGS };
     }
@@ -120,6 +129,7 @@ function initSettingsModal() {
     if (btnSave) {
         btnSave.addEventListener("click", () => {
             const updated = {
+                settingsVersion: 2,
                 fontSize: selFontSize ? selFontSize.value : "medium",
                 historyLimit: selHistoryLimit ? parseInt(selHistoryLimit.value, 10) : 20,
                 defaultAgent: selDefaultAgent ? selDefaultAgent.value : "codex",
@@ -169,6 +179,9 @@ function init() {
             if (activeRoomId) {
                 const state = getRoomState(activeRoomId);
                 state.draftText = e.target.value;
+                if (state.lastInsertedSuggestion && e.target.value !== state.lastInsertedSuggestion) {
+                    state.lastInsertedSuggestion = null;
+                }
                 if (e.target.value.trim()) {
                     localStorage.setItem("vc_draft_" + activeRoomId, e.target.value);
                 } else {
@@ -701,30 +714,72 @@ function handleTranscriptError(targetRoomId, message) {
     }
 }
 
-function checkForAutoNarrate(targetRoomId, newMessages) {
+function isRealAgentResponse(message) {
+    return Boolean(
+        message
+        && message.id
+        && message.lane === "agent"
+        && message.event
+        && message.event.kind === "agent_response"
+    );
+}
+
+function getRoomName(roomId) {
+    const room = roomsList.find(item => item.id === roomId);
+    return room ? room.name : null;
+}
+
+function applySuggestedDraft(targetRoomId, suggestedMessage) {
+    const draft = (suggestedMessage || "").trim();
+    if (!draft) return false;
+
+    const state = getRoomState(targetRoomId);
+    const currentValue = targetRoomId === activeRoomId && commandInput
+        ? commandInput.value
+        : (state.draftText || "");
+    const composerIsLocked = Boolean(
+        targetRoomId === activeRoomId
+        && commandInput
+        && commandInput.readOnly
+    );
+    const canReplace = !composerIsLocked && (
+        !currentValue.trim() || currentValue === state.lastInsertedSuggestion
+    );
+
+    state.suggestedDraft = draft;
+    if (!canReplace) {
+        return false;
+    }
+
+    state.draftText = draft;
+    state.lastInsertedSuggestion = draft;
+    localStorage.setItem("vc_draft_" + targetRoomId, draft);
+    if (targetRoomId === activeRoomId && commandInput && !commandInput.readOnly) {
+        commandInput.value = draft;
+    }
+    return true;
+}
+
+function checkForAutoNarrate(targetRoomId, newRealResponses) {
     const settings = getSettings();
     if (!settings.autoNarrate) return;
-    
-    if (!newMessages || newMessages.length === 0) return;
-    
+    if (!newRealResponses || newRealResponses.length === 0) return;
+
     const state = getRoomState(targetRoomId);
-    const sorted = [...newMessages].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+    const sorted = [...newRealResponses].sort(
+        (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+    );
     const newestMsg = sorted[sorted.length - 1];
-    
-    if (!newestMsg || newestMsg.id === state.lastNarratedId) return;
-    
-    const author = (newestMsg.name || newestMsg.username || "").toLowerCase();
-    const lane = newestMsg.lane;
-    const text = newestMsg.text || "";
-    
-    const isAgent = (lane === "agent") || ["codex", "claude", "grok", "gemini", "voice_gateway"].some(a => author.includes(a));
-    const isSystemOrRouting = author.includes("acli_bot") || text.includes("🔄 Routing") || text.includes("[gateway_");
-    
-    if (isAgent && !isSystemOrRouting) {
-        state.lastNarratedId = newestMsg.id;
-        console.log("Auto-narrating real agent response:", newestMsg.id);
-        handleGenerateDigest({ autoPlay: true });
+    if (!isRealAgentResponse(newestMsg) || newestMsg.id === state.lastAssistedId) return;
+    if (state.failedAssistantId === newestMsg.id && Date.now() < (state.assistantRetryAt || 0)) return;
+
+    if (state.responseAssistantLoading) {
+        state.pendingAssistantTriggerId = newestMsg.id;
+        return;
     }
+
+    console.log("Auto-generating narration and next-message draft:", newestMsg.id);
+    handleGenerateDigest({ autoPlay: true, triggerMessageId: newestMsg.id });
 }
 
 async function loadHistory() {
@@ -744,18 +799,52 @@ async function loadHistory() {
         
         if (data.success && data.messages) {
             const state = getRoomState(targetRoomId);
-            checkForAutoNarrate(targetRoomId, data.messages);
+            const wasInitialized = Boolean(state.pollInitialized);
+            const newRealResponses = wasInitialized
+                ? data.messages.filter(message => isRealAgentResponse(message) && !state.messageMap[message.id])
+                : [];
+            const retryResponse = (
+                wasInitialized
+                && state.failedAssistantId
+                && Date.now() >= (state.assistantRetryAt || 0)
+            )
+                ? data.messages.find(message => (
+                    isRealAgentResponse(message)
+                    && message.id === state.failedAssistantId
+                ))
+                : null;
+            if (
+                retryResponse
+                && !newRealResponses.some(message => message.id === retryResponse.id)
+            ) {
+                newRealResponses.push(retryResponse);
+            }
+            const pendingResponse = state.pendingAssistantTriggerId
+                ? data.messages.find(message => (
+                    isRealAgentResponse(message)
+                    && message.id === state.pendingAssistantTriggerId
+                ))
+                : null;
+            if (
+                pendingResponse
+                && !newRealResponses.some(message => message.id === pendingResponse.id)
+            ) {
+                newRealResponses.push(pendingResponse);
+            }
             if (state.loadingOlder) {
                 // Preserve the pre-prepend viewport; newest page wins while loading.
                 state.pendingLatest = data;
                 renderRecentStats(data.stats);
+                checkForAutoNarrate(targetRoomId, newRealResponses);
                 return;
             }
             historyState.applyLatestPage(state, data.messages, data.has_more);
+            state.pollInitialized = true;
 
             renderTranscriptFromState(targetRoomId);
 
             renderRecentStats(data.stats);
+            checkForAutoNarrate(targetRoomId, newRealResponses);
         } else {
             handleTranscriptError(targetRoomId, data.detail || "Failed to load channel history.");
         }
@@ -1102,21 +1191,31 @@ async function handleGenerateDigest(options = {}) {
     if (!activeRoomId) return;
     const targetRoomId = activeRoomId;
     const targetState = getRoomState(targetRoomId);
+    if (targetState.responseAssistantLoading) {
+        if (options.triggerMessageId) {
+            targetState.pendingAssistantTriggerId = options.triggerMessageId;
+        }
+        return;
+    }
     targetState.digestLoading = true;
+    targetState.responseAssistantLoading = true;
     btnGenerateDigest.disabled = true;
-    digestContent.innerHTML = "<em>Generating new digest from recent updates...</em>";
+    digestContent.innerHTML = "<em>Reviewing the response and preparing narration plus the next draft...</em>";
     
     const settings = getSettings();
     const limit = settings.historyLimit || 20;
+    // Rocket.Chat's raw window can be dominated by ACLI heartbeats and routing
+    // receipts. Fetch a wider bounded page, then let the backend enforce N over
+    // only real user/agent messages.
+    const historyFetchCount = Math.min(100, Math.max(30, limit * 5));
 
     try {
         // Fetch current messages for target room with configurable context depth (U-02)
-        const histResponse = await fetch(`/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=${limit}`);
+        const histResponse = await fetch(
+            `/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=${historyFetchCount}`
+        );
         if (!histResponse.ok) throw new Error("Failed to fetch messages");
         const histData = await histResponse.json();
-        
-        // If room changed while fetching history, ignore stale response
-        if (targetRoomId !== activeRoomId) return;
         
         if (!histData.success || !histData.messages || histData.messages.length === 0) {
             if (targetRoomId === activeRoomId) {
@@ -1125,38 +1224,49 @@ async function handleGenerateDigest(options = {}) {
             return;
         }
         
-        // Generate digest from these messages
-        const digestResponse = await fetch("/api/digest", {
+        // Generate the narrator text and next-message draft in one grounded AI call.
+        const digestResponse = await fetch("/api/response-assistant", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
                 messages: histData.messages,
                 roomId: targetRoomId,
+                room_name: getRoomName(targetRoomId),
+                trigger_message_id: options.triggerMessageId || null,
                 history_limit: limit
             })
         });
         
-        if (!digestResponse.ok) throw new Error("Failed to generate digest");
         const digestData = await digestResponse.json();
+        if (!digestResponse.ok) throw new Error(digestData.detail || "Failed to generate response assistance");
         
-        // If room changed while generating digest, ignore stale response
-        if (targetRoomId !== activeRoomId) return;
-        
-        currentDigestText = digestData.digest;
-        digestContent.innerText = currentDigestText;
-        
-        if (options.autoPlay && currentDigestText) {
-            speakCurrentDigest();
+        targetState.digestText = digestData.digest;
+        targetState.lastAssistedId = digestData.trigger_message_id || options.triggerMessageId || null;
+        targetState.failedAssistantId = null;
+        targetState.assistantRetryAt = 0;
+
+        const inserted = applySuggestedDraft(targetRoomId, digestData.suggested_message);
+        targetState.suggestionPhase = digestData.phase || "";
+        targetState.suggestionRationale = digestData.rationale || "";
+        if (inserted && targetRoomId === activeRoomId) {
+            showSendFeedback(
+                `AI next-step draft ready for review (${digestData.phase || "next step"}). It has not been sent.`,
+                "success"
+            );
+            commandInput.focus();
+        } else if (digestData.suggested_message && targetRoomId === activeRoomId) {
+            showSendFeedback(
+                "AI prepared a next-step suggestion, but your existing draft was preserved.",
+                "success"
+            );
         }
         
         // Render Auditable Sources List
         const sourceIds = digestData.included_message_ids || [];
+        let sourceHtml = "";
         if (sourceIds.length > 0) {
             const sourceMsgs = histData.messages.filter(m => sourceIds.includes(m.id));
-            
-            sourcesToggleText.innerText = `Show Sources (${sourceMsgs.length})`;
-            
-            sourcesList.innerHTML = sourceMsgs.map(m => {
+            sourceHtml = sourceMsgs.map(m => {
                 const author = m.name || m.username;
                 let textSnippet = m.text || "";
                 if (textSnippet.length > 85) {
@@ -1169,34 +1279,68 @@ async function handleGenerateDigest(options = {}) {
                     </div>
                 `;
             }).join("");
-            
-            bindSourceItemHandlers();
-            
-            digestSourcesContainer.style.display = "block";
+            targetState.sourcesToggleText = `Show Sources (${sourceMsgs.length})`;
+            targetState.digestSourcesHtml = sourceHtml;
+            targetState.digestSourcesVisible = true;
         } else {
-            digestSourcesContainer.style.display = "none";
-            sourcesList.innerHTML = "";
+            targetState.sourcesToggleText = "Show Sources (0)";
+            targetState.digestSourcesHtml = "";
+            targetState.digestSourcesVisible = false;
         }
-        
-        // Stop current speaking and play new digest
-        handleStop();
-        speakText(currentDigestText);
+
+        if (targetRoomId === activeRoomId) {
+            currentDigestText = targetState.digestText;
+            digestContent.innerText = currentDigestText;
+            sourcesToggleText.innerText = targetState.sourcesToggleText;
+            sourcesList.innerHTML = targetState.digestSourcesHtml;
+            bindSourceItemHandlers();
+            if (sourceIds.length > 0) {
+                digestSourcesContainer.style.display = "block";
+            } else {
+                digestSourcesContainer.style.display = "none";
+            }
+        }
+
+        if (targetRoomId === activeRoomId && options.autoPlay !== false) {
+            handleStop();
+            speakText(currentDigestText);
+        }
         
     } catch (err) {
         if (targetRoomId === activeRoomId) {
-            console.error("Digest generation failed:", err);
-            digestContent.innerText = "Error generating digest. Please check console.";
+            console.error("Response assistance failed:", err);
+            digestContent.innerText = "Could not generate narration and next-message draft. The console will retry on a later poll.";
+        }
+        if (options.triggerMessageId) {
+            targetState.failedAssistantId = options.triggerMessageId;
+            targetState.assistantRetryAt = Date.now() + 30000;
         }
     } finally {
         targetState.digestLoading = false;
+        targetState.responseAssistantLoading = false;
         if (targetRoomId === activeRoomId) {
             btnGenerateDigest.disabled = false;
+        }
+        const pendingTrigger = targetState.pendingAssistantTriggerId;
+        if (
+            pendingTrigger
+            && pendingTrigger !== targetState.lastAssistedId
+            && targetRoomId === activeRoomId
+        ) {
+            targetState.pendingAssistantTriggerId = null;
+            handleGenerateDigest({ autoPlay: true, triggerMessageId: pendingTrigger });
+        } else if (pendingTrigger === targetState.lastAssistedId) {
+            targetState.pendingAssistantTriggerId = null;
         }
     }
 }
 
 function speakText(text) {
-    if (!text || !('speechSynthesis' in window)) return;
+    if (
+        !text
+        || !('speechSynthesis' in window)
+        || typeof SpeechSynthesisUtterance === "undefined"
+    ) return;
     
     // Cancel any ongoing speech
     window.speechSynthesis.cancel();

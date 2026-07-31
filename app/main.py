@@ -37,6 +37,12 @@ from app.tts_adapter import (
 )
 from app.task_supervisor import TaskSupervisor
 from app.rc_ingress import IngressConfigurationError, build_ingress_message, extract_interaction_id
+from app.supervision_strategy import (
+    build_strategy_context,
+    parse_response_assistant_output,
+    read_project_context,
+    resolve_channel_profile,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -631,6 +637,11 @@ class DigestRequest(BaseModel):
     roomId: Optional[str] = None
     history_limit: Optional[int] = 20
 
+
+class ResponseAssistantRequest(DigestRequest):
+    room_name: Optional[str] = None
+    trigger_message_id: Optional[str] = None
+
 @app.get("/api/status")
 async def get_status():
     base_url = get_rc_base_url()
@@ -1134,6 +1145,205 @@ async def generate_digest(req: DigestRequest):
         "included_message_ids": included_message_ids,
         "prior_summary_used": prior_summary_used
     }
+
+
+@app.post("/api/response-assistant")
+async def generate_response_assistant(req: ResponseAssistantRequest):
+    """Generate one grounded narrator digest and one editable next-message draft."""
+    import uuid
+
+    room_id = req.roomId or RC_ROOM_ID
+    limit = min(max(req.history_limit or 20, 5), 100)
+    real_messages = [m for m in req.messages if m.get("lane") in ("agent", "user")]
+    real_messages = real_messages[-limit:]
+    # One pasted handoff can be enormous. Keep the newest N real messages, while
+    # bounding individual and aggregate text so the automatic loop stays quick.
+    bounded_messages = []
+    per_message_limit = max(
+        800,
+        min(6_000, 30_000 // max(len(real_messages), 1)),
+    )
+    for message in real_messages:
+        bounded = dict(message)
+        text = str(bounded.get("text") or "")
+        bounded["text"] = text[:per_message_limit] + (
+            "…" if len(text) > per_message_limit else ""
+        )
+        bounded_messages.append(bounded)
+    real_messages = bounded_messages
+    included_message_ids = [m.get("id") for m in real_messages if m.get("id")]
+    agent_responses = [
+        m for m in real_messages
+        if m.get("lane") == "agent"
+        and (m.get("event") or {}).get("kind") == "agent_response"
+    ]
+
+    latest_response = None
+    if req.trigger_message_id:
+        latest_response = next(
+            (m for m in agent_responses if m.get("id") == req.trigger_message_id),
+            None,
+        )
+        if latest_response is None:
+            raise HTTPException(
+                status_code=422,
+                detail="trigger_message_id must identify a real agent response in the supplied context",
+            )
+    elif agent_responses:
+        latest_response = agent_responses[-1]
+
+    if latest_response is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Response assistant requires at least one real agent response",
+        )
+
+    profile = resolve_channel_profile(req.room_name)
+    project_context, context_files = read_project_context(profile)
+    prior_summaries = read_prior_summaries(room_id)
+    system_messages = [m for m in req.messages if m.get("lane") == "system"][-limit:]
+    instructions = (
+        build_strategy_context(profile)
+        + "\n\n=== NARRATOR CONTRACT ===\n"
+        + "Speak directly to Ed. The digest must be exactly two short paragraphs, "
+          "plain text, under 180 words total: first what the response means in context, "
+          "then current status, blockers, and what decision is now needed. Do not use "
+          "headings, bullets, greetings, or sign-offs.\n"
+        + "Base both outputs on the same evidence. Treat the latest real agent response "
+          "as the trigger, but use the bounded history and approved matter documents to "
+          "avoid a shallow or repetitive next step."
+    )
+    worker_name = os.environ.get("VC_RESPONSE_ASSISTANT_WORKER", "codex")
+    assistant_model = os.environ.get("VC_RESPONSE_ASSISTANT_MODEL")
+    if not assistant_model and worker_name == "codex":
+        assistant_model = "gpt-5.6-luna"
+
+    job_id = f"assist_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    job_dir = os.path.join("tmp", "jobs", job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    input_files = {
+        "messages": "messages_for_llm.json",
+        "system_events": "system_events.json",
+        "matter_context": "matter_context.md",
+        "task_instructions": "task_instructions.md",
+        "room_context": "room_context.json",
+    }
+    job_path = os.path.join(job_dir, "job.json")
+
+    try:
+        with open(os.path.join(job_dir, input_files["messages"]), "w", encoding="utf-8") as f:
+            json.dump(real_messages, f, indent=2)
+        with open(os.path.join(job_dir, input_files["system_events"]), "w", encoding="utf-8") as f:
+            json.dump(system_messages, f, indent=2)
+        with open(os.path.join(job_dir, input_files["matter_context"]), "w", encoding="utf-8") as f:
+            f.write(project_context)
+        with open(os.path.join(job_dir, input_files["task_instructions"]), "w", encoding="utf-8") as f:
+            f.write(instructions)
+        with open(os.path.join(job_dir, input_files["room_context"]), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "room_id": room_id,
+                    "room_name": req.room_name,
+                    "trigger_message_id": latest_response.get("id"),
+                    "channel_profile": profile,
+                    "prior_summaries": prior_summaries,
+                },
+                f,
+                indent=2,
+            )
+        with open(job_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "room_id": room_id,
+                    "model": assistant_model,
+                    "effort": "low",
+                    "input_files": input_files,
+                },
+                f,
+                indent=2,
+            )
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = env.get("PYTHONPATH", "") + ":" + os.getcwd()
+        command = [
+            sys.executable,
+            "workers/run_worker.py",
+            "response_assistant",
+            "--worker",
+            worker_name,
+            "--job",
+            job_path,
+        ]
+        ai_output = ""
+        try:
+            result_proc = await asyncio.to_thread(
+                subprocess.run,
+                command,
+                env=env,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=45,
+            )
+            result_path = os.path.join(job_dir, "result.json")
+            if result_proc.returncode == 0 and os.path.exists(result_path):
+                with open(result_path, "r", encoding="utf-8") as f:
+                    result = json.load(f)
+                if result.get("ok"):
+                    ai_output = str(result.get("output") or "")
+            elif result_proc.returncode != 0:
+                logger.error("Response assistant worker failed: %s", result_proc.stderr)
+        except subprocess.TimeoutExpired:
+            logger.warning("Response assistant worker '%s' timed out after 45s.", worker_name)
+        except Exception:
+            logger.exception("Response assistant worker execution failed")
+
+        parsed = parse_response_assistant_output(ai_output, profile, latest_response)
+        ai_digest_valid = parsed.pop("_ai_digest_valid", False)
+        ai_suggestion_valid = parsed.pop("_ai_suggestion_valid", False)
+        if ai_digest_valid and ai_suggestion_valid:
+            generation_mode = "ai"
+        elif ai_digest_valid or ai_suggestion_valid:
+            generation_mode = "hybrid"
+        else:
+            generation_mode = "fallback"
+
+        if not ai_digest_valid:
+            latest_author = (
+                (latest_response.get("event") or {}).get("agent")
+                or latest_response.get("name")
+                or latest_response.get("username")
+                or "the agent"
+            )
+            latest_text = re.sub(r"\s+", " ", str(latest_response.get("text") or "")).strip()
+            latest_text = latest_text[:420] + ("..." if len(latest_text) > 420 else "")
+            parsed["digest"] = (
+                f"Ed, {latest_author} has returned a substantive response in {req.room_name or 'this channel'}. "
+                f"The main update is: {latest_text}"
+                "\n\n"
+                f"The system classified the next workflow phase as {parsed['phase']}. "
+                "The draft below is a conservative fallback for your review because the AI coordinator was unavailable."
+            )
+
+        save_summary(room_id, parsed["digest"])
+        return {
+            **parsed,
+            "trigger_message_id": latest_response.get("id"),
+            "included_message_ids": included_message_ids,
+            "prior_summary_used": bool(prior_summaries),
+            "channel_type": profile.get("channel_type"),
+            "channel_registered": profile.get("registered"),
+            "strategy_source": profile.get("strategy_source"),
+            "project_context_files": context_files,
+            "generation_mode": generation_mode,
+            "worker": worker_name,
+            "model": assistant_model,
+            "effort": "low",
+        }
+    finally:
+        if os.path.exists(job_dir):
+            shutil.rmtree(job_dir, ignore_errors=True)
+
 
 # A simple thread-safe in-memory cache for nonces.
 processed_nonces = {}
