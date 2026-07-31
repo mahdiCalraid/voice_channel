@@ -69,7 +69,10 @@ const composerResizeHandle = document.getElementById("composer-resize-handle");
 const DISABLE_AUTO_NARRATION = true;
 
 const COMPOSER_HEIGHT_STORAGE_KEY = "vc_composer_height_px";
-const MIN_COMPOSER_HEIGHT_PX = 160;
+// This floor leaves room for the target-agent strip, a usable writing field,
+// and the Draft Message / confirmation controls. The conversation pane keeps
+// its independent 180px floor in getComposerResizeBounds().
+const MIN_COMPOSER_HEIGHT_PX = 250;
 const MIN_CONVERSATION_HEIGHT_PX = 180;
 const COMPOSER_KEYBOARD_STEP_PX = 24;
 let composerResizeState = null;

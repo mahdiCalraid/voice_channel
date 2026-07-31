@@ -22,8 +22,8 @@ class TestUrgentFeatures(unittest.TestCase):
         shell = self.client.get("/")
         self.assertEqual(shell.status_code, 200)
         self.assertEqual(shell.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("index.js?v=narrator-editor-1", shell.text)
-        self.assertIn("index.css?v=narrator-editor-1", shell.text)
+        self.assertIn("index.js?v=composer-layout-1", shell.text)
+        self.assertIn("index.css?v=composer-layout-1", shell.text)
         self.assertIn("history_state.js?v=response-assistant-3", shell.text)
         self.assertIn('id="setting-system-font-size"', shell.text)
         self.assertIn('id="setting-chat-font-family"', shell.text)
@@ -42,6 +42,9 @@ class TestUrgentFeatures(unittest.TestCase):
         stylesheet = self.client.get("/index.css")
         self.assertIn(".digest-editor", stylesheet.text)
         self.assertIn("min-height: 36px;", stylesheet.text)
+        self.assertIn(".composer-input-row .input-wrapper", stylesheet.text)
+        self.assertIn("flex: 1 1 0;", stylesheet.text)
+        self.assertIn("min-height: 250px;", stylesheet.text)
 
         for asset_path in ("/index.js", "/history_state.js", "/index.css"):
             with self.subTest(asset_path=asset_path):

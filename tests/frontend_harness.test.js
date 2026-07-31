@@ -248,12 +248,12 @@ test("composer divider clamps, persists, and restores both pane boundaries", () 
 
     assert.equal(typeof handle.listeners.pointerdown, "function");
     assert.equal(typeof handle.listeners.keydown, "function");
-    assert.equal(app.sandbox.setComposerHeight(999, true), 500);
-    assert.equal(composer.style.height, "500px");
-    assert.equal(app.storage.vc_composer_height_px, "500");
-    assert.equal(handle.getAttribute("aria-valuenow"), "500");
-    assert.equal(app.sandbox.setComposerHeight(1, true), 160);
-    assert.equal(composer.style.height, "160px");
+    assert.equal(app.sandbox.setComposerHeight(999, true), 510);
+    assert.equal(composer.style.height, "510px");
+    assert.equal(app.storage.vc_composer_height_px, "510");
+    assert.equal(handle.getAttribute("aria-valuenow"), "510");
+    assert.equal(app.sandbox.setComposerHeight(1, true), 250);
+    assert.equal(composer.style.height, "250px");
 
     handle.listeners.pointerdown({
         button: 0,
@@ -263,12 +263,12 @@ test("composer divider clamps, persists, and restores both pane boundaries", () 
     });
     app.documentListeners.pointermove({ pointerId: 7, clientY: 400, preventDefault: () => {} });
     app.documentListeners.pointerup({ pointerId: 7 });
-    assert.equal(composer.style.height, "260px");
-    assert.equal(app.storage.vc_composer_height_px, "260");
+    assert.equal(composer.style.height, "350px");
+    assert.equal(app.storage.vc_composer_height_px, "350");
 
     handle.listeners.keydown({ key: "ArrowUp", preventDefault: () => {} });
-    assert.equal(composer.style.height, "284px");
-    assert.equal(app.storage.vc_composer_height_px, "284");
+    assert.equal(composer.style.height, "374px");
+    assert.equal(app.storage.vc_composer_height_px, "374");
 
     const restored = loadFrontend({ storage: { vc_composer_height_px: "300" } });
     vm.runInContext(`
