@@ -643,10 +643,17 @@ class ResponseAssistantRequest(DigestRequest):
     trigger_message_id: Optional[str] = None
 
 
-# Automatic response assistance is idempotent for a bounded window. The cache is
-# deliberately process-local: the console runs one API process, and this prevents
-# duplicate model work/saves when multiple tabs race or a client retries. Manual
-# requests have no trigger_message_id and intentionally bypass this cache.
+# Automatic response assistance is idempotent for a bounded window.
+# DEPLOYMENT CONSTRAINT: The idempotency cache is deliberately process-local:
+# the console runs in a single API container process (single worker process).
+# This prevents duplicate model execution and saves when multiple browser tabs
+# race or a client retries. Any multi-replica or multi-worker deployment scaling
+# must replace this with a shared backing store (e.g. Redis).
+#
+# TIMEOUT BUDGET INVARIANT: The frontend automatic assistance lease duration
+# (AUTOMATIC_ASSISTANCE_LEASE_MS = 90s, refreshed every 15s in-flight) strictly
+# exceeds the maximum backend generation budget (45s worker timeout + 10s history fetch).
+# Manual requests omit trigger_message_id and intentionally bypass this cache.
 RESPONSE_ASSISTANT_IDEMPOTENCY_TTL_SECONDS = int(
     os.environ.get("VC_RESPONSE_ASSISTANT_IDEMPOTENCY_TTL_SECONDS", "3600")
 )

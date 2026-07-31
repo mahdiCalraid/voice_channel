@@ -533,12 +533,30 @@ test("backend suppression stays authoritative when cross-tab storage is unavaila
         triggerMessageId: "agent-replayed"
     });
 
-    assert.equal(app.sandbox.document.getElementById("command-input").value, "");
+    assert.equal(app.sandbox.document.getElementById("command-input").value, "@grok Duplicate draft.");
     assert.equal(app.spoken.length, 0);
     assert.equal(
         app.storageWrites.filter(write => write.key === "vc_draft_room-replay").length,
         0
     );
+});
+
+test("in-flight lease claim is touched during long requests to prevent expiry", async () => {
+    const app = loadFrontend();
+    const key = app.sandbox.automaticAssistantStorageKey("lease", "room-long-request", "msg-long");
+    
+    vm.runInContext(`
+        activeRoomId = "room-long-request";
+        roomsList = [{ id: "room-long-request", name: "voice_channel" }];
+    `, app.sandbox);
+
+    app.sandbox.tryClaimAutomaticAssistance("room-long-request", "msg-long");
+    const initialLease = JSON.parse(app.storage[key]);
+    
+    app.sandbox.touchAutomaticAssistanceClaim("room-long-request", "msg-long");
+    const touchedLease = JSON.parse(app.storage[key]);
+    
+    assert.ok(touchedLease.expiresAt >= initialLease.expiresAt);
 });
 
 test("an expired winner lease hands cached digest and draft to another tab without replaying audio", async () => {

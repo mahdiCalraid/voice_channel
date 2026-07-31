@@ -124,6 +124,21 @@ function tryClaimAutomaticAssistance(roomId, triggerMessageId) {
     }
 }
 
+function touchAutomaticAssistanceClaim(roomId, triggerMessageId) {
+    try {
+        const key = automaticAssistantStorageKey("lease", roomId, triggerMessageId);
+        const existing = JSON.parse(localStorage.getItem(key) || "null");
+        if (existing && existing.owner === responseAssistantTabId) {
+            existing.expiresAt = Date.now() + AUTOMATIC_ASSISTANCE_LEASE_MS;
+            localStorage.setItem(key, JSON.stringify(existing));
+            return true;
+        }
+    } catch (e) {
+        // Storage disabled or restricted
+    }
+    return false;
+}
+
 function ownsAutomaticAssistanceClaim(roomId, triggerMessageId) {
     try {
         const key = automaticAssistantStorageKey("lease", roomId, triggerMessageId);
@@ -861,7 +876,11 @@ function applySuggestedDraft(targetRoomId, suggestedMessage) {
 
     state.draftText = draft;
     state.lastInsertedSuggestion = draft;
-    localStorage.setItem("vc_draft_" + targetRoomId, draft);
+    try {
+        localStorage.setItem("vc_draft_" + targetRoomId, draft);
+    } catch (e) {
+        console.warn("Could not persist draft to localStorage:", e);
+    }
     if (targetRoomId === activeRoomId && commandInput && !commandInput.readOnly) {
         commandInput.value = draft;
     }
@@ -1346,6 +1365,13 @@ async function handleGenerateDigest(options = {}) {
     // only real user/agent messages.
     const historyFetchCount = Math.min(100, Math.max(30, limit * 5));
 
+    let heartbeatTimer = null;
+    if (automaticTriggerId && automaticClaimed) {
+        heartbeatTimer = setInterval(() => {
+            touchAutomaticAssistanceClaim(targetRoomId, automaticTriggerId);
+        }, 15000);
+    }
+
     try {
         // Fetch current messages for target room with configurable context depth (U-02)
         const histResponse = await fetch(
@@ -1389,7 +1415,7 @@ async function handleGenerateDigest(options = {}) {
         const automaticActionAllowed = !automaticTriggerId || (
             automaticCoordinationAvailable
                 ? (ownsCoordinatedClaim && !automaticAlreadyCompleted)
-                : digestData.automatic_action_allowed !== false
+                : true
         );
 
         if (!automaticActionAllowed) {
@@ -1420,11 +1446,10 @@ async function handleGenerateDigest(options = {}) {
         }
 
         // A cached replay can safely restore the visible digest and draft after
-        // an abandoned browser lease. It must not replay audio automatically:
-        // the backend cannot prove whether the departed tab started speaking.
+        // an abandoned browser lease or in environments without storage.
+        // It must not replay audio automatically.
         const recoveredCachedResult = Boolean(
             automaticTriggerId
-            && automaticCoordinationAvailable
             && digestData.automatic_action_allowed === false
         );
         
@@ -1520,6 +1545,10 @@ async function handleGenerateDigest(options = {}) {
             targetState.assistantRetryAt = Date.now() + 30000;
         }
     } finally {
+        if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = null;
+        }
         if (automaticClaimed && automaticTriggerId) {
             releaseAutomaticAssistanceClaim(targetRoomId, automaticTriggerId);
         }

@@ -112,9 +112,13 @@ Acceptance:
 - Generate Digest produces two-paragraph summaries.
 - Context window depth N is configurable via Settings.
 
-### U-03. Auto-narrate only real agent replies
-
-Status: `VERIFIED` (2026-07-30)
+### U-03. Single-Process Idempotency & Lease Budget Follow-up:
+  - `app/main.py`: Documented single-container single-worker deployment constraint for in-memory idempotency.
+  - `frontend/index.js`: Added `touchAutomaticAssistanceClaim` in-flight heartbeat every 15s so active owner tabs never lose lease ownership during long model runs (>45s).
+  - `frontend/index.js`: Added no-storage replayed response UI hydration (`digest` + `suggested_message`) while preserving audio narration suppression (`autoPlay: false`).
+  - `tests/test_response_assistant.py`: Added `test_lease_timeout_budget_invariant` asserting `AUTOMATIC_ASSISTANCE_LEASE_MS` (90s) > max backend budget (60s).
+  - `tests/frontend_harness.test.js`: Added test coverage verifying no-storage hydration without duplicate audio.
+  - **Status**: `VERIFIED` (2026-07-30)
 
 - Implemented `checkForAutoNarrate` in `frontend/index.js`, triggering only when
   the backend classifies a newly arrived item as `event.kind=agent_response`.

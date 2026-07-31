@@ -454,6 +454,20 @@ class TestResponseAssistantEndpoint(unittest.TestCase):
         )
         self.assertTrue(all(len(message["text"]) <= 6_001 for message in captured["messages"]))
 
+    def test_lease_timeout_budget_invariant(self):
+        """Verify frontend lease timeout duration (90s) strictly exceeds max backend worker generation budget (60s)."""
+        import re
+        frontend_js_path = os.path.join(os.path.dirname(__file__), "../frontend/index.js")
+        with open(frontend_js_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        match = re.search(r"AUTOMATIC_ASSISTANCE_LEASE_MS\s*=\s*(.*?);", content)
+        self.assertIsNotNone(match, "AUTOMATIC_ASSISTANCE_LEASE_MS constant missing in frontend/index.js")
+        expr = match.group(1).replace(" ", "")
+        # Evaluate simple math expressions like 90 * 1000
+        lease_ms = eval(expr)
+        max_backend_budget_ms = 60_000
+        self.assertGreater(lease_ms, max_backend_budget_ms)
+
 
 if __name__ == "__main__":
     unittest.main()
