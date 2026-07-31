@@ -1,6 +1,7 @@
 # Urgent Daily-Use Implementation Plan
 
 Status established: 2026-07-30  
+Last updated: 2026-07-31
 Branch: `urgent/daily-use-console`  
 Parent (return-to): `codex/adaptive-voice-gateway`  
 Historical UI foundation: `feature/full-screen-voice-console` / `IMPLEMENTATION_PLAN.md`  
@@ -170,6 +171,34 @@ Acceptance:
 - Explicit `@agent` mentions override default agent.
 - `/api/rooms` returns recency timestamps and sorts channels recency-first.
 
+### Delivered console refinements (after U-05)
+
+Status: `VERIFIED` (2026-07-31)
+
+These small daily-use improvements were completed without changing the Rocket.Chat
+dispatch, response-assistant, or confirmation contracts:
+
+1. **Split live typography controls** (`fab7e0a`): separate System presets (16px,
+   20px, 26px, 35px) from chat controls for font family, size, weight, line height,
+   paragraph spacing, and letter spacing. Changes preview immediately and persist on
+   Save.
+2. **Manual narration and vertical workspace resize** (`57e2ee9`): automatic digest
+   generation and smart drafts remain on, but `DISABLE_AUTO_NARRATION = true` keeps
+   speech manual; the conversation/composer divider persists a bounded height.
+3. **Editable narration with explicit playback** (`3e5dd0d`): narrator text can be
+   edited, **Play** never generates a digest, and **Generate Digest** still creates
+   both narration and a suggested reply.
+4. **Composer layout correction** (`43972e9`): the writing field flexes with the
+   vertical divider, while **Draft Message** remains bottom-anchored and can claim
+   space without obscuring the editor.
+5. **Narrator-pane width resize** (`d7c6a6c`): a persisted, keyboard-accessible
+   divider allows the narrator pane to widen while preserving a minimum narrator
+   width, channel rail, and readable conversation area.
+
+The targeted Python and Node suites passed after each slice (latest reported result:
+84 Python / 29 Node), along with browser interaction checks. The remaining U-06 and
+U-07 tasks below are still the closure work for the urgent plan.
+
 ### U-06. Gateway membership checklist (docs + optional UI)
 
 Status: `NOT STARTED`
@@ -200,6 +229,76 @@ Status: `NOT STARTED`
 
 - Green suites + one successful human confirm in the real channel.
 
+### U-08. Chatterbox local TTS feasibility gate
+
+Status: `NOT STARTED`
+
+**Purpose:** determine whether a local Chatterbox service on Ed's Mac is a materially
+better narrator than the current browser Web Speech voice, without changing the
+working digest, suggestion, or confirmation flows.
+
+**Do:**
+
+1. Record the selected Chatterbox release/model, license, download size, and Apple
+   Silicon runtime requirements from the official project before installing anything.
+2. Confirm enough free disk and memory headroom for one model, its Python/PyTorch
+   environment, model cache, and temporary audio. Do not install multiple model
+   variants during the first trial.
+3. Run one model in an isolated local environment as a localhost-only service, with a
+   health endpoint and a bounded request timeout. It must not be exposed directly to
+   the LAN or internet.
+4. Generate a small approved narration fixture with the default/non-cloned voice;
+   measure cold-start and warm-request latency, memory use, and subjective quality.
+   Do not use voice cloning or a reference clip without Ed's explicit approval and a
+   source he is entitled to use.
+5. Confirm that generated audio is transient only: no source text or audio saved in
+   the repository, ACLI runtime folders, logs, or long-lived local storage.
+6. Record a go/no-go decision. Keep browser Web Speech as the daily-use fallback if
+   the local service is slow, unstable, or not clearly better.
+
+**Done when:**
+
+- A localhost-only Chatterbox trial has a repeatable health check and measured
+  quality/latency evidence on this Mac.
+- The result explicitly says whether to proceed with U-09; no narrator UI or default
+  provider changes are made merely by passing the trial.
+
+### U-09. Chatterbox provider integration (only after U-08 go decision)
+
+Status: `BLOCKED BY U-08`
+
+**Do:**
+
+1. Extend the existing gateway TTS adapter behind a provider-neutral contract:
+   `browser` remains the default/fallback and `chatterbox` is an optional local
+   provider. Provider configuration stays server-side and is injected, never bundled
+   into the browser.
+2. Add authenticated Gateway endpoints for Chatterbox status, synthesis, and stop.
+   The browser communicates only with the Gateway; the Chatterbox service stays on
+   loopback. Enforce text-size, timeout, content-type, and error handling limits.
+3. Return temporary audio for explicit **Play Summary** requests and support stop,
+   replay, and speed behavior without reintroducing automatic speech. Keep
+   `DISABLE_AUTO_NARRATION = true` until Ed deliberately enables a future setting.
+4. Preserve the current browser Web Speech path as an immediate fallback whenever
+   Chatterbox is unhealthy or a synthesis request fails. Digest generation, suggested
+   drafts, confirmation-bound sending, and response-assistant idempotency must remain
+   independent of TTS availability.
+5. Add focused unit/contract coverage for provider selection, malformed/unavailable
+   local service responses, stop/cancel behavior, transient-audio cleanup, and
+   fallback. Add a manual local playback check using editable narrator text.
+6. Document the local deployment contract: one warm Chatterbox process on the Mac,
+   Gateway-to-service loopback only, no raw-audio retention by default, and no public
+   port exposure.
+
+**Done when:**
+
+- Ed can press **Play Summary** and hear Chatterbox audio from editable narration
+  text, then stop or replay it.
+- A failed/unavailable Chatterbox service transparently leaves the console usable with
+  the browser voice fallback.
+- Tests and one local live playback verify that there is no automatic readout and no
+  durable generated-audio artifact.
+
 ## 7. After urgent plan (return to adaptive / Omi)
 
 1. Merge or cherry-pick `urgent/daily-use-console` → `codex/adaptive-voice-gateway`.
@@ -209,13 +308,10 @@ Status: `NOT STARTED`
 
 ## 8. Immediate next task
 
-**Implement U-01** on `urgent/daily-use-console`:
-
-- recent-first channel ordering  
-- modestly larger text  
-- Settings placeholder  
-
-Then U-02 narrator contract.
+Complete U-06 and U-07 first. Then run U-08 as a contained local feasibility test;
+U-09 is optional and may start only after its explicit go decision. Do not start Omi,
+mobile, cloud exposure, voice cloning, or automatic Chatterbox readout under this
+urgent plan.
 
 ## 9. Operating rules for agents
 
