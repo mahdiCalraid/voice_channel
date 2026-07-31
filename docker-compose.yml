@@ -10,7 +10,7 @@ services:
       - RC_URL=${ACLI_RC_URL:-http://host.docker.internal:3000}
       - RC_USER=${ACLI_RC_USER:-acli_bot}
       - RC_USER_ID=${ACLI_RC_USER_ID:-acli_bot}
-      - RC_AUTH_TOKEN=${ACLI_RC_AUTH_TOKEN:-gC4OcTZR4d4e94_OSdUVysTIg3XS9BH9ifUn37JgnYqn_3FEJ9qtmFJa51GYVPY4}
+      - RC_AUTH_TOKEN=${ACLI_RC_AUTH_TOKEN:-}
       - RC_ROOM_ID=${RC_ROOM_ID:-6a32407ea294f44649684786}
       # Dedicated Rocket.Chat identity used only for signed gateway dispatch.
       # Do not point these at acli_bot; missing values intentionally fail closed.
