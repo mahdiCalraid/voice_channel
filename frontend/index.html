@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
-    <link rel="stylesheet" href="index.css?v=console-typography-1">
+    <link rel="stylesheet" href="index.css?v=console-layout-1">
 </head>
 <body>
     <div class="app-layout">
@@ -95,8 +95,21 @@
                 </div>
             </div>
 
+            <div
+                class="composer-resize-handle"
+                id="composer-resize-handle"
+                role="separator"
+                aria-label="Resize conversation and message composer"
+                aria-orientation="horizontal"
+                aria-valuemin="160"
+                tabindex="0"
+                title="Drag up for more writing space or down for more conversation space"
+            >
+                <span class="composer-resize-grip" aria-hidden="true"></span>
+            </div>
+
             <!-- Bottom Composer Bar -->
-            <div class="composer-container">
+            <div class="composer-container" id="composer-container">
                 <div class="composer-toolbar">
                     <div class="agent-badges">
                         <span class="toolbar-label">Target Agent:</span>
@@ -210,14 +223,15 @@
                     </div>
 
                     <div class="playback-controls">
-                        <button class="btn btn-secondary btn-full" id="btn-generate-digest" title="Generate and narrate new digest">
+                        <button class="btn btn-secondary btn-full" id="btn-generate-digest" title="Generate a new digest and draft">
                             <span class="material-symbols-rounded">autorenew</span>
                             <span>Generate Digest</span>
                         </button>
 
                         <div class="playback-buttons-group">
-                            <button class="btn btn-primary btn-round" id="btn-play-pause" title="Play / Pause TTS">
+                            <button class="btn btn-primary btn-narration-play" id="btn-play-pause" title="Play or pause summary narration">
                                 <span class="material-symbols-rounded" id="play-icon">play_arrow</span>
+                                <span>Play Summary</span>
                             </button>
                             <button class="btn btn-secondary btn-round" id="btn-stop" title="Stop Playback">
                                 <span class="material-symbols-rounded">stop</span>
@@ -351,7 +365,7 @@
                         </div>
                     </div>
                     <div class="setting-group toggle-group">
-                        <label for="setting-auto-narrate">Auto-narrate and draft the next message after real agent responses</label>
+                        <label for="setting-auto-narrate">Automatically prepare a digest and draft after real agent responses</label>
                         <input type="checkbox" id="setting-auto-narrate" class="setting-checkbox" checked>
                     </div>
                 </section>
@@ -364,6 +378,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="history_state.js?v=response-assistant-3"></script>
-    <script src="index.js?v=console-typography-1"></script>
+    <script src="index.js?v=console-layout-1"></script>
 </body>
 </html>

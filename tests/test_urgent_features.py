@@ -22,13 +22,18 @@ class TestUrgentFeatures(unittest.TestCase):
         shell = self.client.get("/")
         self.assertEqual(shell.status_code, 200)
         self.assertEqual(shell.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("index.js?v=console-typography-1", shell.text)
-        self.assertIn("index.css?v=console-typography-1", shell.text)
+        self.assertIn("index.js?v=console-layout-1", shell.text)
+        self.assertIn("index.css?v=console-layout-1", shell.text)
         self.assertIn("history_state.js?v=response-assistant-3", shell.text)
         self.assertIn('id="setting-system-font-size"', shell.text)
         self.assertIn('id="setting-chat-font-family"', shell.text)
         self.assertIn('id="setting-chat-font-size"', shell.text)
         self.assertIn('id="setting-chat-line-height"', shell.text)
+        self.assertIn('id="composer-resize-handle"', shell.text)
+        self.assertIn("Play Summary", shell.text)
+
+        script = self.client.get("/index.js")
+        self.assertIn("const DISABLE_AUTO_NARRATION = true;", script.text)
 
         for asset_path in ("/index.js", "/history_state.js", "/index.css"):
             with self.subTest(asset_path=asset_path):

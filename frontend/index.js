@@ -60,6 +60,19 @@ const btnCloseNarrator = document.getElementById("btn-close-narrator");
 const btnToggleSidebar = document.getElementById("btn-toggle-sidebar");
 const narratorSidebar = document.getElementById("narrator-sidebar");
 const channelsSidebar = document.getElementById("channels-sidebar");
+const transcriptFeedContainer = document.querySelector(".transcript-feed-container");
+const composerContainer = document.getElementById("composer-container");
+const composerResizeHandle = document.getElementById("composer-resize-handle");
+
+// Keep automatic digest generation and smart drafts enabled, but require Ed to
+// press Play before speech starts. A future setting can flip this feature flag.
+const DISABLE_AUTO_NARRATION = true;
+
+const COMPOSER_HEIGHT_STORAGE_KEY = "vc_composer_height_px";
+const MIN_COMPOSER_HEIGHT_PX = 160;
+const MIN_CONVERSATION_HEIGHT_PX = 180;
+const COMPOSER_KEYBOARD_STEP_PX = 24;
+let composerResizeState = null;
 
 // Settings Management (U-01, U-02, U-03, U-05)
 const SETTINGS_VERSION = 3;
@@ -407,10 +420,146 @@ function initSettingsModal() {
     }
 }
 
+function elementHeight(element) {
+    if (!element) return 0;
+    if (typeof element.getBoundingClientRect === "function") {
+        const rect = element.getBoundingClientRect();
+        if (rect && Number.isFinite(rect.height) && rect.height > 0) return rect.height;
+    }
+    const inlineHeight = parseFloat(element.style && element.style.height);
+    if (Number.isFinite(inlineHeight) && inlineHeight > 0) return inlineHeight;
+    return Number(element.offsetHeight || element.clientHeight || 0);
+}
+
+function getComposerResizeBounds() {
+    const currentComposerHeight = elementHeight(composerContainer) || MIN_COMPOSER_HEIGHT_PX;
+    const currentConversationHeight = elementHeight(transcriptFeedContainer) || MIN_CONVERSATION_HEIGHT_PX;
+    const splitHeight = Math.max(
+        MIN_COMPOSER_HEIGHT_PX + MIN_CONVERSATION_HEIGHT_PX,
+        currentComposerHeight + currentConversationHeight
+    );
+    return {
+        minimum: MIN_COMPOSER_HEIGHT_PX,
+        maximum: Math.max(MIN_COMPOSER_HEIGHT_PX, splitHeight - MIN_CONVERSATION_HEIGHT_PX)
+    };
+}
+
+function setComposerHeight(requestedHeight, persist = true) {
+    if (!composerContainer) return null;
+    const bounds = getComposerResizeBounds();
+    const numericHeight = Number(requestedHeight);
+    const fallback = elementHeight(composerContainer) || bounds.minimum;
+    const height = Math.round(Math.min(bounds.maximum, Math.max(
+        bounds.minimum,
+        Number.isFinite(numericHeight) ? numericHeight : fallback
+    )));
+    composerContainer.style.height = height + "px";
+    if (composerResizeHandle) {
+        composerResizeHandle.setAttribute("aria-valuemin", String(bounds.minimum));
+        composerResizeHandle.setAttribute("aria-valuemax", String(Math.round(bounds.maximum)));
+        composerResizeHandle.setAttribute("aria-valuenow", String(height));
+    }
+    if (persist) {
+        try {
+            localStorage.setItem(COMPOSER_HEIGHT_STORAGE_KEY, String(height));
+        } catch (e) {
+            console.warn("Could not persist composer height:", e);
+        }
+    }
+    return height;
+}
+
+function beginComposerResize(event) {
+    if (!composerContainer || !composerResizeHandle) return;
+    if (typeof event.button === "number" && event.button !== 0) return;
+    composerResizeState = {
+        pointerId: event.pointerId,
+        startY: Number(event.clientY || 0),
+        startHeight: elementHeight(composerContainer) || MIN_COMPOSER_HEIGHT_PX
+    };
+    document.body.classList.add("is-resizing-composer");
+    if (typeof composerResizeHandle.setPointerCapture === "function" && event.pointerId != null) {
+        composerResizeHandle.setPointerCapture(event.pointerId);
+    }
+    if (typeof event.preventDefault === "function") event.preventDefault();
+}
+
+function resizeComposerFromPointer(event) {
+    if (!composerResizeState) return;
+    if (
+        composerResizeState.pointerId != null
+        && event.pointerId != null
+        && event.pointerId !== composerResizeState.pointerId
+    ) return;
+    const delta = composerResizeState.startY - Number(event.clientY || 0);
+    setComposerHeight(composerResizeState.startHeight + delta, false);
+    if (typeof event.preventDefault === "function") event.preventDefault();
+}
+
+function finishComposerResize(event = {}) {
+    if (!composerResizeState) return;
+    if (
+        composerResizeState.pointerId != null
+        && event.pointerId != null
+        && event.pointerId !== composerResizeState.pointerId
+    ) return;
+    composerResizeState = null;
+    document.body.classList.remove("is-resizing-composer");
+    setComposerHeight(elementHeight(composerContainer), true);
+}
+
+function resizeComposerFromKeyboard(event) {
+    if (!composerContainer) return;
+    const currentHeight = elementHeight(composerContainer) || MIN_COMPOSER_HEIGHT_PX;
+    const bounds = getComposerResizeBounds();
+    let nextHeight = null;
+    if (event.key === "ArrowUp") nextHeight = currentHeight + COMPOSER_KEYBOARD_STEP_PX;
+    if (event.key === "ArrowDown") nextHeight = currentHeight - COMPOSER_KEYBOARD_STEP_PX;
+    if (event.key === "Home") nextHeight = bounds.minimum;
+    if (event.key === "End") nextHeight = bounds.maximum;
+    if (nextHeight === null) return;
+    setComposerHeight(nextHeight, true);
+    if (typeof event.preventDefault === "function") event.preventDefault();
+}
+
+function initComposerResizer() {
+    if (!composerResizeHandle || !composerContainer || !transcriptFeedContainer) return;
+    if (composerResizeHandle.dataset.resizeInitialized === "true") return;
+    composerResizeHandle.dataset.resizeInitialized = "true";
+    composerResizeHandle.addEventListener("pointerdown", beginComposerResize);
+    composerResizeHandle.addEventListener("keydown", resizeComposerFromKeyboard);
+    document.addEventListener("pointermove", resizeComposerFromPointer);
+    document.addEventListener("pointerup", finishComposerResize);
+    document.addEventListener("pointercancel", finishComposerResize);
+    if (typeof window.addEventListener === "function") {
+        window.addEventListener("resize", () => {
+            try {
+                const savedHeight = Number(localStorage.getItem(COMPOSER_HEIGHT_STORAGE_KEY));
+                if (Number.isFinite(savedHeight) && savedHeight > 0) {
+                    setComposerHeight(savedHeight, false);
+                }
+            } catch (e) {
+                setComposerHeight(elementHeight(composerContainer), false);
+            }
+        });
+    }
+    try {
+        const savedHeight = Number(localStorage.getItem(COMPOSER_HEIGHT_STORAGE_KEY));
+        if (Number.isFinite(savedHeight) && savedHeight > 0) {
+            setComposerHeight(savedHeight, false);
+        } else {
+            setComposerHeight(elementHeight(composerContainer), false);
+        }
+    } catch (e) {
+        setComposerHeight(elementHeight(composerContainer), false);
+    }
+}
+
 // Initialize application
 function init() {
     applySettings();
     initSettingsModal();
+    initComposerResizer();
     activeRoomId = localStorage.getItem("activeRoomId");
 
     initNarratorSidebarState();
@@ -1604,7 +1753,9 @@ async function handleGenerateDigest(options = {}) {
             setAssistantStatus(
                 recoveredCachedResult
                     ? "Automatic: recovered draft ready; press Play for audio"
-                    : "Automatic: draft ready",
+                    : (DISABLE_AUTO_NARRATION
+                        ? "Automatic: draft ready; press Play for audio"
+                        : "Automatic: draft ready"),
                 "ready"
             );
         }
@@ -1667,6 +1818,7 @@ async function handleGenerateDigest(options = {}) {
 
         if (
             targetRoomId === activeRoomId
+            && !DISABLE_AUTO_NARRATION
             && options.autoPlay !== false
             && !recoveredCachedResult
         ) {

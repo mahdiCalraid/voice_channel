@@ -17,6 +17,7 @@ function classList() {
 
 function element() {
     const listeners = {};
+    const attributes = {};
     const styleValues = { display: "none" };
     styleValues.setProperty = (name, value) => { styleValues[name] = value; };
     styleValues.getPropertyValue = name => styleValues[name] || "";
@@ -35,19 +36,22 @@ function element() {
         listeners,
         addEventListener: (name, handler) => { listeners[name] = handler; },
         focus: () => {},
+        getAttribute: name => attributes[name] ?? null,
         querySelector: () => element(),
         querySelectorAll: () => [],
         scrollIntoView: () => {},
+        setAttribute: (name, value) => { attributes[name] = String(value); },
     };
 }
 
 function loadFrontend(options = {}) {
     const elements = new Map();
     const body = element();
+    const documentListeners = {};
     const document = {
         body,
         readyState: "loading",
-        addEventListener: () => {},
+        addEventListener: (name, handler) => { documentListeners[name] = handler; },
         createElement: () => element(),
         getElementById: id => {
             if (!elements.has(id)) elements.set(id, element());
@@ -103,8 +107,103 @@ function loadFrontend(options = {}) {
     vm.createContext(sandbox);
     const source = fs.readFileSync(path.join(__dirname, "..", "frontend", "index.js"), "utf8");
     vm.runInContext(source, sandbox);
-    return { elements, sandbox, spoken, storage, storageWrites };
+    return { elements, sandbox, spoken, storage, storageWrites, documentListeners };
 }
+
+test("automatic assistance prepares the digest and draft without starting narration", async () => {
+    const app = loadFrontend({ enableSpeech: true });
+    vm.runInContext(`
+        activeRoomId = "room-manual-audio";
+        roomsList = [{ id: "room-manual-audio", name: "voice_channel" }];
+    `, app.sandbox);
+    app.sandbox.fetch = url => {
+        if (url.startsWith("/api/history")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    messages: [{
+                        id: "agent-manual-audio",
+                        lane: "agent",
+                        text: "Finished",
+                        event: { kind: "agent_response", agent: "codex" }
+                    }]
+                })
+            });
+        }
+        if (url === "/api/response-assistant") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    digest: "The requested work is complete.",
+                    suggested_message: "@grok Review the completed work.",
+                    trigger_message_id: "agent-manual-audio",
+                    automatic_action_allowed: true
+                })
+            });
+        }
+        throw new Error("Unexpected request: " + url);
+    };
+
+    await app.sandbox.handleGenerateDigest({
+        autoPlay: true,
+        triggerMessageId: "agent-manual-audio"
+    });
+
+    assert.equal(app.spoken.length, 0);
+    assert.equal(
+        app.sandbox.document.getElementById("command-input").value,
+        "@grok Review the completed work."
+    );
+    app.sandbox.handlePlayPause();
+    assert.deepEqual(app.spoken, ["The requested work is complete."]);
+});
+
+test("composer divider clamps, persists, and restores both pane boundaries", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        transcriptFeedContainer.offsetHeight = 440;
+        composerContainer.offsetHeight = 240;
+        initComposerResizer();
+    `, app.sandbox);
+    const composer = app.sandbox.document.getElementById("composer-container");
+    const handle = app.sandbox.document.getElementById("composer-resize-handle");
+
+    assert.equal(typeof handle.listeners.pointerdown, "function");
+    assert.equal(typeof handle.listeners.keydown, "function");
+    assert.equal(app.sandbox.setComposerHeight(999, true), 500);
+    assert.equal(composer.style.height, "500px");
+    assert.equal(app.storage.vc_composer_height_px, "500");
+    assert.equal(handle.getAttribute("aria-valuenow"), "500");
+    assert.equal(app.sandbox.setComposerHeight(1, true), 160);
+    assert.equal(composer.style.height, "160px");
+
+    handle.listeners.pointerdown({
+        button: 0,
+        pointerId: 7,
+        clientY: 500,
+        preventDefault: () => {}
+    });
+    app.documentListeners.pointermove({ pointerId: 7, clientY: 400, preventDefault: () => {} });
+    app.documentListeners.pointerup({ pointerId: 7 });
+    assert.equal(composer.style.height, "260px");
+    assert.equal(app.storage.vc_composer_height_px, "260");
+
+    handle.listeners.keydown({ key: "ArrowUp", preventDefault: () => {} });
+    assert.equal(composer.style.height, "284px");
+    assert.equal(app.storage.vc_composer_height_px, "284");
+
+    const restored = loadFrontend({ storage: { vc_composer_height_px: "300" } });
+    vm.runInContext(`
+        transcriptFeedContainer.offsetHeight = 440;
+        composerContainer.offsetHeight = 240;
+        initComposerResizer();
+    `, restored.sandbox);
+    assert.equal(
+        restored.sandbox.document.getElementById("composer-container").style.height,
+        "300px"
+    );
+});
 
 test("stale room history response is ignored when user switches rooms mid-flight", async () => {
     const app = loadFrontend();
@@ -577,7 +676,7 @@ test("two tabs produce at most one automatic request, saved draft, and narration
             .filter(write => write.key === "vc_draft_room-cross-tab").length,
         1
     );
-    assert.equal(firstTab.spoken.length + secondTab.spoken.length, 1);
+    assert.equal(firstTab.spoken.length + secondTab.spoken.length, 0);
 });
 
 test("backend suppression stays authoritative when cross-tab storage is unavailable", async () => {

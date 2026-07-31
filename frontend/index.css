@@ -325,6 +325,15 @@ body {
     gap: 0.75rem;
 }
 
+.btn-narration-play {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    min-height: 42px;
+    padding: 0.55rem 1rem;
+}
+
 .speed-control {
     margin-top: 1.25rem;
     display: flex;
@@ -1369,6 +1378,7 @@ body {
 /* Transcript Container */
 .transcript-feed-container {
     flex: 1;
+    min-height: 180px;
     overflow-y: auto;
     padding: 1.5rem;
     display: flex;
@@ -1379,11 +1389,53 @@ body {
     height: 100%;
 }
 
+/* Conversation / composer split control */
+.composer-resize-handle {
+    position: relative;
+    flex: 0 0 12px;
+    height: 12px;
+    cursor: row-resize;
+    touch-action: none;
+    background: rgba(13, 17, 28, 0.9);
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    outline: none;
+    z-index: 12;
+}
+
+.composer-resize-grip {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: min(96px, 28%);
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.55);
+    transform: translate(-50%, -50%);
+    transition: width 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-resize-handle:hover .composer-resize-grip,
+.composer-resize-handle:focus-visible .composer-resize-grip,
+body.is-resizing-composer .composer-resize-grip {
+    width: min(128px, 38%);
+    background: var(--primary);
+    box-shadow: 0 0 12px var(--primary-glow);
+}
+
+body.is-resizing-composer {
+    cursor: row-resize;
+    user-select: none;
+}
+
 /* Composer Container */
 .composer-container {
+    flex: 0 0 auto;
+    min-height: 160px;
+    box-sizing: border-box;
+    overflow-y: auto;
     padding: 1rem 1.5rem 1.25rem;
     background: rgba(13, 17, 28, 0.85);
-    border-top: 1px solid var(--card-border);
     backdrop-filter: blur(16px);
     display: flex;
     flex-direction: column;
