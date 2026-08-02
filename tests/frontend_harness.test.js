@@ -1244,3 +1244,35 @@ test("openAttentionSettingsModal performs case-fold lookup and displays snooze r
     assert.equal(snoozeSelect.value, "keep");
 });
 
+
+test("attention settings modal is a top-level overlay, not nested inside the hidden settings modal", async () => {
+    const htmlContent = fs.readFileSync(path.join(__dirname, "../frontend/index.html"), "utf8");
+    const voidTags = new Set(["br", "img", "input", "hr", "meta", "link", "source", "area", "base", "col", "embed", "param", "track", "wbr"]);
+    const tagPattern = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
+
+    const stack = [];
+    let ancestorsOfAttentionModal = null;
+    let match;
+    while ((match = tagPattern.exec(htmlContent)) !== null) {
+        const [, closing, tagName, attrs, selfClosing] = match;
+        const tag = tagName.toLowerCase();
+        if (closing) {
+            const idx = stack.map(e => e.tag).lastIndexOf(tag);
+            if (idx !== -1) stack.length = idx;
+            continue;
+        }
+        const idMatch = /\bid\s*=\s*"([^"]*)"/.exec(attrs || "");
+        const id = idMatch ? idMatch[1] : null;
+        if (id === "attention-settings-modal" && ancestorsOfAttentionModal === null) {
+            ancestorsOfAttentionModal = stack.map(e => e.id).filter(Boolean);
+        }
+        if (!voidTags.has(tag) && !selfClosing) stack.push({ tag, id });
+    }
+
+    assert.notEqual(ancestorsOfAttentionModal, null, "attention-settings-modal must exist in index.html");
+    assert.ok(
+        !ancestorsOfAttentionModal.includes("settings-modal"),
+        "attention-settings-modal must not be nested inside #settings-modal, which stays display:none and would hide it",
+    );
+    assert.deepEqual(stack.map(e => e.id).filter(Boolean), [], "index.html must have balanced tags at EOF");
+});
