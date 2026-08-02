@@ -1194,3 +1194,53 @@ test("confirmation gate freezes and then releases a pending attention queue", as
     assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), false);
     assert.ok(app.sandbox.document.getElementById("channels-list").innerHTML.includes("Busy 2m"));
 });
+
+test("gateway dispatch checklist UI elements exist in console settings", async () => {
+    const app = loadFrontend();
+    const heading = app.sandbox.document.getElementById("gateway-checklist-heading");
+    const list = app.sandbox.document.getElementById("gateway-checklist-list");
+    assert.ok(heading);
+    assert.ok(list);
+
+    const htmlContent = fs.readFileSync(path.join(__dirname, "../frontend/index.html"), "utf8");
+    assert.ok(htmlContent.includes("gateway-checklist-heading"));
+    assert.ok(htmlContent.includes("voice_gateway"));
+    assert.ok(htmlContent.includes("ed"));
+});
+
+test("openAttentionSettingsModal performs case-fold lookup and displays snooze retention option", async () => {
+    const app = loadFrontend();
+    const futureIso = new Date(Date.now() + 86400 * 1000).toISOString();
+    app.sandbox.fetch = (url) => {
+        if (url === "/api/attention/config") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    config: {
+                        schema_version: "1.0",
+                        channels: {
+                            "Voice_Channel": {
+                                attention_active: true,
+                                base_importance: 4,
+                                urgency: "high",
+                                snoozed_until: futureIso
+                            }
+                        }
+                    }
+                })
+            });
+        }
+        throw new Error("Unexpected fetch URL: " + url);
+    };
+
+    await app.sandbox.openAttentionSettingsModal("voice_channel");
+    const channelInput = app.sandbox.document.getElementById("attn-channel-name");
+    const keepOption = app.sandbox.document.getElementById("attn-snooze-keep-option");
+    const snoozeSelect = app.sandbox.document.getElementById("attn-snooze-select");
+
+    assert.equal(channelInput.dataset.canonicalName, "Voice_Channel");
+    assert.equal(keepOption.style.display, "block");
+    assert.equal(snoozeSelect.value, "keep");
+});
+

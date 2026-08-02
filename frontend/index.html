@@ -392,6 +392,20 @@
                         <input type="checkbox" id="setting-auto-narrate" class="setting-checkbox" checked>
                     </div>
                 </section>
+
+                <section class="settings-section" aria-labelledby="gateway-checklist-heading">
+                    <div class="settings-section-heading">
+                        <h4 id="gateway-checklist-heading">Gateway Dispatch Checklist (U-06)</h4>
+                    </div>
+                    <div class="gateway-checklist-card" style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; padding: 0.75rem 1rem;">
+                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;">To receive signed Voice Gateway dispatches in Rocket.Chat, verify the room setup:</p>
+                        <ul style="list-style: none; padding: 0; margin: 0; font-size: 0.85rem; display: flex; flex-direction: column; gap: 0.4rem;" id="gateway-checklist-list">
+                            <li><span style="color: #10b981; font-weight: bold; margin-right: 0.4rem;">✓</span> <strong>Service Account:</strong> Room must include <code>voice_gateway</code> service account.</li>
+                            <li><span style="color: #10b981; font-weight: bold; margin-right: 0.4rem;">✓</span> <strong>Operator Routing:</strong> <code>ed</code> remains in normal channels for interactive ACLI routing.</li>
+                            <li><span style="color: #10b981; font-weight: bold; margin-right: 0.4rem;">✓</span> <strong>Channel Scope:</strong> Add <code>voice_gateway</code> only to authorized channels (e.g. <code>#voice_channel</code>); no bulk-joining.</li>
+                        </ul>
+                    </div>
+                </section>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-primary" id="btn-save-settings">Save & Apply</button>
@@ -453,11 +467,13 @@
                         <div class="setting-group">
                             <label for="attn-snooze-select">Snooze Attention</label>
                             <select id="attn-snooze-select" class="setting-select">
-                                <option value="none" selected>No Snooze</option>
+                                <option value="keep" id="attn-snooze-keep-option" style="display: none;">Keep Current Snooze</option>
+                                <option value="none" selected>No Snooze (Active)</option>
                                 <option value="1h">Snooze 1 Hour</option>
                                 <option value="4h">Snooze 4 Hours</option>
                                 <option value="24h">Snooze 24 Hours</option>
                             </select>
+                            <div class="setting-hint" id="attn-snooze-status-text" style="display: none; font-size: 0.75rem; color: #a5b4fc; margin-top: 0.25rem;"></div>
                         </div>
 
                         <div class="setting-group">

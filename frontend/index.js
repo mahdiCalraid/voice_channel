@@ -1238,6 +1238,8 @@ function applyPendingAttentionQueueIfReady(force = false) {
     return true;
 }
 
+let currentModalSnoozedUntil = null;
+
 // Attention Settings Modal Logic
 async function openAttentionSettingsModal(channelName) {
     const modal = document.getElementById("attention-settings-modal");
@@ -1249,11 +1251,17 @@ async function openAttentionSettingsModal(channelName) {
     const blockCb = document.getElementById("attn-blocking");
     const boostCb = document.getElementById("attn-focus-today");
     const snoozeSelect = document.getElementById("attn-snooze-select");
+    const keepOption = document.getElementById("attn-snooze-keep-option");
+    const statusText = document.getElementById("attn-snooze-status-text");
     const deadlineInput = document.getElementById("attn-deadline");
 
     if (!modal) return;
     if (titleEl) titleEl.innerText = `Channel Attention Settings: #${channelName}`;
-    if (channelInput) channelInput.value = channelName;
+    if (channelInput) {
+        channelInput.value = channelName;
+        channelInput.dataset.canonicalName = channelName;
+    }
+    currentModalSnoozedUntil = null;
 
     // Reset default form state
     if (activeCb) activeCb.checked = true;
@@ -1262,24 +1270,52 @@ async function openAttentionSettingsModal(channelName) {
     if (blockCb) blockCb.checked = false;
     if (boostCb) boostCb.checked = false;
     if (snoozeSelect) snoozeSelect.value = "none";
+    if (keepOption) keepOption.style.display = "none";
+    if (statusText) statusText.style.display = "none";
     if (deadlineInput) deadlineInput.value = "";
 
     try {
         const resp = await fetch("/api/attention/config");
         if (resp.ok) {
             const data = await resp.json();
-            if (data && data.config && data.config.channels && data.config.channels[channelName]) {
-                const entry = data.config.channels[channelName];
+            const channels = (data && data.config && data.config.channels) ? data.config.channels : {};
+            
+            // Case-fold lookup
+            const matchedKey = Object.keys(channels).find(k => k.toLowerCase() === channelName.toLowerCase());
+            if (matchedKey && channels[matchedKey]) {
+                const entry = channels[matchedKey];
+                if (channelInput) channelInput.dataset.canonicalName = matchedKey;
                 if (activeCb) activeCb.checked = entry.attention_active !== false;
                 if (impSelect) impSelect.value = String(entry.base_importance || 3);
                 if (urgSelect) urgSelect.value = entry.urgency || "normal";
                 if (blockCb) blockCb.checked = !!entry.blocking;
                 if (boostCb) boostCb.checked = !!entry.temporary_boost_until;
-                if (snoozeSelect) snoozeSelect.value = entry.snoozed_until ? "1h" : "none";
+                
+                // Snooze retention
+                if (entry.snoozed_until) {
+                    const dt = new Date(entry.snoozed_until);
+                    if (dt.getTime() > Date.now()) {
+                        currentModalSnoozedUntil = entry.snoozed_until;
+                        if (keepOption) {
+                            keepOption.style.display = "block";
+                            keepOption.innerText = `Keep Current Snooze (until ${dt.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})})`;
+                        }
+                        if (snoozeSelect) snoozeSelect.value = "keep";
+                        if (statusText) {
+                            statusText.style.display = "block";
+                            statusText.innerText = `Currently snoozed until ${dt.toLocaleString()}`;
+                        }
+                    } else if (snoozeSelect) {
+                        snoozeSelect.value = "none";
+                    }
+                } else if (snoozeSelect) {
+                    snoozeSelect.value = "none";
+                }
+
                 if (deadlineInput && entry.deadline) {
                     try {
-                        const dt = new Date(entry.deadline);
-                        deadlineInput.value = dt.toISOString().slice(0, 16);
+                        const dtd = new Date(entry.deadline);
+                        deadlineInput.value = dtd.toISOString().slice(0, 16);
                     } catch (e) {}
                 }
             }
@@ -1298,7 +1334,7 @@ function closeAttentionSettingsModal() {
 
 async function saveAttentionSettings() {
     const channelInput = document.getElementById("attn-channel-name");
-    const channelName = channelInput ? channelInput.value : "";
+    const channelName = channelInput ? (channelInput.dataset.canonicalName || channelInput.value) : "";
     if (!channelName) return;
 
     const activeCb = document.getElementById("attn-active");
@@ -1318,7 +1354,9 @@ async function saveAttentionSettings() {
 
     let snoozedUntil = null;
     const snoozeVal = snoozeSelect ? snoozeSelect.value : "none";
-    if (snoozeVal === "1h") {
+    if (snoozeVal === "keep") {
+        snoozedUntil = currentModalSnoozedUntil;
+    } else if (snoozeVal === "1h") {
         snoozedUntil = new Date(now.getTime() + 3600 * 1000).toISOString();
     } else if (snoozeVal === "4h") {
         snoozedUntil = new Date(now.getTime() + 4 * 3600 * 1000).toISOString();

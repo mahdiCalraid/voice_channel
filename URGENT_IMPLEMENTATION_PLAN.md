@@ -201,17 +201,16 @@ U-07 tasks below are still the closure work for the urgent plan.
 
 ### U-06. Gateway membership checklist (docs + optional UI)
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-08-01)
 
-**Do:**
-
-1. Short in-app or Settings note: to dispatch via gateway, room must include **`voice_gateway`**.
-2. Optional: status chip or room badge when membership is unknown (no hard dependency).
-3. Do **not** bulk-join all channels.
-
-**Done when:**
-
-- Ed has a clear checklist for “can this room receive gateway dispatch?”
+1. **Gateway Dispatch Checklist UI (`frontend/index.html`)**:
+   - Added dedicated Gateway Dispatch Checklist section in Console Settings explaining room membership requirements for signed dispatches:
+     - `voice_gateway` service account user must be a room member for signed dispatches.
+     - `ed` remains in normal channels for interactive ACLI routing.
+     - Channels are authorized individually (e.g. `#voice_channel`); no bulk-joining.
+2. **Channel Settings Hygeine & Snooze Retention (`frontend/index.js`)**:
+   - Case-fold channel configuration lookup prevents casing conflicts on stored keys.
+   - Snooze retention option (`keep`) prevents accidental truncation of multi-hour snoozes when editing other channel attention parameters.
 
 ### U-07. Smoke and daily-use checkpoint
 
@@ -368,11 +367,7 @@ Voice commands for the scheduler are explicitly **out of scope** for U-10.
 
 ## 8. Immediate next task
 
-**U-10a** is the current active task, at Ed's direction (2026-08-01). Chatterbox
-(U-08/U-09) is paused. U-06 and U-07 remain small and should follow. Do not start
-Omi, mobile, cloud exposure, voice cloning, or automatic Chatterbox readout under
-this urgent plan, and do not build the U-10c rail before U-10a/U-10b exist — a
-score badge rendered over guessed state looks authoritative and is wrong.
+**U-07** (Smoke and daily-use checkpoint) is the current active task. **U-10** (U-10a state overlay, U-10b scoring, U-10c rail integration and UI fixes) and **U-06** (Gateway membership checklist) are complete and verified. Chatterbox (U-08/U-09) is paused. Do not start Omi, mobile, cloud exposure, or voice cloning under this urgent plan.
 
 ## 9. Operating rules for agents
 
