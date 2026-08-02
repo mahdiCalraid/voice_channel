@@ -16,6 +16,7 @@ from pydantic import BaseModel
 import httpx
 from openai import OpenAI
 from app.contracts import (
+    AttentionState,
     CURRENT_SCHEMA_VERSION,
     InputMode,
     PermissionTier,
@@ -39,10 +40,13 @@ from app.task_supervisor import TaskSupervisor
 from app.rc_ingress import IngressConfigurationError, build_ingress_message, extract_interaction_id
 from app.supervision_strategy import (
     build_strategy_context,
+    load_channel_registry,
     parse_response_assistant_output,
     read_project_context,
     resolve_channel_profile,
 )
+from app.attention_config import load_channel_attention_config
+from app.attention_scoring import build_attention_queue
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -831,6 +835,85 @@ async def get_rooms():
     except Exception as e:
         logger.exception("Error fetching rooms")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/attention/queue")
+async def get_attention_queue(now: Optional[float] = None):
+    """GET /api/attention/queue: Return ranked channel attention queue with factor breakdown (U-10b).
+    
+    Scores are computed dynamically at request time and are never persisted to disk.
+    """
+    config = load_channel_attention_config()
+    channel_registry, _ = load_channel_registry()
+
+    # Fetch live Rocket.Chat rooms for last_activity_at and room mapping
+    rc_rooms = []
+    base_url = get_rc_base_url()
+    headers = {"X-Auth-Token": RC_AUTH_TOKEN, "X-User-Id": RC_USER_ID}
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{base_url}/api/v1/rooms.get?count=100", headers=headers)
+            if resp.status_code == 200 and resp.json().get("success"):
+                rc_rooms = resp.json().get("update", [])
+    except Exception as err:
+        logger.debug(f"Could not fetch Rocket.Chat rooms for attention queue: {err}")
+
+    # Build room lookup & last activity map by channel name
+    room_by_cname: Dict[str, Dict[str, Any]] = {}
+    activity_map: Dict[str, Optional[float]] = {}
+    for r in rc_rooms:
+        rname = r.get("name") or r.get("fname")
+        if rname:
+            cname_key = rname.lower()
+            room_by_cname[cname_key] = r
+            lm = r.get("lm") or r.get("_updatedAt")
+            if lm:
+                if isinstance(lm, (int, float)):
+                    activity_map[cname_key] = float(lm)
+                elif isinstance(lm, str):
+                    try:
+                        dt = datetime.fromisoformat(lm.replace("Z", "+00:00"))
+                        activity_map[cname_key] = dt.timestamp()
+                    except Exception:
+                        activity_map[cname_key] = None
+
+    # Collect task supervisor summaries per channel
+    room_summaries: Dict[str, Dict[str, Any]] = {}
+    for citem in channel_registry:
+        cname = citem.get("channel_name")
+        if not cname:
+            continue
+        cname_lower = cname.lower()
+        matched_rc_room = room_by_cname.get(cname_lower)
+        room_id = matched_rc_room.get("_id") if matched_rc_room else None
+
+        if room_id:
+            summary = task_supervisor.get_channel_attention_summary(room_id)
+        else:
+            summary = {
+                "room_id": None,
+                "is_busy": False,
+                "working_since": None,
+                "attention_state": AttentionState.UNKNOWN,
+                "ready_since": None,
+                "active_task_count": 0,
+            }
+        room_summaries[cname] = summary
+
+    # Build attention queue items
+    queue = build_attention_queue(
+        config=config,
+        channel_registry=channel_registry,
+        room_summaries=room_summaries,
+        room_activity_map={cname: activity_map.get(cname.lower()) for cname in room_summaries},
+        now=now,
+    )
+
+    now_ts = now if now is not None else time.time()
+    return {
+        "success": True,
+        "timestamp": now_ts,
+        "queue": queue,
+    }
 
 @app.get("/api/history")
 async def get_history(

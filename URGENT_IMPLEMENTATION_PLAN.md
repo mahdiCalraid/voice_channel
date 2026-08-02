@@ -332,18 +332,16 @@ Status: `PLANNED` — slices below land in order.
 
 #### U-10b. Scoring service + endpoint
 
-**Do:**
+**Status**: `VERIFIED` (2026-08-01)
 
-1. Pure deterministic scoring function over (config + attention state + clock).
-   No model call: AI must not make hidden priority decisions.
-2. `GET /api/attention/queue` returns, per channel, the attention state, elapsed
-   working seconds for busy channels, the score for non-busy channels, and the
-   **factor breakdown** so the UI can explain the number.
-3. Channels the console is not actively watching must still report state, or the
-   endpoint must mark them `unknown` rather than silently scoring them as idle.
-
-**Done when:** scoring is unit-tested against fixed clocks, and the endpoint's
-`unknown` case is explicit in both tests and response shape.
+1. Created `app/attention_scoring.py` implementing `calculate_channel_attention_score` and `build_attention_queue`.
+   - Computes deterministic score and factor breakdown at request time without persisting score or rank to disk.
+   - Evaluates eligibility gates: operator config (`attention_active`, `base_importance`, `urgency`, `deadline`, `blocking`, `boost`), snoozed status, busy status, and actionable attention state.
+   - Categorizes items into explicit categories: `ranked`, `busy`, `unknown`, `unconfigured`, `idle`, `snoozed`, `inactive`.
+   - Ranks `ranked` items 1..N by total score descending; busy items sorted by working time ascending (longest busy first).
+2. Added `GET /api/attention/queue` endpoint to `app/main.py` supplying channel attention queue with factor breakdown and optional `now` timestamp for testing.
+3. Addressed Claude's U-10a remediation in `app/task_supervisor.py`: non-busy task aggregation prefers the oldest actionable task (`needs_review`, `needs_decision`, `needs_help`) so waiting age reflects earliest unmet obligation.
+4. Added unit test suite `tests/test_attention_scoring.py` (103 total Python tests passing).
 
 #### U-10c. Channel rail integration
 

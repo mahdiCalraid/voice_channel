@@ -134,15 +134,23 @@ class TaskSupervisor:
                     "active_task_count": len(active_tasks),
                 }
             
-            # Sort non-busy tasks by updated_at descending
-            sorted_tasks = sorted(channel_tasks, key=lambda t: t.updated_at, reverse=True)
-            latest = sorted_tasks[0]
+            # Among non-busy tasks, prefer the oldest task in an actionable state (NEEDS_REVIEW, NEEDS_DECISION, NEEDS_HELP)
+            # so the waiting age reflects the earliest unmet obligation. Fall back to newest task if none is actionable.
+            actionable_states = {AttentionState.NEEDS_REVIEW, AttentionState.NEEDS_DECISION, AttentionState.NEEDS_HELP}
+            actionable_tasks = [t for t in channel_tasks if t.attention_state in actionable_states]
+            if actionable_tasks:
+                actionable_tasks.sort(key=lambda t: t.ready_since if t.ready_since is not None else t.updated_at)
+                target = actionable_tasks[0]
+            else:
+                sorted_tasks = sorted(channel_tasks, key=lambda t: t.updated_at, reverse=True)
+                target = sorted_tasks[0]
+
             return {
                 "room_id": room_id,
                 "is_busy": False,
                 "working_since": None,
-                "attention_state": latest.attention_state,
-                "ready_since": latest.ready_since,
+                "attention_state": target.attention_state,
+                "ready_since": target.ready_since,
                 "active_task_count": 0,
             }
 
