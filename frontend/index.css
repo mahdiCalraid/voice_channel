@@ -1007,8 +1007,37 @@ body {
 }
 
 .attention-modal-card {
-    max-width: 520px;
+    max-width: 680px;
     width: 90%;
+}
+
+.attention-modal-card .modal-body {
+    padding: 2rem;
+}
+
+.attention-modal-card #attention-settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.6rem;
+}
+
+.attention-modal-card .settings-grid {
+    gap: 1.4rem;
+}
+
+.attention-modal-card .setting-group {
+    gap: 0.75rem;
+}
+
+.attention-modal-card .setting-group.toggle-group {
+    min-height: 54px;
+    padding: 0.7rem 0;
+}
+
+.attention-modal-card .setting-select,
+.attention-modal-card .setting-input {
+    min-height: 50px;
+    padding: 0.8rem 0.9rem;
 }
 
 /* Markdown styling inside chat-body */
@@ -1266,15 +1295,61 @@ body {
 
 /* 1. Left Channels Sidebar (Telegram Style) */
 .channels-sidebar {
-    width: 280px;
-    min-width: 280px;
+    --channels-sidebar-width: 300px;
+    flex: 0 0 var(--channels-sidebar-width);
+    width: var(--channels-sidebar-width);
+    min-width: var(--channels-sidebar-width);
     height: 100%;
     background: rgba(13, 17, 28, 0.95);
     border-right: 1px solid var(--card-border);
     display: flex;
     flex-direction: column;
     z-index: 20;
-    transition: transform 0.3s ease;
+    transition: transform 0.24s ease, margin-left 0.24s ease;
+}
+
+.channels-sidebar.collapsed {
+    margin-left: calc(-1 * var(--channels-sidebar-width));
+    transform: translateX(-100%);
+}
+
+.channels-resize-handle {
+    position: relative;
+    flex: 0 0 10px;
+    width: 10px;
+    cursor: col-resize;
+    touch-action: none;
+    background: rgba(13, 17, 28, 0.9);
+    border-right: 1px solid rgba(255, 255, 255, 0.07);
+    outline: none;
+    z-index: 21;
+}
+
+.channels-sidebar.collapsed + .channels-resize-handle {
+    display: none;
+}
+
+.channels-resize-grip {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 3px;
+    height: min(96px, 28%);
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.45);
+    transform: translate(-50%, -50%);
+}
+
+.channels-resize-handle:hover .channels-resize-grip,
+.channels-resize-handle:focus-visible .channels-resize-grip,
+body.is-resizing-channels .channels-resize-grip {
+    background: var(--primary);
+    box-shadow: 0 0 12px var(--primary-glow);
+}
+
+body.is-resizing-channels {
+    cursor: col-resize;
+    user-select: none;
 }
 
 .sidebar-header {
@@ -1364,6 +1439,40 @@ body {
     padding: 0 0.5rem 1rem;
 }
 
+.sidebar-footer-menu {
+    flex: 0 0 auto;
+    padding: 0.65rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    background: rgba(9, 13, 24, 0.72);
+}
+
+.sidebar-menu-button {
+    width: 100%;
+    min-height: 44px;
+    padding: 0.65rem 0.8rem;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font: inherit;
+    font-size: calc(var(--system-font-size) * 0.86);
+    text-align: left;
+    cursor: pointer;
+}
+
+.sidebar-menu-button:hover,
+.sidebar-menu-button:focus-visible {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-main);
+    outline: none;
+}
+
 .channel-item {
     display: flex;
     align-items: center;
@@ -1449,8 +1558,8 @@ body {
     gap: 0.75rem;
 }
 
-.sidebar-toggle-mobile {
-    display: none;
+.sidebar-toggle {
+    display: inline-flex;
 }
 
 .room-hash {
@@ -1768,6 +1877,9 @@ body.is-resizing-narrator {
 }
 
 @media (max-width: 768px) {
+    .channels-resize-handle {
+        display: none;
+    }
     .channels-sidebar {
         position: absolute;
         left: 0;
@@ -1777,9 +1889,7 @@ body.is-resizing-narrator {
     }
     .channels-sidebar.mobile-open {
         transform: translateX(0);
-    }
-    .sidebar-toggle-mobile {
-        display: flex;
+        margin-left: 0;
     }
     .status-chips-inline {
         display: none;

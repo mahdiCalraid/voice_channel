@@ -210,6 +210,7 @@ def build_attention_queue(
         queue_items.append({
             "channel_name": cname,
             "room_id": room_id,
+            "configured": entry is not None,
             "queue_category": category,
             "rank": None,
             "score": score,
@@ -224,30 +225,18 @@ def build_attention_queue(
             "factors": factors,
         })
 
-    # Sort rules:
-    # 1. 'ranked' items first, ordered by score DESCENDING
-    # 2. 'busy' items next, ordered by working_since ASCENDING (longest working first)
-    # 3. 'unknown' / 'unconfigured' next
-    # 4. 'idle' / 'snoozed' / 'inactive' last
-    category_priority = {
-        "ranked": 1,
-        "busy": 2,
-        "unknown": 3,
-        "unconfigured": 4,
-        "idle": 5,
-        "snoozed": 6,
-        "inactive": 7,
-    }
-
     def sort_key(item: Dict[str, Any]):
-        cat = item["queue_category"]
-        prio = category_priority.get(cat, 99)
-        if cat == "ranked":
-            return (prio, -(item["score"] or 0.0), item["channel_name"])
-        elif cat == "busy":
-            return (prio, (item["working_since"] or 0.0), item["channel_name"])
-        else:
-            return (prio, 0.0, item["channel_name"])
+        configured_priority = 0 if item["configured"] else 1
+        has_score_priority = 0 if item["score"] is not None else 1
+        score_priority = -(item["score"] or 0.0)
+        activity_priority = -(item["last_activity_at"] or 0.0)
+        return (
+            configured_priority,
+            has_score_priority,
+            score_priority,
+            activity_priority,
+            item["channel_name"].lower(),
+        )
 
     queue_items.sort(key=sort_key)
 

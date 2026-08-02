@@ -40,17 +40,42 @@
                 </div>
             </div>
 
+            <div class="sidebar-footer-menu" aria-label="Channel sidebar menu">
+                <button class="sidebar-menu-button" id="btn-open-settings" type="button">
+                    <span class="material-symbols-rounded" aria-hidden="true">settings</span>
+                    <span>Settings</span>
+                </button>
+                <button class="sidebar-menu-button" id="btn-collapse-channels" type="button">
+                    <span class="material-symbols-rounded" aria-hidden="true">left_panel_close</span>
+                    <span>Close sidebar</span>
+                </button>
+            </div>
+
             <!-- Hidden select kept for backward compatibility with tests/helpers if needed -->
             <select id="room-select" style="display: none;"></select>
         </aside>
+
+        <div
+            class="channels-resize-handle"
+            id="channels-resize-handle"
+            role="separator"
+            aria-label="Resize channel sidebar"
+            aria-orientation="vertical"
+            aria-valuemin="260"
+            aria-valuemax="420"
+            tabindex="0"
+            title="Drag to resize the channel sidebar"
+        >
+            <span class="channels-resize-grip" aria-hidden="true"></span>
+        </div>
 
         <!-- 2. Center Main Workspace (Header, Transcript, Composer) -->
         <main class="main-workspace">
             <!-- Workspace Header -->
             <header class="workspace-header">
                 <div class="header-room-info">
-                    <button class="btn btn-icon btn-sm sidebar-toggle-mobile" id="btn-toggle-sidebar" title="Toggle Channel List">
-                        <span class="material-symbols-rounded">menu</span>
+                    <button class="btn btn-icon btn-sm sidebar-toggle" id="btn-toggle-sidebar" title="Toggle channel sidebar" aria-expanded="true">
+                        <span class="material-symbols-rounded">left_panel_open</span>
                     </button>
                     <span class="material-symbols-rounded room-hash">tag</span>
                     <div class="room-details">
@@ -76,9 +101,6 @@
                         <span class="btn-label">Narrator</span>
                     </button>
 
-                    <button class="btn btn-secondary btn-icon" id="btn-open-settings" title="Console Settings">
-                        <span class="material-symbols-rounded">settings</span>
-                    </button>
                 </div>
             </header>
 

@@ -60,6 +60,8 @@ const btnCloseNarrator = document.getElementById("btn-close-narrator");
 const btnToggleSidebar = document.getElementById("btn-toggle-sidebar");
 const narratorSidebar = document.getElementById("narrator-sidebar");
 const channelsSidebar = document.getElementById("channels-sidebar");
+const channelsResizeHandle = document.getElementById("channels-resize-handle");
+const btnCollapseChannels = document.getElementById("btn-collapse-channels");
 const transcriptFeedContainer = document.querySelector(".transcript-feed-container");
 const composerContainer = document.getElementById("composer-container");
 const composerResizeHandle = document.getElementById("composer-resize-handle");
@@ -85,6 +87,13 @@ const MIN_NARRATOR_WIDTH_PX = 340;
 const MIN_CONVERSATION_WIDTH_PX = 380;
 const NARRATOR_KEYBOARD_STEP_PX = 24;
 let narratorResizeState = null;
+
+const CHANNELS_WIDTH_STORAGE_KEY = "vc_channels_width_px";
+const CHANNELS_OPEN_STORAGE_KEY = "vc_channels_open";
+const MIN_CHANNELS_WIDTH_PX = 260;
+const MAX_CHANNELS_WIDTH_PX = 420;
+const CHANNELS_KEYBOARD_STEP_PX = 20;
+let channelsResizeState = null;
 
 // Settings Management (U-01, U-02, U-03, U-05)
 const SETTINGS_VERSION = 3;
@@ -731,12 +740,157 @@ function initNarratorResizer() {
     }
 }
 
+function currentChannelsWidth() {
+    if (!channelsSidebar) return MIN_CHANNELS_WIDTH_PX;
+    const inlineWidth = parseFloat(
+        channelsSidebar.style && channelsSidebar.style.getPropertyValue
+            ? channelsSidebar.style.getPropertyValue("--channels-sidebar-width")
+            : ""
+    );
+    return Number.isFinite(inlineWidth) && inlineWidth > 0
+        ? inlineWidth
+        : (elementWidth(channelsSidebar) || 300);
+}
+
+function setChannelsWidth(requestedWidth, persist = true) {
+    if (!channelsSidebar) return null;
+    const numericWidth = Number(requestedWidth);
+    const width = Math.round(Math.min(MAX_CHANNELS_WIDTH_PX, Math.max(
+        MIN_CHANNELS_WIDTH_PX,
+        Number.isFinite(numericWidth) ? numericWidth : currentChannelsWidth()
+    )));
+    channelsSidebar.style.setProperty("--channels-sidebar-width", width + "px");
+    if (channelsResizeHandle) {
+        channelsResizeHandle.setAttribute("aria-valuemin", String(MIN_CHANNELS_WIDTH_PX));
+        channelsResizeHandle.setAttribute("aria-valuemax", String(MAX_CHANNELS_WIDTH_PX));
+        channelsResizeHandle.setAttribute("aria-valuenow", String(width));
+    }
+    if (persist) {
+        try {
+            localStorage.setItem(CHANNELS_WIDTH_STORAGE_KEY, String(width));
+        } catch (e) {
+            console.warn("Could not persist channel sidebar width:", e);
+        }
+    }
+    return width;
+}
+
+function beginChannelsResize(event) {
+    if (!channelsSidebar || !channelsResizeHandle) return;
+    if (typeof event.button === "number" && event.button !== 0) return;
+    channelsResizeState = {
+        pointerId: event.pointerId,
+        startX: Number(event.clientX || 0),
+        startWidth: currentChannelsWidth()
+    };
+    document.body.classList.add("is-resizing-channels");
+    if (typeof channelsResizeHandle.setPointerCapture === "function" && event.pointerId != null) {
+        channelsResizeHandle.setPointerCapture(event.pointerId);
+    }
+    if (typeof event.preventDefault === "function") event.preventDefault();
+}
+
+function resizeChannelsFromPointer(event) {
+    if (!channelsResizeState) return;
+    if (
+        channelsResizeState.pointerId != null
+        && event.pointerId != null
+        && event.pointerId !== channelsResizeState.pointerId
+    ) return;
+    const delta = Number(event.clientX || 0) - channelsResizeState.startX;
+    setChannelsWidth(channelsResizeState.startWidth + delta, false);
+    if (typeof event.preventDefault === "function") event.preventDefault();
+}
+
+function finishChannelsResize(event = {}) {
+    if (!channelsResizeState) return;
+    if (
+        channelsResizeState.pointerId != null
+        && event.pointerId != null
+        && event.pointerId !== channelsResizeState.pointerId
+    ) return;
+    channelsResizeState = null;
+    document.body.classList.remove("is-resizing-channels");
+    setChannelsWidth(currentChannelsWidth(), true);
+}
+
+function resizeChannelsFromKeyboard(event) {
+    let nextWidth = null;
+    if (event.key === "ArrowLeft") nextWidth = currentChannelsWidth() - CHANNELS_KEYBOARD_STEP_PX;
+    if (event.key === "ArrowRight") nextWidth = currentChannelsWidth() + CHANNELS_KEYBOARD_STEP_PX;
+    if (event.key === "Home") nextWidth = MIN_CHANNELS_WIDTH_PX;
+    if (event.key === "End") nextWidth = MAX_CHANNELS_WIDTH_PX;
+    if (nextWidth === null) return;
+    setChannelsWidth(nextWidth, true);
+    if (typeof event.preventDefault === "function") event.preventDefault();
+}
+
+function setChannelsSidebarOpen(isOpen, persist = true) {
+    if (!channelsSidebar) return;
+    channelsSidebar.classList.toggle("collapsed", !isOpen);
+    channelsSidebar.classList.toggle("mobile-open", isOpen);
+    if (btnToggleSidebar) {
+        btnToggleSidebar.setAttribute("aria-expanded", String(isOpen));
+        const icon = btnToggleSidebar.querySelector(".material-symbols-rounded");
+        if (icon) icon.innerText = isOpen ? "left_panel_close" : "left_panel_open";
+    }
+    if (persist) {
+        try {
+            localStorage.setItem(CHANNELS_OPEN_STORAGE_KEY, String(isOpen));
+        } catch (e) {
+            console.warn("Could not persist channel sidebar state:", e);
+        }
+    }
+}
+
+function isChannelsSidebarOpen() {
+    const mobileViewport = viewportWidth() > 0 && viewportWidth() <= 768;
+    return mobileViewport
+        ? channelsSidebar.classList.contains("mobile-open")
+        : !channelsSidebar.classList.contains("collapsed");
+}
+
+function toggleChannelsSidebar() {
+    setChannelsSidebarOpen(!isChannelsSidebarOpen());
+}
+
+function initChannelsSidebar() {
+    if (!channelsSidebar) return;
+    if (btnToggleSidebar && btnToggleSidebar.dataset.sidebarInitialized !== "true") {
+        btnToggleSidebar.dataset.sidebarInitialized = "true";
+        btnToggleSidebar.addEventListener("click", toggleChannelsSidebar);
+    }
+    if (btnCollapseChannels && btnCollapseChannels.dataset.sidebarInitialized !== "true") {
+        btnCollapseChannels.dataset.sidebarInitialized = "true";
+        btnCollapseChannels.addEventListener("click", () => setChannelsSidebarOpen(false));
+    }
+    if (channelsResizeHandle && channelsResizeHandle.dataset.resizeInitialized !== "true") {
+        channelsResizeHandle.dataset.resizeInitialized = "true";
+        channelsResizeHandle.addEventListener("pointerdown", beginChannelsResize);
+        channelsResizeHandle.addEventListener("keydown", resizeChannelsFromKeyboard);
+        document.addEventListener("pointermove", resizeChannelsFromPointer);
+        document.addEventListener("pointerup", finishChannelsResize);
+        document.addEventListener("pointercancel", finishChannelsResize);
+    }
+    try {
+        const savedWidth = Number(localStorage.getItem(CHANNELS_WIDTH_STORAGE_KEY));
+        setChannelsWidth(savedWidth > 0 ? savedWidth : currentChannelsWidth(), false);
+        const storedOpen = localStorage.getItem(CHANNELS_OPEN_STORAGE_KEY);
+        const mobileViewport = viewportWidth() > 0 && viewportWidth() <= 768;
+        setChannelsSidebarOpen(storedOpen === null ? !mobileViewport : storedOpen !== "false", false);
+    } catch (e) {
+        setChannelsWidth(currentChannelsWidth(), false);
+        setChannelsSidebarOpen(true, false);
+    }
+}
+
 // Initialize application
 function init() {
     applySettings();
     initSettingsModal();
     initComposerResizer();
     initNarratorResizer();
+    initChannelsSidebar();
     activeRoomId = localStorage.getItem("activeRoomId");
 
     initNarratorSidebarState();
@@ -809,13 +963,6 @@ function init() {
         btnCloseNarrator.addEventListener("click", closeNarratorSidebar);
     }
 
-    // Mobile Sidebar Toggle
-    if (btnToggleSidebar) {
-        btnToggleSidebar.addEventListener("click", () => {
-            channelsSidebar.classList.toggle("mobile-open");
-        });
-    }
-    
     // Setup sources toggle listener
     if (sourcesToggle) {
         sourcesToggle.addEventListener("click", () => {
@@ -1413,31 +1560,44 @@ function renderChannelsList(filterText = "") {
         }
     });
 
-    const catPriority = { ranked: 1, busy: 2, unknown: 3, unconfigured: 4, idle: 5, snoozed: 6, inactive: 7 };
+    const activityTimestamp = (room, queueItem) => {
+        const raw = queueItem && queueItem.last_activity_at != null
+            ? queueItem.last_activity_at
+            : (room._updatedAt || room.lm || room.updatedAt || 0);
+        if (typeof raw === "number") return raw > 1e12 ? raw : raw * 1000;
+        const parsed = new Date(raw || 0).getTime();
+        return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const isConfigured = queueItem => Boolean(
+        queueItem && (
+            queueItem.configured === true
+            || (
+                queueItem.configured == null
+                && queueItem.queue_category !== "unconfigured"
+                && queueItem.status !== "unconfigured"
+            )
+        )
+    );
 
     const sortedRooms = [...roomsList].sort((a, b) => {
         const qa = queueMap.get((a.name || "").toLowerCase());
         const qb = queueMap.get((b.name || "").toLowerCase());
+        const configuredA = isConfigured(qa);
+        const configuredB = isConfigured(qb);
+        if (configuredA !== configuredB) return configuredA ? -1 : 1;
 
-        if (qa || qb) {
-            const catA = qa ? qa.queue_category : "unknown";
-            const catB = qb ? qb.queue_category : "unknown";
-            const prioA = catPriority[catA] || 99;
-            const prioB = catPriority[catB] || 99;
-
-            if (prioA !== prioB) return prioA - prioB;
-
-            if (catA === "ranked") {
-                return (qb.score || 0) - (qa.score || 0);
-            }
-            if (catA === "busy") {
-                return (qa.working_since || 0) - (qb.working_since || 0);
-            }
+        const scoreA = qa && qa.score != null && Number.isFinite(Number(qa.score)) ? Number(qa.score) : null;
+        const scoreB = qb && qb.score != null && Number.isFinite(Number(qb.score)) ? Number(qb.score) : null;
+        if (scoreA !== null || scoreB !== null) {
+            if (scoreA === null) return 1;
+            if (scoreB === null) return -1;
+            if (scoreA !== scoreB) return scoreB - scoreA;
         }
 
-        const timeA = new Date(a._updatedAt || a.lm || a.updatedAt || 0).getTime();
-        const timeB = new Date(b._updatedAt || b.lm || b.updatedAt || 0).getTime();
-        return timeB - timeA;
+        const timeDifference = activityTimestamp(b, qb) - activityTimestamp(a, qa);
+        if (timeDifference !== 0) return timeDifference;
+        return (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" });
     });
 
     const filtered = sortedRooms.filter(r => (r.name || "").toLowerCase().includes(term));
@@ -1465,14 +1625,7 @@ function renderChannelsList(filterText = "") {
                 const elapsedStr = formatElapsedSeconds(qitem.working_elapsed_seconds);
                 badgeHTML = `<span class="attn-badge attn-badge-busy" title="Agent is currently working">Busy ${elapsedStr}</span>`;
             } else if (category === "ranked") {
-                const scoreDisplay = qitem.score != null ? Math.round(qitem.score) : "";
-                const rankDisplay = qitem.rank != null ? `#${qitem.rank}` : "";
-                let factorTooltip = "";
-                if (qitem.factors) {
-                    const f = qitem.factors;
-                    factorTooltip = `Rank #${qitem.rank} · Score ${qitem.score} (Base: ${f.base_importance_points}, Urgency: ${f.urgency_points}, Wait: ${f.waiting_age_points}, Deadline: ${f.deadline_points}, Blocking: ${f.blocking_points}, Boost: ${f.boost_points})`;
-                }
-                badgeHTML = `<span class="attn-badge attn-badge-ranked" title="${escapeHTML(factorTooltip)}">${rankDisplay} · ${scoreDisplay}</span>`;
+                badgeHTML = "";
             } else if (category === "snoozed") {
                 badgeHTML = `<span class="attn-badge attn-badge-snoozed" title="Snoozed">Snoozed</span>`;
             } else if (category === "unconfigured") {

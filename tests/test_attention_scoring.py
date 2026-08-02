@@ -149,11 +149,45 @@ class TestAttentionScoring(unittest.TestCase):
         self.assertEqual(item0["rank"], 1)
         self.assertIsNotNone(item0["score"])
 
-        item1 = queue[1]
-        self.assertEqual(item1["channel_name"], "JobHunting")
-        self.assertEqual(item1["queue_category"], "busy")
-        self.assertIsNone(item1["rank"])
-        self.assertIsNone(item1["score"])
+        self.assertTrue(item0["configured"])
+        self.assertEqual(queue[1]["channel_name"], "disabled_channel")
+        self.assertEqual(queue[2]["channel_name"], "JobHunting")
+        self.assertEqual(queue[2]["queue_category"], "busy")
+        self.assertIsNone(queue[2]["rank"])
+        self.assertIsNone(queue[2]["score"])
+        self.assertEqual(queue[3]["channel_name"], "unconfigured_room")
+        self.assertFalse(queue[3]["configured"])
+
+    def test_queue_uses_recent_activity_to_break_equal_scores(self):
+        now = 1000000.0
+        config = ChannelAttentionConfig(channels={
+            "older": ChannelAttentionEntry(base_importance=3, urgency=UrgencyLevel.NORMAL),
+            "newer": ChannelAttentionEntry(base_importance=3, urgency=UrgencyLevel.NORMAL),
+        })
+        registry = [
+            {"channel_name": "older", "active": True},
+            {"channel_name": "newer", "active": True},
+        ]
+        summaries = {
+            name: {
+                "room_id": name,
+                "is_busy": False,
+                "attention_state": AttentionState.NEEDS_REVIEW,
+                "ready_since": now - 60.0,
+            }
+            for name in ("older", "newer")
+        }
+
+        queue = build_attention_queue(
+            config,
+            registry,
+            summaries,
+            {"older": now - 500.0, "newer": now - 10.0},
+            now=now,
+        )
+
+        self.assertEqual([item["channel_name"] for item in queue], ["newer", "older"])
+        self.assertEqual(queue[0]["score"], queue[1]["score"])
 
     def test_get_attention_queue_endpoint(self):
         client = TestClient(app)

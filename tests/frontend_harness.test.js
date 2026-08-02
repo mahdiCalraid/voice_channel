@@ -11,7 +11,22 @@ function classList() {
         add: (...items) => items.forEach(item => values.add(item)),
         remove: (...items) => items.forEach(item => values.delete(item)),
         contains: item => values.has(item),
-        toggle: item => values.has(item) ? values.delete(item) : values.add(item),
+        toggle: (item, force) => {
+            if (force === true) {
+                values.add(item);
+                return true;
+            }
+            if (force === false) {
+                values.delete(item);
+                return false;
+            }
+            if (values.has(item)) {
+                values.delete(item);
+                return false;
+            }
+            values.add(item);
+            return true;
+        },
     };
 }
 
@@ -334,6 +349,60 @@ test("narrator divider clamps, persists, and keeps the conversation pane visible
             .getPropertyValue("--narrator-sidebar-width"),
         "520px"
     );
+});
+
+test("channel sidebar divider clamps, persists, and restores a bounded width", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        channelsSidebar.offsetWidth = 300;
+        initChannelsSidebar();
+    `, app.sandbox);
+    const sidebar = app.sandbox.document.getElementById("channels-sidebar");
+    const handle = app.sandbox.document.getElementById("channels-resize-handle");
+
+    assert.equal(typeof handle.listeners.pointerdown, "function");
+    assert.equal(typeof handle.listeners.keydown, "function");
+    assert.equal(app.sandbox.setChannelsWidth(999, true), 420);
+    assert.equal(sidebar.style.getPropertyValue("--channels-sidebar-width"), "420px");
+    assert.equal(app.storage.vc_channels_width_px, "420");
+    assert.equal(app.sandbox.setChannelsWidth(1, true), 260);
+
+    handle.listeners.pointerdown({
+        button: 0,
+        pointerId: 9,
+        clientX: 260,
+        preventDefault: () => {}
+    });
+    app.documentListeners.pointermove({ pointerId: 9, clientX: 340, preventDefault: () => {} });
+    app.documentListeners.pointerup({ pointerId: 9 });
+    assert.equal(sidebar.style.getPropertyValue("--channels-sidebar-width"), "340px");
+    assert.equal(app.storage.vc_channels_width_px, "340");
+
+    handle.listeners.keydown({ key: "End", preventDefault: () => {} });
+    assert.equal(sidebar.style.getPropertyValue("--channels-sidebar-width"), "420px");
+
+    const restored = loadFrontend({ storage: { vc_channels_width_px: "375" } });
+    vm.runInContext("initChannelsSidebar();", restored.sandbox);
+    assert.equal(
+        restored.sandbox.document.getElementById("channels-sidebar").style
+            .getPropertyValue("--channels-sidebar-width"),
+        "375px"
+    );
+});
+
+test("channel sidebar bottom control collapses and header control reopens it", () => {
+    const app = loadFrontend();
+    vm.runInContext("initChannelsSidebar();", app.sandbox);
+    const sidebar = app.sandbox.document.getElementById("channels-sidebar");
+
+    app.sandbox.document.getElementById("btn-collapse-channels").listeners.click();
+    assert.equal(sidebar.classList.contains("collapsed"), true);
+    assert.equal(app.storage.vc_channels_open, "false");
+
+    app.sandbox.document.getElementById("btn-toggle-sidebar").listeners.click();
+    assert.equal(sidebar.classList.contains("collapsed"), false);
+    assert.equal(app.storage.vc_channels_open, "true");
+    assert.equal(app.sandbox.document.getElementById("btn-toggle-sidebar").getAttribute("aria-expanded"), "true");
 });
 
 test("stale room history response is ignored when user switches rooms mid-flight", async () => {
@@ -1048,7 +1117,7 @@ test("a transient response-assistant failure is retried from the next poll after
     );
 });
 
-test("attention rail renders busy items with elapsed time and ranked items with score badges", async () => {
+test("attention rail uses position for ranked priority without printing rank or score", async () => {
     const app = loadFrontend();
     vm.runInContext(`
         roomsList = [
@@ -1091,8 +1160,8 @@ test("attention rail renders busy items with elapsed time and ranked items with 
 
     await app.sandbox.fetchAttentionQueue(true);
     const html = app.sandbox.document.getElementById("channels-list").innerHTML;
-    assert.ok(html.includes("attn-badge-ranked"));
-    assert.ok(html.includes("#1 · 125"));
+    assert.equal(html.includes("attn-badge-ranked"), false);
+    assert.equal(html.includes("#1 · 125"), false);
     assert.ok(html.includes("attn-badge-busy"));
     assert.ok(html.includes("Busy 5m"));
     assert.ok(html.includes("attn-badge-unconfigured"));
@@ -1158,7 +1227,39 @@ test("pending attention queue applies immediately when the composer clears", asy
     assert.equal(vm.runInContext("pendingAttentionQueueData", app.sandbox), null);
     assert.equal(vm.runInContext("attentionQueueData[0].score", app.sandbox), 200);
     assert.equal(app.sandbox.document.getElementById("queue-update-notice").style.display, "none");
-    assert.ok(app.sandbox.document.getElementById("channels-list").innerHTML.includes("#1 · 200"));
+    assert.equal(app.sandbox.document.getElementById("channels-list").innerHTML.includes("#1 · 200"), false);
+});
+
+test("attention rail sorts configured channels by score then recent activity", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        roomsList = [
+            { id: "u-new", name: "unconfigured_new", lm: "2026-08-02T12:00:00Z" },
+            { id: "c-old", name: "configured_old", lm: "2026-08-01T08:00:00Z" },
+            { id: "c-new", name: "configured_new", lm: "2026-08-02T10:00:00Z" },
+            { id: "c-idle", name: "configured_idle", lm: "2026-08-02T11:00:00Z" },
+            { id: "u-old", name: "unconfigured_old", lm: "2026-07-30T08:00:00Z" }
+        ];
+        attentionQueueData = [
+            { channel_name: "configured_old", configured: true, queue_category: "ranked", score: 100, last_activity_at: 100 },
+            { channel_name: "configured_new", configured: true, queue_category: "ranked", score: 100, last_activity_at: 200 },
+            { channel_name: "configured_idle", configured: true, queue_category: "idle", score: null, last_activity_at: 300 },
+            { channel_name: "unconfigured_new", configured: false, queue_category: "unconfigured", score: null, last_activity_at: 500 },
+            { channel_name: "unconfigured_old", configured: false, queue_category: "unconfigured", score: null, last_activity_at: 400 }
+        ];
+        renderChannelsList();
+    `, app.sandbox);
+
+    const html = app.sandbox.document.getElementById("channels-list").innerHTML;
+    const order = [
+        "configured_new",
+        "configured_old",
+        "configured_idle",
+        "unconfigured_new",
+        "unconfigured_old"
+    ].map(name => html.indexOf(`data-channel-name="${name}"`));
+    assert.ok(order.every(index => index >= 0));
+    assert.deepEqual([...order].sort((a, b) => a - b), order);
 });
 
 test("confirmation gate freezes and then releases a pending attention queue", async () => {
@@ -1252,6 +1353,8 @@ test("attention settings modal is a top-level overlay, not nested inside the hid
 
     const stack = [];
     let ancestorsOfAttentionModal = null;
+    let ancestorsOfSettingsButton = null;
+    let ancestorsOfChannelsResizeHandle = null;
     let match;
     while ((match = tagPattern.exec(htmlContent)) !== null) {
         const [, closing, tagName, attrs, selfClosing] = match;
@@ -1266,6 +1369,12 @@ test("attention settings modal is a top-level overlay, not nested inside the hid
         if (id === "attention-settings-modal" && ancestorsOfAttentionModal === null) {
             ancestorsOfAttentionModal = stack.map(e => e.id).filter(Boolean);
         }
+        if (id === "btn-open-settings" && ancestorsOfSettingsButton === null) {
+            ancestorsOfSettingsButton = stack.map(e => e.id).filter(Boolean);
+        }
+        if (id === "channels-resize-handle" && ancestorsOfChannelsResizeHandle === null) {
+            ancestorsOfChannelsResizeHandle = stack.map(e => e.id).filter(Boolean);
+        }
         if (!voidTags.has(tag) && !selfClosing) stack.push({ tag, id });
     }
 
@@ -1274,5 +1383,10 @@ test("attention settings modal is a top-level overlay, not nested inside the hid
         !ancestorsOfAttentionModal.includes("settings-modal"),
         "attention-settings-modal must not be nested inside #settings-modal, which stays display:none and would hide it",
     );
+    assert.ok(
+        ancestorsOfSettingsButton.includes("channels-sidebar"),
+        "console settings must remain in the channel sidebar footer",
+    );
+    assert.notEqual(ancestorsOfChannelsResizeHandle, null, "channel sidebar resize handle must exist");
     assert.deepEqual(stack.map(e => e.id).filter(Boolean), [], "index.html must have balanced tags at EOF");
 });
