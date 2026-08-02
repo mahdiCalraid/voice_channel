@@ -343,22 +343,19 @@ Status: `PLANNED` — slices below land in order.
 3. Addressed Claude's U-10a remediation in `app/task_supervisor.py`: non-busy task aggregation prefers the oldest actionable task (`needs_review`, `needs_decision`, `needs_help`) so waiting age reflects earliest unmet obligation.
 4. Added unit test suite `tests/test_attention_scoring.py` (103 total Python tests passing).
 
-#### U-10c. Channel rail integration
+#### U-10c. Channel rail integration & attention config UI
 
-**Do:**
+**Status**: `VERIFIED` (2026-08-01)
 
-1. Replace the recency sort in `renderChannelsList` (`frontend/index.js:1102`)
-   with attention ordering: busy channels in their own section, ranked channels
-   below by score descending.
-2. Show elapsed time on busy rows and the score badge on ranked rows, with the
-   factor breakdown available on hover/expand.
-3. Freeze rail order while Ed is mid-turn in a channel; show a subtle
-   "queue changed" affordance and re-rank at a clean boundary.
-4. Editable config form bound to `channel_attention_config.json`.
-
-**Done when:** the rail reorders correctly against a seeded queue response, order
-does not shift under the cursor mid-turn, and every displayed number is
-explainable from its breakdown.
+1. Created `GET /api/attention/config` and `PUT /api/attention/config` endpoints in `app/main.py`.
+   - Atomically updates channel attention configuration with schema validation (base_importance 1..5, urgency, blocking, boost, snooze, deadline).
+2. Integrated attention queue rendering & polling in `frontend/index.js`, `frontend/index.html`, and `frontend/index.css`.
+   - **Busy channels** render `Busy {elapsed}` badge (no score badge).
+   - **Ranked channels** render `#rank · {score}` badge with factor breakdown tooltip.
+   - **Unconfigured / Unknown channels** render `Unconfigured` or `?` badge without fake score.
+   - **Mid-turn Preemption Freeze**: Active composer input or confirmation gate freezes rail re-sorting and displays `[Queue updated · Click to refresh]` notice to prevent rail shifting under cursor.
+   - **Attention Settings Modal**: Form for editing attention parameters for any channel, persisting to disk via `PUT /api/attention/config`.
+3. Added unit tests in `tests/test_attention_endpoint.py` and `tests/frontend_harness.test.js` (107 Python tests, 31 Node tests passing 100%).
 
 Voice commands for the scheduler are explicitly **out of scope** for U-10.
 

@@ -1046,3 +1046,82 @@ test("a transient response-assistant failure is retried from the next poll after
         "agent-retry"
     );
 });
+
+test("attention rail renders busy items with elapsed time and ranked items with score badges", async () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        roomsList = [
+            { id: "r1", name: "voice_channel" },
+            { id: "r2", name: "JobHunting" },
+            { id: "r3", name: "unconfigured_room" }
+        ];
+        activeRoomId = "r1";
+    `, app.sandbox);
+
+    app.sandbox.fetch = (url) => {
+        if (url === "/api/attention/queue") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    queue: [
+                        {
+                            channel_name: "voice_channel",
+                            queue_category: "ranked",
+                            rank: 1,
+                            score: 125.0,
+                            factors: { base_importance_points: 100 }
+                        },
+                        {
+                            channel_name: "JobHunting",
+                            queue_category: "busy",
+                            working_elapsed_seconds: 300
+                        },
+                        {
+                            channel_name: "unconfigured_room",
+                            queue_category: "unconfigured"
+                        }
+                    ]
+                })
+            });
+        }
+        throw new Error("Unexpected fetch URL: " + url);
+    };
+
+    await app.sandbox.fetchAttentionQueue(true);
+    const html = app.sandbox.document.getElementById("channels-list").innerHTML;
+    assert.ok(html.includes("attn-badge-ranked"));
+    assert.ok(html.includes("#1 · 125"));
+    assert.ok(html.includes("attn-badge-busy"));
+    assert.ok(html.includes("Busy 5m"));
+    assert.ok(html.includes("attn-badge-unconfigured"));
+});
+
+test("preemption freeze prevents rail re-sorting while mid-turn composer is active", async () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        roomsList = [{ id: "r1", name: "voice_channel" }];
+        activeRoomId = "r1";
+        commandInput.value = "Drafting instruction for agent...";
+    `, app.sandbox);
+
+    app.sandbox.fetch = (url) => {
+        if (url === "/api/attention/queue") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    queue: [{ channel_name: "voice_channel", queue_category: "ranked", rank: 1, score: 200 }]
+                })
+            });
+        }
+        throw new Error("Unexpected fetch URL: " + url);
+    };
+
+    await app.sandbox.fetchAttentionQueue(false);
+    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), true);
+    const noticeEl = app.sandbox.document.getElementById("queue-update-notice");
+    assert.ok(noticeEl);
+    assert.equal(noticeEl.style.display, "flex");
+});
+

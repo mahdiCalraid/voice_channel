@@ -45,7 +45,12 @@ from app.supervision_strategy import (
     read_project_context,
     resolve_channel_profile,
 )
-from app.attention_config import load_channel_attention_config
+from app.attention_config import (
+    ChannelAttentionConfig,
+    ChannelAttentionEntry,
+    load_channel_attention_config,
+    save_channel_attention_config,
+)
 from app.attention_scoring import build_attention_queue
 
 # Configure logging
@@ -914,6 +919,43 @@ async def get_attention_queue(now: Optional[float] = None):
         "timestamp": now_ts,
         "queue": queue,
     }
+
+@app.get("/api/attention/config")
+async def get_attention_config():
+    """GET /api/attention/config: Return current operator channel attention configuration."""
+    config = load_channel_attention_config()
+    return {
+        "success": True,
+        "config": config.model_dump() if hasattr(config, "model_dump") else config.dict(),
+    }
+
+@app.put("/api/attention/config")
+async def update_attention_config(payload: Dict[str, Any] = Body(...)):
+    """PUT /api/attention/config: Atomically update channel attention configuration for one or all channels."""
+    current_config = load_channel_attention_config()
+    
+    try:
+        if "channels" in payload and isinstance(payload["channels"], dict):
+            new_config = ChannelAttentionConfig.model_validate(payload) if hasattr(ChannelAttentionConfig, "model_validate") else ChannelAttentionConfig.parse_obj(payload)
+        elif "channel_name" in payload and "entry" in payload:
+            cname = payload["channel_name"]
+            entry_data = payload["entry"]
+            new_entry = ChannelAttentionEntry.model_validate(entry_data) if hasattr(ChannelAttentionEntry, "model_validate") else ChannelAttentionEntry.parse_obj(entry_data)
+            updated_channels = dict(current_config.channels)
+            updated_channels[cname] = new_entry
+            new_config = ChannelAttentionConfig(schema_version=current_config.schema_version, channels=updated_channels)
+        else:
+            raise ValueError("Payload must specify either 'channels' object or 'channel_name' and 'entry'.")
+            
+        save_channel_attention_config(new_config)
+        return {
+            "success": True,
+            "message": "Attention configuration saved cleanly.",
+            "config": new_config.model_dump() if hasattr(new_config, "model_dump") else new_config.dict(),
+        }
+    except Exception as err:
+        logger.warning(f"Failed to update channel attention config: {err}")
+        raise HTTPException(status_code=400, detail=str(err))
 
 @app.get("/api/history")
 async def get_history(

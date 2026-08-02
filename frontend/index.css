@@ -926,6 +926,91 @@ body {
     border-left: 3px solid #6366f1;
 }
 
+/* Channel Attention Rail & Badges (U-10c) */
+.queue-update-notice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.75rem;
+    margin: 0.5rem 0.75rem;
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: 8px;
+    color: #a5b4fc;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.queue-update-notice:hover {
+    background: rgba(99, 102, 241, 0.25);
+    border-color: rgba(99, 102, 241, 0.5);
+    color: #ffffff;
+}
+
+.channel-badges {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-left: auto;
+}
+
+.attn-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.15rem 0.4rem;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    line-height: 1;
+}
+
+.attn-badge-busy {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.attn-badge-ranked {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.attn-badge-unconfigured, .attn-badge-unknown {
+    background: rgba(107, 114, 128, 0.15);
+    color: #9ca3af;
+    border: 1px solid rgba(107, 114, 128, 0.25);
+}
+
+.attn-badge-snoozed, .attn-badge-idle, .attn-badge-inactive {
+    background: rgba(156, 163, 175, 0.1);
+    color: #6b7280;
+    border: 1px solid rgba(156, 163, 175, 0.2);
+}
+
+.btn-tune-channel {
+    opacity: 0.4;
+    transition: opacity 0.2s ease;
+    padding: 0.2rem;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.channel-item:hover .btn-tune-channel {
+    opacity: 1;
+    color: #a5b4fc;
+}
+
+.attention-modal-card {
+    max-width: 520px;
+    width: 90%;
+}
+
 /* Markdown styling inside chat-body */
 .chat-body h1, .chat-body h2, .chat-body h3 {
     margin-top: 0.5rem;

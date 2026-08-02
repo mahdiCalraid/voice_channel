@@ -955,6 +955,7 @@ async function loadRooms() {
                 localStorage.setItem("activeRoomId", activeRoomId);
             }
 
+            await fetchAttentionQueue(true);
             renderChannelsList();
             updateHeaderRoomInfo();
         } else {
@@ -1093,18 +1094,300 @@ function updateHeaderRoomInfo() {
     }
 }
 
+// Set up polling for status and transcript history every 5 seconds, attention queue every 15 seconds
+setInterval(checkStatus, 5000);
+setInterval(loadHistory, 5000);
+setInterval(fetchAttentionQueue, 15000);
+
+// Bind Event Listeners
+btnGenerateDigest.addEventListener("click", handleGenerateDigest);
+btnPlayPause.addEventListener("click", handlePlayPause);
+btnStop.addEventListener("click", handleStop);
+speedRange.addEventListener("input", handleSpeedChange);
+if (digestContent) {
+    digestContent.addEventListener("input", handleNarrationEdit);
+}
+updateNarrationPlayState();
+btnMic.addEventListener("click", toggleSpeechInput);
+btnPreSend.addEventListener("click", showConfirmation);
+btnCancelSend.addEventListener("click", hideConfirmation);
+btnConfirmSend.addEventListener("click", sendDraftedMessage);
+
+// Attention modal listeners
+const btnCloseAttn = document.getElementById("btn-close-attention-modal");
+const btnCancelAttn = document.getElementById("btn-cancel-attention-modal");
+const btnSaveAttn = document.getElementById("btn-save-attention-modal");
+if (btnCloseAttn) btnCloseAttn.addEventListener("click", closeAttentionSettingsModal);
+if (btnCancelAttn) btnCancelAttn.addEventListener("click", closeAttentionSettingsModal);
+if (btnSaveAttn) btnSaveAttn.addEventListener("click", saveAttentionSettings);
+
+if (commandInput) {
+    commandInput.addEventListener("input", (e) => {
+        if (activeRoomId) {
+            const state = getRoomState(activeRoomId);
+            state.draftText = e.target.value;
+            if (state.lastInsertedSuggestion && e.target.value !== state.lastInsertedSuggestion) {
+                state.lastInsertedSuggestion = null;
+            }
+            if (e.target.value.trim()) {
+                localStorage.setItem("vc_draft_" + activeRoomId, e.target.value);
+            } else {
+                localStorage.removeItem("vc_draft_" + activeRoomId);
+            }
+        }
+    });
+}
+
+if (roomSelect) {
+    roomSelect.addEventListener("change", (e) => {
+        selectRoom(e.target.value);
+    });
+}
+
+// Channel Search Filter
+if (channelSearchInput) {
+    channelSearchInput.addEventListener("input", (e) => {
+        renderChannelsList(e.target.value);
+    });
+}
+
+let attentionQueueData = [];
+let pendingAttentionQueueData = null;
+let queueHasPendingUpdate = false;
+
+function formatElapsedSeconds(sec) {
+    if (sec == null || isNaN(sec)) return "";
+    const totalSec = Math.max(0, Math.floor(sec));
+    if (totalSec < 60) return `${totalSec}s`;
+    const mins = Math.floor(totalSec / 60);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return `${hrs}h ${remMins}m`;
+}
+
+function isMidTurnActive() {
+    const rawInput = commandInput ? commandInput.value.trim() : "";
+    const confirmationVisible = typeof confirmationCard !== "undefined" && confirmationCard && confirmationCard.style.display !== "none";
+    return rawInput.length > 0 || confirmationVisible;
+}
+
+async function fetchAttentionQueue(forceRender = false) {
+    try {
+        const resp = await fetch("/api/attention/queue");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.success && Array.isArray(data.queue)) {
+            if (!forceRender && isMidTurnActive()) {
+                pendingAttentionQueueData = data.queue;
+                queueHasPendingUpdate = true;
+                showQueueUpdateNotice();
+            } else {
+                attentionQueueData = data.queue;
+                pendingAttentionQueueData = null;
+                queueHasPendingUpdate = false;
+                hideQueueUpdateNotice();
+                renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
+            }
+        }
+    } catch (err) {
+        console.warn("Could not fetch attention queue:", err);
+    }
+}
+
+function showQueueUpdateNotice() {
+    let noticeEl = document.getElementById("queue-update-notice");
+    if (!noticeEl && channelsListEl && channelsListEl.parentElement) {
+        noticeEl = document.createElement("div");
+        noticeEl.id = "queue-update-notice";
+        noticeEl.className = "queue-update-notice";
+        noticeEl.innerHTML = `
+            <span>Queue updated</span>
+            <span class="material-symbols-rounded" style="font-size:16px;">refresh</span>
+        `;
+        noticeEl.addEventListener("click", () => {
+            if (pendingAttentionQueueData) {
+                attentionQueueData = pendingAttentionQueueData;
+                pendingAttentionQueueData = null;
+                queueHasPendingUpdate = false;
+                hideQueueUpdateNotice();
+                renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
+            }
+        });
+        channelsListEl.parentElement.insertBefore(noticeEl, channelsListEl);
+    }
+    if (noticeEl) noticeEl.style.display = "flex";
+}
+
+function hideQueueUpdateNotice() {
+    const noticeEl = document.getElementById("queue-update-notice");
+    if (noticeEl) noticeEl.style.display = "none";
+}
+
+// Attention Settings Modal Logic
+async function openAttentionSettingsModal(channelName) {
+    const modal = document.getElementById("attention-settings-modal");
+    const titleEl = document.getElementById("attention-modal-channel-title");
+    const channelInput = document.getElementById("attn-channel-name");
+    const activeCb = document.getElementById("attn-active");
+    const impSelect = document.getElementById("attn-base-importance");
+    const urgSelect = document.getElementById("attn-urgency");
+    const blockCb = document.getElementById("attn-blocking");
+    const boostCb = document.getElementById("attn-focus-today");
+    const snoozeSelect = document.getElementById("attn-snooze-select");
+    const deadlineInput = document.getElementById("attn-deadline");
+
+    if (!modal) return;
+    if (titleEl) titleEl.innerText = `Channel Attention Settings: #${channelName}`;
+    if (channelInput) channelInput.value = channelName;
+
+    // Reset default form state
+    if (activeCb) activeCb.checked = true;
+    if (impSelect) impSelect.value = "3";
+    if (urgSelect) urgSelect.value = "normal";
+    if (blockCb) blockCb.checked = false;
+    if (boostCb) boostCb.checked = false;
+    if (snoozeSelect) snoozeSelect.value = "none";
+    if (deadlineInput) deadlineInput.value = "";
+
+    try {
+        const resp = await fetch("/api/attention/config");
+        if (resp.ok) {
+            const data = await resp.json();
+            if (data && data.config && data.config.channels && data.config.channels[channelName]) {
+                const entry = data.config.channels[channelName];
+                if (activeCb) activeCb.checked = entry.attention_active !== false;
+                if (impSelect) impSelect.value = String(entry.base_importance || 3);
+                if (urgSelect) urgSelect.value = entry.urgency || "normal";
+                if (blockCb) blockCb.checked = !!entry.blocking;
+                if (boostCb) boostCb.checked = !!entry.temporary_boost_until;
+                if (snoozeSelect) snoozeSelect.value = entry.snoozed_until ? "1h" : "none";
+                if (deadlineInput && entry.deadline) {
+                    try {
+                        const dt = new Date(entry.deadline);
+                        deadlineInput.value = dt.toISOString().slice(0, 16);
+                    } catch (e) {}
+                }
+            }
+        }
+    } catch (err) {
+        console.warn("Could not fetch attention config for modal:", err);
+    }
+
+    modal.style.display = "flex";
+}
+
+function closeAttentionSettingsModal() {
+    const modal = document.getElementById("attention-settings-modal");
+    if (modal) modal.style.display = "none";
+}
+
+async function saveAttentionSettings() {
+    const channelInput = document.getElementById("attn-channel-name");
+    const channelName = channelInput ? channelInput.value : "";
+    if (!channelName) return;
+
+    const activeCb = document.getElementById("attn-active");
+    const impSelect = document.getElementById("attn-base-importance");
+    const urgSelect = document.getElementById("attn-urgency");
+    const blockCb = document.getElementById("attn-blocking");
+    const boostCb = document.getElementById("attn-focus-today");
+    const snoozeSelect = document.getElementById("attn-snooze-select");
+    const deadlineInput = document.getElementById("attn-deadline");
+
+    const now = new Date();
+    let boostUntil = null;
+    if (boostCb && boostCb.checked) {
+        const endOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59));
+        boostUntil = endOfDay.toISOString();
+    }
+
+    let snoozedUntil = null;
+    const snoozeVal = snoozeSelect ? snoozeSelect.value : "none";
+    if (snoozeVal === "1h") {
+        snoozedUntil = new Date(now.getTime() + 3600 * 1000).toISOString();
+    } else if (snoozeVal === "4h") {
+        snoozedUntil = new Date(now.getTime() + 4 * 3600 * 1000).toISOString();
+    } else if (snoozeVal === "24h") {
+        snoozedUntil = new Date(now.getTime() + 24 * 3600 * 1000).toISOString();
+    }
+
+    let deadlineVal = null;
+    if (deadlineInput && deadlineInput.value) {
+        deadlineVal = new Date(deadlineInput.value).toISOString();
+    }
+
+    const payload = {
+        channel_name: channelName,
+        entry: {
+            attention_active: activeCb ? activeCb.checked : true,
+            base_importance: impSelect ? parseInt(impSelect.value, 10) : 3,
+            urgency: urgSelect ? urgSelect.value : "normal",
+            blocking: blockCb ? blockCb.checked : false,
+            temporary_boost_until: boostUntil,
+            snoozed_until: snoozedUntil,
+            deadline: deadlineVal,
+        }
+    };
+
+    try {
+        const resp = await fetch("/api/attention/config", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        if (!resp.ok) {
+            const errData = await resp.json();
+            alert(`Failed to save settings: ${errData.detail || "Server error"}`);
+            return;
+        }
+        closeAttentionSettingsModal();
+        fetchAttentionQueue(true);
+    } catch (err) {
+        alert(`Error saving attention settings: ${err.message}`);
+    }
+}
+
 function renderChannelsList(filterText = "") {
     if (!channelsListEl) return;
     
     const term = (filterText || "").trim().toLowerCase();
     
-    // Sort channels by most recent activity timestamp descending (U-01)
+    // Map attention queue item by canonical channel name (lowercase)
+    const queueMap = new Map();
+    (attentionQueueData || []).forEach(q => {
+        if (q && q.channel_name) {
+            queueMap.set(q.channel_name.toLowerCase(), q);
+        }
+    });
+
+    const catPriority = { ranked: 1, busy: 2, unknown: 3, unconfigured: 4, idle: 5, snoozed: 6, inactive: 7 };
+
     const sortedRooms = [...roomsList].sort((a, b) => {
+        const qa = queueMap.get((a.name || "").toLowerCase());
+        const qb = queueMap.get((b.name || "").toLowerCase());
+
+        if (qa || qb) {
+            const catA = qa ? qa.queue_category : "unknown";
+            const catB = qb ? qb.queue_category : "unknown";
+            const prioA = catPriority[catA] || 99;
+            const prioB = catPriority[catB] || 99;
+
+            if (prioA !== prioB) return prioA - prioB;
+
+            if (catA === "ranked") {
+                return (qb.score || 0) - (qa.score || 0);
+            }
+            if (catA === "busy") {
+                return (qa.working_since || 0) - (qb.working_since || 0);
+            }
+        }
+
         const timeA = new Date(a._updatedAt || a.lm || a.updatedAt || 0).getTime();
         const timeB = new Date(b._updatedAt || b.lm || b.updatedAt || 0).getTime();
         return timeB - timeA;
     });
-    
+
     const filtered = sortedRooms.filter(r => (r.name || "").toLowerCase().includes(term));
     
     if (filtered.length === 0) {
@@ -1120,18 +1403,60 @@ function renderChannelsList(filterText = "") {
     channelsListEl.innerHTML = filtered.map(room => {
         const isActive = room.id === activeRoomId;
         const activeClass = isActive ? "active" : "";
+        const qitem = queueMap.get((room.name || "").toLowerCase());
+        
+        let badgeHTML = "";
+
+        if (qitem) {
+            const category = qitem.queue_category;
+            if (category === "busy") {
+                const elapsedStr = formatElapsedSeconds(qitem.working_elapsed_seconds);
+                badgeHTML = `<span class="attn-badge attn-badge-busy" title="Agent is currently working">Busy ${elapsedStr}</span>`;
+            } else if (category === "ranked") {
+                const scoreDisplay = qitem.score != null ? Math.round(qitem.score) : "";
+                const rankDisplay = qitem.rank != null ? `#${qitem.rank}` : "";
+                let factorTooltip = "";
+                if (qitem.factors) {
+                    const f = qitem.factors;
+                    factorTooltip = `Rank #${qitem.rank} · Score ${qitem.score} (Base: ${f.base_importance_points}, Urgency: ${f.urgency_points}, Wait: ${f.waiting_age_points}, Deadline: ${f.deadline_points}, Blocking: ${f.blocking_points}, Boost: ${f.boost_points})`;
+                }
+                badgeHTML = `<span class="attn-badge attn-badge-ranked" title="${escapeHTML(factorTooltip)}">${rankDisplay} · ${scoreDisplay}</span>`;
+            } else if (category === "snoozed") {
+                badgeHTML = `<span class="attn-badge attn-badge-snoozed" title="Snoozed">Snoozed</span>`;
+            } else if (category === "unconfigured") {
+                badgeHTML = `<span class="attn-badge attn-badge-unconfigured" title="Unconfigured">Unconfigured</span>`;
+            } else if (category === "unknown") {
+                badgeHTML = `<span class="attn-badge attn-badge-unknown" title="Unwatched room">?</span>`;
+            } else if (category === "idle") {
+                badgeHTML = `<span class="attn-badge attn-badge-idle" title="Idle">Idle</span>`;
+            } else if (category === "inactive") {
+                badgeHTML = `<span class="attn-badge attn-badge-inactive" title="Inactive">Inactive</span>`;
+            }
+        } else {
+            badgeHTML = `<span class="attn-badge attn-badge-unknown" title="Unwatched room">?</span>`;
+        }
+
         return `
-            <div class="channel-item ${activeClass}" data-room-id="${room.id}" role="button" tabindex="0">
+            <div class="channel-item ${activeClass}" data-room-id="${room.id}" data-channel-name="${escapeHTML(room.name)}" role="button" tabindex="0">
                 <span class="material-symbols-rounded channel-icon">tag</span>
                 <div class="channel-info">
                     <span class="channel-name">${escapeHTML(room.name)}</span>
+                </div>
+                <div class="channel-badges">
+                    ${badgeHTML}
+                    <button class="btn-tune-channel" data-channel-name="${escapeHTML(room.name)}" title="Edit Channel Attention Settings">
+                        <span class="material-symbols-rounded" style="font-size:16px;">tune</span>
+                    </button>
                 </div>
             </div>
         `;
     }).join("");
     
     channelsListEl.querySelectorAll(".channel-item").forEach(item => {
-        const handleSelect = () => {
+        const handleSelect = (e) => {
+            if (e && e.target && e.target.closest(".btn-tune-channel")) {
+                return;
+            }
             const rid = item.dataset.roomId;
             selectRoom(rid);
             if (channelsSidebar) channelsSidebar.classList.remove("mobile-open");
@@ -1140,8 +1465,16 @@ function renderChannelsList(filterText = "") {
         item.addEventListener("keydown", (e) => {
             if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                handleSelect();
+                handleSelect(e);
             }
+        });
+    });
+
+    channelsListEl.querySelectorAll(".btn-tune-channel").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const cname = btn.dataset.channelName;
+            openAttentionSettingsModal(cname);
         });
     });
 }

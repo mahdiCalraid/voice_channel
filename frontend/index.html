@@ -396,7 +396,83 @@
             <div class="modal-footer">
                 <button class="btn btn-primary" id="btn-save-settings">Save & Apply</button>
             </div>
+    <!-- Channel Attention Settings Modal (U-10c) -->
+    <div class="modal-overlay" id="attention-settings-modal" style="display: none;">
+        <div class="modal-card attention-modal-card">
+            <div class="modal-header">
+                <div class="modal-title-wrap">
+                    <span class="material-symbols-rounded modal-icon">tune</span>
+                    <h3 id="attention-modal-channel-title">Channel Attention Settings</h3>
+                </div>
+                <button class="btn btn-icon btn-sm" id="btn-close-attention-modal" title="Close">
+                    <span class="material-symbols-rounded">close</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <form id="attention-settings-form">
+                    <input type="hidden" id="attn-channel-name" value="">
+                    
+                    <div class="setting-group toggle-group">
+                        <label for="attn-active">Include in active attention portfolio</label>
+                        <input type="checkbox" id="attn-active" class="setting-checkbox" checked>
+                    </div>
+
+                    <div class="settings-grid">
+                        <div class="setting-group">
+                            <label for="attn-base-importance">Base Importance (1–5)</label>
+                            <select id="attn-base-importance" class="setting-select">
+                                <option value="1">1 - Lowest</option>
+                                <option value="2">2 - Low</option>
+                                <option value="3" selected>3 - Normal</option>
+                                <option value="4">4 - High</option>
+                                <option value="5">5 - Critical</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="attn-urgency">Urgency</label>
+                            <select id="attn-urgency" class="setting-select">
+                                <option value="low">Low</option>
+                                <option value="normal" selected>Normal</option>
+                                <option value="high">High (+25 pts)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="setting-group toggle-group">
+                        <label for="attn-blocking">Blocking other work (+30 pts)</label>
+                        <input type="checkbox" id="attn-blocking" class="setting-checkbox">
+                    </div>
+
+                    <div class="setting-group toggle-group">
+                        <label for="attn-focus-today">Focus Today (Boost +50 pts until midnight)</label>
+                        <input type="checkbox" id="attn-focus-today" class="setting-checkbox">
+                    </div>
+
+                    <div class="settings-grid">
+                        <div class="setting-group">
+                            <label for="attn-snooze-select">Snooze Attention</label>
+                            <select id="attn-snooze-select" class="setting-select">
+                                <option value="none" selected>No Snooze</option>
+                                <option value="1h">Snooze 1 Hour</option>
+                                <option value="4h">Snooze 4 Hours</option>
+                                <option value="24h">Snooze 24 Hours</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-group">
+                            <label for="attn-deadline">Deadline (Optional)</label>
+                            <input type="datetime-local" id="attn-deadline" class="setting-input">
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btn-cancel-attention-modal">Cancel</button>
+                <button class="btn btn-primary" id="btn-save-attention-modal">Save Attention Settings</button>
+            </div>
         </div>
+    </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
