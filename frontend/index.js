@@ -784,6 +784,7 @@ function init() {
                     localStorage.removeItem("vc_draft_" + activeRoomId);
                 }
             }
+            applyPendingAttentionQueueIfReady();
         });
     }
     
@@ -1135,6 +1136,7 @@ if (commandInput) {
                 localStorage.removeItem("vc_draft_" + activeRoomId);
             }
         }
+        applyPendingAttentionQueueIfReady();
     });
 }
 
@@ -1168,7 +1170,9 @@ function formatElapsedSeconds(sec) {
 
 function isMidTurnActive() {
     const rawInput = commandInput ? commandInput.value.trim() : "";
-    const confirmationVisible = typeof confirmationCard !== "undefined" && confirmationCard && confirmationCard.style.display !== "none";
+    const confirmationVisible = Boolean(
+        confirmationGate && !confirmationGate.classList.contains("hidden")
+    );
     return rawInput.length > 0 || confirmationVisible;
 }
 
@@ -1206,13 +1210,7 @@ function showQueueUpdateNotice() {
             <span class="material-symbols-rounded" style="font-size:16px;">refresh</span>
         `;
         noticeEl.addEventListener("click", () => {
-            if (pendingAttentionQueueData) {
-                attentionQueueData = pendingAttentionQueueData;
-                pendingAttentionQueueData = null;
-                queueHasPendingUpdate = false;
-                hideQueueUpdateNotice();
-                renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
-            }
+            applyPendingAttentionQueueIfReady(true);
         });
         channelsListEl.parentElement.insertBefore(noticeEl, channelsListEl);
     }
@@ -1222,6 +1220,22 @@ function showQueueUpdateNotice() {
 function hideQueueUpdateNotice() {
     const noticeEl = document.getElementById("queue-update-notice");
     if (noticeEl) noticeEl.style.display = "none";
+}
+
+function applyPendingAttentionQueueIfReady(force = false) {
+    if (!queueHasPendingUpdate || !Array.isArray(pendingAttentionQueueData)) {
+        return false;
+    }
+    if (!force && isMidTurnActive()) {
+        return false;
+    }
+
+    attentionQueueData = pendingAttentionQueueData;
+    pendingAttentionQueueData = null;
+    queueHasPendingUpdate = false;
+    hideQueueUpdateNotice();
+    renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
+    return true;
 }
 
 // Attention Settings Modal Logic
@@ -1485,6 +1499,7 @@ function handleRoomChange() {
     
     // Restore UI state of the new active room
     restoreRoomUIData(activeRoomId);
+    applyPendingAttentionQueueIfReady();
     
     // Clear lastMessageTimestamp so renderTranscript updates scroll properly
     lastMessageTimestamp = null;
@@ -2656,6 +2671,8 @@ function hideConfirmation() {
     if (feedbackEl) {
         feedbackEl.style.display = "none";
     }
+
+    applyPendingAttentionQueueIfReady();
 }
 
 async function sendDraftedMessage() {

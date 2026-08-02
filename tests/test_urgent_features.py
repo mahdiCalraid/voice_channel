@@ -49,7 +49,11 @@ class TestUrgentFeatures(unittest.TestCase):
         self.assertIn(".narrator-resize-handle", stylesheet.text)
         self.assertIn("--narrator-sidebar-width", stylesheet.text)
 
-        for asset_path in ("/index.js", "/history_state.js", "/index.css"):
+        for asset_path in (
+            "/index.js?v=narrator-resize-1",
+            "/history_state.js?v=response-assistant-3",
+            "/index.css?v=narrator-resize-1",
+        ):
             with self.subTest(asset_path=asset_path):
                 asset = self.client.get(asset_path)
                 self.assertEqual(asset.status_code, 200)

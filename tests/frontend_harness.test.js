@@ -60,6 +60,7 @@ function loadFrontend(options = {}) {
         querySelector: selector => element(),
         querySelectorAll: () => [],
     };
+    document.getElementById("confirmation-gate").classList.add("hidden");
     const storage = options.storage || {};
     const storageWrites = [];
     const spoken = [];
@@ -1125,3 +1126,71 @@ test("preemption freeze prevents rail re-sorting while mid-turn composer is acti
     assert.equal(noticeEl.style.display, "flex");
 });
 
+test("pending attention queue applies immediately when the composer clears", async () => {
+    const app = loadFrontend();
+    const command = app.sandbox.document.getElementById("command-input");
+    vm.runInContext(`
+        roomsList = [{ id: "r1", name: "voice_channel" }];
+        activeRoomId = "r1";
+        commandInput.value = "Drafting instruction for agent...";
+    `, app.sandbox);
+
+    app.sandbox.fetch = (url) => {
+        if (url === "/api/attention/queue") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    queue: [{ channel_name: "voice_channel", queue_category: "ranked", rank: 1, score: 200 }]
+                })
+            });
+        }
+        throw new Error("Unexpected fetch URL: " + url);
+    };
+
+    await app.sandbox.fetchAttentionQueue(false);
+    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), true);
+
+    command.value = "";
+    command.listeners.input({ target: command });
+
+    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), false);
+    assert.equal(vm.runInContext("pendingAttentionQueueData", app.sandbox), null);
+    assert.equal(vm.runInContext("attentionQueueData[0].score", app.sandbox), 200);
+    assert.equal(app.sandbox.document.getElementById("queue-update-notice").style.display, "none");
+    assert.ok(app.sandbox.document.getElementById("channels-list").innerHTML.includes("#1 · 200"));
+});
+
+test("confirmation gate freezes and then releases a pending attention queue", async () => {
+    const app = loadFrontend();
+    const gate = app.sandbox.document.getElementById("confirmation-gate");
+    vm.runInContext(`
+        roomsList = [{ id: "r1", name: "voice_channel" }];
+        activeRoomId = "r1";
+        commandInput.value = "";
+    `, app.sandbox);
+    gate.classList.remove("hidden");
+
+    app.sandbox.fetch = (url) => {
+        if (url === "/api/attention/queue") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    queue: [{ channel_name: "voice_channel", queue_category: "busy", working_elapsed_seconds: 120 }]
+                })
+            });
+        }
+        throw new Error("Unexpected fetch URL: " + url);
+    };
+
+    assert.equal(app.sandbox.isMidTurnActive(), true);
+    await app.sandbox.fetchAttentionQueue(false);
+    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), true);
+
+    app.sandbox.hideConfirmation();
+
+    assert.equal(gate.classList.contains("hidden"), true);
+    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), false);
+    assert.ok(app.sandbox.document.getElementById("channels-list").innerHTML.includes("Busy 2m"));
+});
