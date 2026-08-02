@@ -1,5 +1,6 @@
 """Deterministic task-supervisor tests using interleaved ACLI event fixtures."""
 
+import json
 import tempfile
 import time
 import unittest
@@ -129,6 +130,95 @@ class TestTaskSupervisor(unittest.TestCase):
 
         self.assertEqual(self.supervisor.get(first.interaction_id).state, TaskState.SUPERSEDED)
         self.assertEqual(self.supervisor.get(second.interaction_id).state, TaskState.ROUTED)
+
+    def test_attention_state_transitions_and_timestamps(self):
+        # 1. Interaction creation -> AWAITING_CONFIRMATION -> NEEDS_DECISION
+        task = make_task(self.supervisor, "int_attn", "room-attn", "codex", created_at=100)
+        rec = self.supervisor.get("int_attn")
+        self.assertEqual(rec.attention_state.value, "none")  # mark_posted transitions to POSTED -> NONE
+
+        # 2. Routing -> WORKING -> working_since set, ready_since cleared
+        self.supervisor.ingest_event("room-attn", "route-1", 110, {"kind": "routing", "agent": "codex"})
+        rec = self.supervisor.get("int_attn")
+        self.assertEqual(rec.state, TaskState.ROUTED)
+        self.assertEqual(rec.attention_state.value, "none")
+        self.assertEqual(rec.working_since, 110)
+        self.assertIsNone(rec.ready_since)
+
+        # 3. Heartbeat with elapsed_seconds -> working_since reconstructed
+        self.supervisor.ingest_event("room-attn", "beat-1", 120, {"kind": "heartbeat", "agent": "codex", "elapsed_seconds": 15})
+        rec = self.supervisor.get("int_attn")
+        self.assertEqual(rec.state, TaskState.WORKING)
+        self.assertEqual(rec.attention_state.value, "none")
+        self.assertEqual(rec.working_since, 110)  # preserved
+
+        # 4. Agent response -> COMPLETED -> NEEDS_REVIEW -> ready_since set, working_since cleared
+        self.supervisor.ingest_event("room-attn", "result-1", 150, {"kind": "agent_response", "agent": "codex"})
+        rec = self.supervisor.get("int_attn")
+        self.assertEqual(rec.state, TaskState.COMPLETED)
+        self.assertEqual(rec.attention_state.value, "needs_review")
+        self.assertEqual(rec.ready_since, 150)
+        self.assertIsNone(rec.working_since)
+
+    def test_error_event_sets_failed_and_needs_help(self):
+        task = make_task(self.supervisor, "int_err", "room-err", "grok", created_at=100)
+        self.supervisor.ingest_event("room-err", "route-err", 105, {"kind": "routing", "agent": "grok"})
+        self.supervisor.ingest_event("room-err", "err-1", 120, {"kind": "error", "agent": "grok"})
+        
+        rec = self.supervisor.get("int_err")
+        self.assertEqual(rec.state, TaskState.FAILED)
+        self.assertEqual(rec.attention_state.value, "needs_help")
+        self.assertEqual(rec.ready_since, 120)
+        self.assertIsNone(rec.working_since)
+
+    def test_channel_attention_summary_busy_precedence(self):
+        # Create completed task in room
+        task1 = make_task(self.supervisor, "int_room_1", "room-summary", "codex", created_at=100)
+        self.supervisor.ingest_event("room-summary", "res-1", 110, {"kind": "agent_response", "agent": "codex"})
+
+        # Summary when not busy -> NEEDS_REVIEW
+        summary1 = self.supervisor.get_channel_attention_summary("room-summary")
+        self.assertFalse(summary1["is_busy"])
+        self.assertEqual(summary1["attention_state"].value, "needs_review")
+
+        # Create active task in room
+        task2 = make_task(self.supervisor, "int_room_2", "room-summary", "grok", created_at=200)
+        self.supervisor.ingest_event("room-summary", "route-2", 205, {"kind": "routing", "agent": "grok"})
+
+        # Summary when busy -> is_busy True, attention_state NONE
+        summary2 = self.supervisor.get_channel_attention_summary("room-summary")
+        self.assertTrue(summary2["is_busy"])
+        self.assertEqual(summary2["attention_state"].value, "none")
+        self.assertEqual(summary2["working_since"], 205)
+
+    def test_backward_compatibility_loading_older_task_records(self):
+        # Write JSON with older TaskRecord schema (without attention_state, working_since, ready_since)
+        older_json = {
+            "schema_version": "1.0",
+            "tasks": {
+                "int_old": {
+                    "interaction_id": "int_old",
+                    "actor_id": "ed",
+                    "client_id": "console",
+                    "room_id": "room-old",
+                    "agent": "codex",
+                    "state": "completed",
+                    "created_at": 100.0,
+                    "updated_at": 150.0,
+                    "rocket_chat_msg_ids": [],
+                    "source_message_ids": [],
+                    "task_events": []
+                }
+            },
+            "source_event_index": {}
+        }
+        Path(self.state_path).write_text(json.dumps(older_json), encoding="utf-8")
+        
+        reloaded = TaskSupervisor(self.state_path)
+        record = reloaded.get("int_old")
+        self.assertIsNotNone(record)
+        self.assertEqual(record.state, TaskState.COMPLETED)
+        self.assertEqual(record.attention_state.value, "needs_review")
 
 
 if __name__ == "__main__":

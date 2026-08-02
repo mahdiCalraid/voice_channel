@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from app.contracts import (
     CURRENT_SCHEMA_VERSION,
+    AttentionState,
     ConfirmationSnapshot,
     InteractionRequest,
     TaskEvent,
@@ -87,6 +88,9 @@ class TaskSupervisor:
                 room_id=confirmation.room_id,
                 agent=confirmation.agent,
                 state=TaskState.AWAITING_CONFIRMATION,
+                attention_state=AttentionState.NEEDS_DECISION,
+                ready_since=request.created_at,
+                working_since=None,
                 created_at=request.created_at,
                 updated_at=time.time(),
                 confirmation_snapshot=confirmation,
@@ -103,6 +107,44 @@ class TaskSupervisor:
     def all(self) -> Iterable[TaskRecord]:
         with self._lock:
             return list(self._tasks.values())
+
+    def get_channel_attention_summary(self, room_id: str) -> Dict[str, Any]:
+        """Aggregate tasks for one channel: busy execution state takes precedence."""
+        with self._lock:
+            channel_tasks = [t for t in self._tasks.values() if t.room_id == room_id]
+            if not channel_tasks:
+                return {
+                    "room_id": room_id,
+                    "is_busy": False,
+                    "working_since": None,
+                    "attention_state": AttentionState.UNKNOWN,
+                    "ready_since": None,
+                    "active_task_count": 0,
+                }
+            active_tasks = [t for t in channel_tasks if t.state in ACTIVE_STATES]
+            if active_tasks:
+                working_times = [t.working_since for t in active_tasks if t.working_since is not None]
+                working_since = min(working_times) if working_times else min(t.updated_at for t in active_tasks)
+                return {
+                    "room_id": room_id,
+                    "is_busy": True,
+                    "working_since": working_since,
+                    "attention_state": AttentionState.NONE,
+                    "ready_since": None,
+                    "active_task_count": len(active_tasks),
+                }
+            
+            # Sort non-busy tasks by updated_at descending
+            sorted_tasks = sorted(channel_tasks, key=lambda t: t.updated_at, reverse=True)
+            latest = sorted_tasks[0]
+            return {
+                "room_id": room_id,
+                "is_busy": False,
+                "working_since": None,
+                "attention_state": latest.attention_state,
+                "ready_since": latest.ready_since,
+                "active_task_count": 0,
+            }
 
     def confirmation_matches(self, confirmation: ConfirmationSnapshot) -> bool:
         with self._lock:
@@ -183,6 +225,9 @@ class TaskSupervisor:
             candidates.sort(key=lambda task: task.updated_at, reverse=True)
             record = candidates[0]
             details = {"event_kind": event_kind, "agent": agent, "raw_text": event.get("raw_text", "")}
+            elapsed_sec = event.get("elapsed_seconds") or (event.get("details") or {}).get("elapsed_seconds")
+            if elapsed_sec is not None:
+                details["elapsed_seconds"] = elapsed_sec
             if explicit_interaction_id:
                 details["correlation"] = "explicit_interaction_id"
             if len(candidates) > 1:
@@ -217,6 +262,44 @@ class TaskSupervisor:
             record.source_message_ids.append(source_message_id)
         record.state = state
         record.updated_at = timestamp
+        
+        # Derive attention_state and timestamps
+        if state in ACTIVE_STATES:
+            record.attention_state = AttentionState.NONE
+            if state in {TaskState.ROUTED, TaskState.WORKING}:
+                prior_state = record.task_events[-1].state if record.task_events else None
+                if record.working_since is None or prior_state == TaskState.POSTED:
+                    elapsed = (details or {}).get("elapsed_seconds")
+                    if elapsed is not None:
+                        try:
+                            record.working_since = max(0.0, timestamp - float(elapsed))
+                        except (ValueError, TypeError):
+                            record.working_since = timestamp
+                    else:
+                        record.working_since = timestamp
+            elif state == TaskState.POSTED:
+                record.working_since = None
+            record.ready_since = None
+        elif state == TaskState.COMPLETED:
+            record.attention_state = AttentionState.NEEDS_REVIEW
+            if record.ready_since is None:
+                record.ready_since = timestamp
+            record.working_since = None
+        elif state == TaskState.FAILED:
+            record.attention_state = AttentionState.NEEDS_HELP
+            if record.ready_since is None:
+                record.ready_since = timestamp
+            record.working_since = None
+        elif state in {TaskState.AWAITING_CONFIRMATION, TaskState.NEEDS_CLARIFICATION}:
+            record.attention_state = AttentionState.NEEDS_DECISION
+            if record.ready_since is None:
+                record.ready_since = timestamp
+            record.working_since = None
+        elif state in {TaskState.CANCELLED, TaskState.SUPERSEDED}:
+            record.attention_state = AttentionState.NONE
+            record.working_since = None
+            record.ready_since = None
+
         record.task_events.append(
             TaskEvent(
                 interaction_id=record.interaction_id,

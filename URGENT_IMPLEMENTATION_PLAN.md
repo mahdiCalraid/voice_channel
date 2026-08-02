@@ -299,6 +299,71 @@ Status: `BLOCKED BY U-08`
 - Tests and one local live playback verify that there is no automatic readout and no
   durable generated-audio artifact.
 
+### U-10. Attention scheduler in the channel list
+
+Source: `attention_scheduler_design.docx`. Goal: the left channel rail answers
+"which channel should I work on next?" without Ed re-deriving it each time.
+
+Two things are shown per channel, and only one of them at a time:
+
+- **Busy channels** show elapsed working time (e.g. `working 14m`) and no score.
+  They are not actionable, so they are not ranked against ready channels.
+- **Non-busy channels** show an attention number and are ranked by it.
+
+Scoring inputs (all from the design brief): base importance (1–5), urgency,
+waiting age since `ready_since`, deadline pressure, blocking-other-work, and
+today's focus flag. The score is **derived at request time**, never stored, so
+the age term cannot go stale.
+
+Status: `PLANNED` — slices below land in order.
+
+#### U-10a. Attention state + editable config
+
+**Status**: `VERIFIED` (2026-08-01)
+
+1. Created `app/attention_config.py` to manage durable operator-owned channel attention configuration at
+   `acli/gateway_state/channel_attention_config.json` (supporting `CHANNEL_ATTENTION_CONFIG_PATH`),
+   with schema validation, file locking, atomic save, and registry status merging without mutating registries.
+2. Extended `app/contracts.py` with `AttentionState` enum (`unknown`, `none`, `needs_review`, `needs_decision`, `needs_help`, `ready_for_instruction`)
+   and added `attention_state`, `working_since`, and `ready_since` to `TaskRecord` with backward compatibility.
+3. Updated `app/task_supervisor.py` to derive `attention_state` and track timestamps while keeping existing execution `TaskState` semantics intact.
+4. Added channel attention summary aggregation (`get_channel_attention_summary`).
+5. Added unit test suites `tests/test_attention_config.py` and extended `tests/test_task_supervisor.py` (98 Python unit tests passing).
+
+#### U-10b. Scoring service + endpoint
+
+**Do:**
+
+1. Pure deterministic scoring function over (config + attention state + clock).
+   No model call: AI must not make hidden priority decisions.
+2. `GET /api/attention/queue` returns, per channel, the attention state, elapsed
+   working seconds for busy channels, the score for non-busy channels, and the
+   **factor breakdown** so the UI can explain the number.
+3. Channels the console is not actively watching must still report state, or the
+   endpoint must mark them `unknown` rather than silently scoring them as idle.
+
+**Done when:** scoring is unit-tested against fixed clocks, and the endpoint's
+`unknown` case is explicit in both tests and response shape.
+
+#### U-10c. Channel rail integration
+
+**Do:**
+
+1. Replace the recency sort in `renderChannelsList` (`frontend/index.js:1102`)
+   with attention ordering: busy channels in their own section, ranked channels
+   below by score descending.
+2. Show elapsed time on busy rows and the score badge on ranked rows, with the
+   factor breakdown available on hover/expand.
+3. Freeze rail order while Ed is mid-turn in a channel; show a subtle
+   "queue changed" affordance and re-rank at a clean boundary.
+4. Editable config form bound to `channel_attention_config.json`.
+
+**Done when:** the rail reorders correctly against a seeded queue response, order
+does not shift under the cursor mid-turn, and every displayed number is
+explainable from its breakdown.
+
+Voice commands for the scheduler are explicitly **out of scope** for U-10.
+
 ## 7. After urgent plan (return to adaptive / Omi)
 
 1. Merge or cherry-pick `urgent/daily-use-console` → `codex/adaptive-voice-gateway`.
@@ -308,10 +373,11 @@ Status: `BLOCKED BY U-08`
 
 ## 8. Immediate next task
 
-Complete U-06 and U-07 first. Then run U-08 as a contained local feasibility test;
-U-09 is optional and may start only after its explicit go decision. Do not start Omi,
-mobile, cloud exposure, voice cloning, or automatic Chatterbox readout under this
-urgent plan.
+**U-10a** is the current active task, at Ed's direction (2026-08-01). Chatterbox
+(U-08/U-09) is paused. U-06 and U-07 remain small and should follow. Do not start
+Omi, mobile, cloud exposure, voice cloning, or automatic Chatterbox readout under
+this urgent plan, and do not build the U-10c rail before U-10a/U-10b exist — a
+score badge rendered over guessed state looks authoritative and is wrong.
 
 ## 9. Operating rules for agents
 

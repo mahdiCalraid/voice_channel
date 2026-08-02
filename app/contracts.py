@@ -49,6 +49,14 @@ class TaskState(str, Enum):
     SUMMARIZED = "summarized"
     SPOKEN = "spoken"
 
+class AttentionState(str, Enum):
+    UNKNOWN = "unknown"
+    NONE = "none"
+    NEEDS_REVIEW = "needs_review"
+    NEEDS_DECISION = "needs_decision"
+    NEEDS_HELP = "needs_help"
+    READY_FOR_INSTRUCTION = "ready_for_instruction"
+
 class BaseContractModel(BaseModel):
     class Config:
         extra = Extra.forbid
@@ -150,10 +158,30 @@ class TaskRecord(BaseContractModel):
     task_events: List[TaskEvent] = Field(default_factory=list)
     confirmation_snapshot: Optional[ConfirmationSnapshot] = None
     terminal_summary: str = ""
+    attention_state: AttentionState = Field(default=AttentionState.UNKNOWN)
+    working_since: Optional[float] = None
+    ready_since: Optional[float] = None
 
     @validator("schema_version")
     def check_schema_version(cls, v: str) -> str:
         return validate_schema_version(v)
+
+    @validator("attention_state", pre=True, always=True)
+    def check_attention_state_migration(cls, v: Any, values: Dict[str, Any]) -> AttentionState:
+        if v and isinstance(v, (str, AttentionState)) and v != AttentionState.UNKNOWN.value:
+            return AttentionState(v)
+        state = values.get("state")
+        if state in {TaskState.POSTED, TaskState.ROUTED, TaskState.WORKING}:
+            return AttentionState.NONE
+        elif state == TaskState.COMPLETED:
+            return AttentionState.NEEDS_REVIEW
+        elif state == TaskState.FAILED:
+            return AttentionState.NEEDS_HELP
+        elif state in {TaskState.AWAITING_CONFIRMATION, TaskState.NEEDS_CLARIFICATION}:
+            return AttentionState.NEEDS_DECISION
+        elif state in {TaskState.CANCELLED, TaskState.SUPERSEDED}:
+            return AttentionState.NONE
+        return AttentionState.UNKNOWN
 
 class GatewayResult(BaseContractModel):
     schema_version: str = Field(default=CURRENT_SCHEMA_VERSION)
