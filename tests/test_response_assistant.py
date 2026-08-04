@@ -14,7 +14,8 @@ import app.main as main_module
 from app.main import ResponseAssistantRequest, app
 from app.supervision_strategy import (
     fallback_suggestion,
-    normalize_two_paragraph_digest,
+    normalize_attention_items,
+    normalize_narrator_summary,
     parse_response_assistant_output,
     read_project_context,
     resolve_channel_profile,
@@ -70,19 +71,53 @@ class TestSupervisionStrategy(unittest.TestCase):
             self.assertNotIn("must-not-load", context)
             self.assertEqual(len(used), 1)
 
-    def test_output_parser_validates_worker_and_two_paragraph_contract(self):
+    def test_output_parser_validates_worker_and_attention_contract(self):
         output = json.dumps(
             {
-                "digest": "AGY completed the implementation.\n\nThe next step is independent review.",
+                "digest": "AGY completed the requested work and it is ready for independent review.",
+                "attention_items": [
+                    {
+                        "type": "decision",
+                        "severity": None,
+                        "text": "Ed needs to decide whether to begin the independent review now.",
+                    },
+                    {
+                        "type": "issue",
+                        "severity": "minor",
+                        "text": "A tiny cleanup item remains.",
+                    },
+                ],
                 "phase": "review",
                 "suggested_agent": "grok",
                 "suggested_message": "@grok Independently review the implementation and tests.",
+                "quick_suggestions": [
+                    {
+                        "label": "Double-check",
+                        "command": "@grok Independently double-check the implementation and tests.",
+                    },
+                    {
+                        "label": "Your take",
+                        "command": "@codex What is your opinion before we advance?",
+                    },
+                ],
                 "rationale": "Implementation should be reviewed.",
             }
         )
         parsed = parse_response_assistant_output(output, CODING_PROFILE, LATEST_AGY)
         self.assertEqual(parsed["suggested_agent"], "grok")
-        self.assertEqual(len(parsed["digest"].split("\n\n")), 2)
+        self.assertEqual(len(parsed["attention_items"]), 1)
+        self.assertEqual(parsed["attention_items"][0]["type"], "decision")
+        self.assertEqual(
+            parsed["digest"],
+            "AGY completed the requested work and it is ready for independent review.",
+        )
+        self.assertNotIn("Decision needed", parsed["digest"])
+        self.assertNotIn("independent review now", parsed["digest"])
+        self.assertNotIn("cleanup", parsed["digest"])
+        self.assertEqual(len(parsed["quick_suggestions"]), 2)
+        self.assertEqual(parsed["quick_suggestions"][0]["label"], "Double-check")
+        self.assertTrue(parsed["quick_suggestions"][0]["command"].startswith("@grok "))
+        self.assertTrue(parsed["_ai_quick_valid"])
 
         invalid = parse_response_assistant_output(
             json.dumps(
@@ -97,17 +132,29 @@ class TestSupervisionStrategy(unittest.TestCase):
         )
         self.assertEqual(invalid["suggested_agent"], "grok")
         self.assertTrue(invalid["suggested_message"].startswith("@grok "))
-        self.assertEqual(len(normalize_two_paragraph_digest("One sentence.").split("\n\n")), 2)
+        self.assertEqual(normalize_narrator_summary("One sentence."), "One sentence.")
         self.assertTrue(invalid["_ai_digest_valid"])
         self.assertFalse(invalid["_ai_suggestion_valid"])
+        self.assertEqual(len(invalid["quick_suggestions"]), 2)
+        self.assertFalse(invalid["_ai_quick_valid"])
+        self.assertEqual(invalid["quick_suggestions"][0]["label"], "Double-check")
 
-    def test_digest_normalizer_enforces_short_two_paragraph_boundary(self):
-        long_paragraph = " ".join(["word"] * 140)
-        digest = normalize_two_paragraph_digest(long_paragraph + "\n\n" + long_paragraph)
-        paragraphs = digest.split("\n\n")
-        self.assertEqual(len(paragraphs), 2)
-        self.assertLessEqual(len(paragraphs[0].split()), 90)
-        self.assertLessEqual(len(paragraphs[1].split()), 90)
+    def test_summary_normalizer_enforces_one_short_paragraph(self):
+        long_summary = " ".join(["word"] * 140) + "\n\nSecond paragraph."
+        summary = normalize_narrator_summary(long_summary)
+        self.assertNotIn("\n", summary)
+        self.assertLessEqual(len(summary.split()), 100)
+
+    def test_attention_normalizer_requires_material_issue_severity(self):
+        items = normalize_attention_items([
+            {"type": "issue", "severity": "major", "text": "Progress is blocked."},
+            {"type": "issue", "severity": "moderate", "text": "Duplicate issue."},
+            {"type": "clarification", "severity": "major", "text": "The desired outcome is unclear."},
+            {"type": "unknown", "text": "Ignore this."},
+        ])
+        self.assertEqual([item["type"] for item in items], ["issue", "clarification"])
+        self.assertEqual(items[0]["severity"], "major")
+        self.assertIsNone(items[1]["severity"])
 
     def test_safe_fallback_follows_coding_phase_evidence(self):
         claude_planning = {
@@ -186,10 +233,21 @@ class TestResponseAssistantEndpoint(unittest.TestCase):
                         "ok": True,
                         "output": json.dumps(
                             {
-                                "digest": "AGY completed the requested coding work.\n\nGrok should now verify the implementation and tests.",
+                                "digest": "AGY completed the requested coding work, which is now ready for independent review.",
+                                "attention_items": [],
                                 "phase": "review",
                                 "suggested_agent": "grok",
                                 "suggested_message": "@grok Please independently review AGY's implementation and run the relevant tests.",
+                                "quick_suggestions": [
+                                    {
+                                        "label": "Double-check",
+                                        "command": "@grok Independently double-check the implementation and tests.",
+                                    },
+                                    {
+                                        "label": "Your take",
+                                        "command": "@codex What is your opinion before we advance?",
+                                    },
+                                ],
                                 "rationale": "A separate reviewer should verify completed implementation.",
                             }
                         ),
@@ -376,7 +434,8 @@ class TestResponseAssistantEndpoint(unittest.TestCase):
         self.assertEqual(data["generation_mode"], "fallback")
         self.assertEqual(data["suggested_agent"], "grok")
         self.assertTrue(data["suggested_message"].startswith("@grok "))
-        self.assertEqual(len(data["digest"].split("\n\n")), 2)
+        self.assertEqual(data["attention_items"], [])
+        self.assertNotIn("\n\n", data["digest"])
 
     @patch("app.main.save_summary")
     @patch("app.main.read_prior_summaries", return_value=[])

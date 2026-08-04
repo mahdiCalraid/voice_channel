@@ -1,15 +1,18 @@
 """Unit tests for U-10b attention scoring, queue sorting, and API endpoint."""
 
+import asyncio
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.attention_config import ChannelAttentionConfig, ChannelAttentionEntry, UrgencyLevel
 from app.attention_scoring import build_attention_queue, calculate_channel_attention_score
 from app.contracts import AttentionState, TaskState
 from app.main import app
+import app.main as main_module
 from app.task_supervisor import TaskSupervisor
 
 
@@ -198,6 +201,82 @@ class TestAttentionScoring(unittest.TestCase):
         self.assertEqual(data.get("timestamp"), 1000000.0)
         self.assertIn("queue", data)
         self.assertIsInstance(data["queue"], list)
+
+    def test_background_room_refresh_clears_stale_busy_task(self):
+        req, conf, evt = self._make_req_tuple("int-background", "room-background", "codex", 100)
+        task = self.supervisor.create_interaction(req, conf, evt)
+        self.supervisor.mark_posted(task.interaction_id, "dispatch-background")
+        self.assertTrue(self.supervisor.get_channel_attention_summary("room-background")["is_busy"])
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "success": True,
+                    "messages": [{
+                        "_id": "background-response",
+                        "ts": "1970-01-01T00:01:50.000Z",
+                        "u": {"username": "acli_bot", "name": "ACLI Bot"},
+                        "msg": "**@codex**: Work completed while another room was focused.",
+                    }],
+                }
+
+        class FakeClient:
+            async def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        with patch.object(main_module, "task_supervisor", self.supervisor):
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.run_until_complete(
+                main_module._refresh_active_task_room(FakeClient(), "room-background")
+            )
+
+        summary = self.supervisor.get_channel_attention_summary("room-background")
+        self.assertFalse(summary["is_busy"])
+        self.assertEqual(summary["attention_state"], AttentionState.NEEDS_REVIEW)
+
+    def test_background_room_refresh_turns_timeout_into_needs_help(self):
+        req, conf, evt = self._make_req_tuple("int-background-timeout", "room-timeout", "grok", 100)
+        task = self.supervisor.create_interaction(req, conf, evt)
+        self.supervisor.mark_posted(task.interaction_id, "dispatch-timeout")
+        self.supervisor.ingest_event("room-timeout", "route-timeout", 110, {"kind": "routing", "agent": "grok"})
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "success": True,
+                    "messages": [{
+                        "_id": "timeout-response",
+                        "ts": "1970-01-01T00:03:20.000Z",
+                        "u": {"username": "acli_bot", "name": "ACLI Bot"},
+                        "msg": "**@grok** hit the 1800s timeout. The run was stopped and a timeout review packet was captured.",
+                    }],
+                }
+
+        class FakeClient:
+            async def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        with patch.object(main_module, "task_supervisor", self.supervisor):
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.run_until_complete(
+                main_module._refresh_active_task_room(FakeClient(), "room-timeout")
+            )
+
+        summary = self.supervisor.get_channel_attention_summary("room-timeout")
+        self.assertFalse(summary["is_busy"])
+        self.assertEqual(summary["attention_state"], AttentionState.NEEDS_HELP)
 
     def _make_req_tuple(self, interaction_id, room_id, agent, created_at):
         from app.contracts import ConfirmationSnapshot, InteractionRequest, TaskEvent, TaskState

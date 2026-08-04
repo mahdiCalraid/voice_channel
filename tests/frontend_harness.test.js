@@ -75,7 +75,6 @@ function loadFrontend(options = {}) {
         querySelector: selector => element(),
         querySelectorAll: () => [],
     };
-    document.getElementById("confirmation-gate").classList.add("hidden");
     const storage = options.storage || {};
     const storageWrites = [];
     const spoken = [];
@@ -107,6 +106,7 @@ function loadFrontend(options = {}) {
         setTimeout: callback => { callback(); return 0; },
         window: {
             VoiceChannelHistoryState: historyState,
+            confirm: options.confirm || (() => true),
             speechSynthesis: {
                 cancel: () => {},
                 getVoices: () => [],
@@ -484,7 +484,7 @@ test("legacy interface font preference migrates to the split typography settings
     });
 
     const settings = vm.runInContext("getSettings()", app.sandbox);
-    assert.equal(settings.settingsVersion, 3);
+    assert.equal(settings.settingsVersion, 5);
     assert.equal(settings.systemFontSize, "large");
     assert.equal(settings.chatFontFamily, "outfit");
     assert.equal(settings.chatFontSize, 18);
@@ -547,7 +547,7 @@ test("system and chat typography preview immediately, revert on close, and persi
     save.listeners.click();
 
     const persisted = JSON.parse(app.storage.vc_settings);
-    assert.equal(persisted.settingsVersion, 3);
+    assert.equal(persisted.settingsVersion, 5);
     assert.equal(persisted.systemFontSize, "xlarge");
     assert.equal(persisted.chatFontFamily, "georgia");
     assert.equal(persisted.chatFontSize, 24);
@@ -555,29 +555,114 @@ test("system and chat typography preview immediately, revert on close, and persi
     assert.equal(bodyStyle.getPropertyValue("--system-font-size"), "35px");
 });
 
-test("confirmation gate locks composer text and room switch clears confirmation", () => {
+test("color themes preview immediately, revert on close, and persist on save", () => {
     const app = loadFrontend();
-    const input = app.sandbox.document.getElementById("command-input");
-    const gate = app.sandbox.document.getElementById("confirmation-gate");
-    const btnPre = app.sandbox.document.getElementById("btn-pre-send");
+    app.sandbox.applySettings();
+    app.sandbox.initSettingsModal();
 
-    input.value = "Test confirmation message";
-    vm.runInContext('activeRoomId = "room-1";', app.sandbox);
-    vm.runInContext('showConfirmation();', app.sandbox);
+    const open = app.sandbox.document.getElementById("btn-open-settings");
+    const close = app.sandbox.document.getElementById("btn-close-settings");
+    const save = app.sandbox.document.getElementById("btn-save-settings");
+    const theme = app.sandbox.document.getElementById("setting-theme");
 
-    assert.equal(input.readOnly, true);
-    assert.equal(gate.classList.contains("hidden"), false);
-    assert.equal(btnPre.classList.contains("hidden"), true);
-    assert.equal(vm.runInContext('confirmationTargetRoomId', app.sandbox), "room-1");
+    assert.equal(app.sandbox.document.body.getAttribute("data-theme"), "midnight");
+    assert.equal(app.sandbox.document.body.style.getPropertyValue("color-scheme"), "dark");
 
-    // Switch rooms -> confirmation must be cleared and unlocked
-    vm.runInContext('selectRoom("room-2");', app.sandbox);
-    assert.equal(input.readOnly, false);
-    assert.equal(gate.classList.contains("hidden"), true);
-    assert.equal(vm.runInContext('confirmationTargetRoomId', app.sandbox), null);
+    open.listeners.click();
+    theme.value = "quiet-light";
+    theme.listeners.change();
+    assert.equal(app.sandbox.document.body.getAttribute("data-theme"), "quiet-light");
+    assert.equal(app.sandbox.document.body.style.getPropertyValue("color-scheme"), "light");
+    assert.equal(app.storage.vc_settings, undefined);
+
+    close.listeners.click();
+    assert.equal(app.sandbox.document.body.getAttribute("data-theme"), "midnight");
+
+    open.listeners.click();
+    theme.value = "high-contrast";
+    theme.listeners.change();
+    save.listeners.click();
+
+    const persisted = JSON.parse(app.storage.vc_settings);
+    assert.equal(persisted.settingsVersion, 5);
+    assert.equal(persisted.theme, "high-contrast");
+    assert.equal(app.sandbox.document.body.getAttribute("data-theme"), "high-contrast");
+    assert.equal(app.sandbox.document.body.style.getPropertyValue("color-scheme"), "dark");
+
+    open.listeners.click();
+    theme.value = "paper-light";
+    theme.listeners.change();
+    assert.equal(app.sandbox.document.body.style.getPropertyValue("color-scheme"), "light");
+    close.listeners.click();
+
+    const htmlContent = fs.readFileSync(path.join(__dirname, "../frontend/index.html"), "utf8");
+    const cssContent = fs.readFileSync(path.join(__dirname, "../frontend/index.css"), "utf8");
+    for (const themeId of [
+        "paper-light", "solarized-light", "rose-pine-dawn", "mist-light", "sepia-light",
+        "dracula", "one-dark", "solarized-dark", "tokyo-night", "catppuccin-mocha"
+    ]) {
+        assert.ok(htmlContent.includes(`value="${themeId}"`), `missing theme option ${themeId}`);
+        assert.ok(cssContent.includes(`body[data-theme="${themeId}"]`), `missing theme CSS ${themeId}`);
+    }
 });
 
-test("browser composer prepares and confirms through gateway contracts", async () => {
+test("composer send control is not a confirmation gate", () => {
+    const app = loadFrontend();
+    const input = app.sandbox.document.getElementById("command-input");
+    const htmlContent = fs.readFileSync(path.join(__dirname, "../frontend/index.html"), "utf8");
+
+    assert.equal(input.readOnly, false);
+    assert.ok(htmlContent.includes('id="btn-send"'));
+    assert.ok(htmlContent.includes("<span>Send</span>"));
+    assert.equal(htmlContent.includes("confirmation-gate"), false);
+    assert.equal(htmlContent.includes("Draft Message"), false);
+});
+
+test("quick suggestions expose smart AI chips, More menu, and most-used predefined message", () => {
+    const app = loadFrontend();
+    const input = app.sandbox.document.getElementById("command-input");
+    const htmlContent = fs.readFileSync(path.join(__dirname, "../frontend/index.html"), "utf8");
+
+    const cssContent = fs.readFileSync(path.join(__dirname, "../frontend/index.css"), "utf8");
+
+    assert.match(htmlContent, /id="quick-suggestions"/);
+    assert.match(htmlContent, /id="quick-suggestion-smart-0"/);
+    assert.match(htmlContent, /id="quick-suggestion-smart-1"/);
+    assert.match(htmlContent, /id="btn-more-quick-suggestions"/);
+    assert.match(htmlContent, /id="quick-suggestions-menu"/);
+
+    assert.match(cssContent, /\.composer-container[\s\S]*?overflow:\s*visible/);
+    assert.match(cssContent, /\.quick-suggestions-menu[\s\S]*?z-index:\s*1000/);
+    assert.match(cssContent, /\.quick-suggestion-smart/);
+
+    vm.runInContext('activeRoomId = "room-quick-suggestions";', app.sandbox);
+    app.sandbox.applySmartQuickSuggestions("room-quick-suggestions", [
+        { label: "Double-check", command: "@grok Independently double-check the implementation." },
+        { label: "Your take", command: "@codex What is your opinion on the latest result?" }
+    ]);
+    assert.equal(app.sandbox.insertQuickSuggestion("smart-0"), true);
+    assert.equal(input.value, "@grok Independently double-check the implementation.");
+    assert.equal(
+        app.sandbox.document.getElementById("quick-suggestion-smart-0").textContent,
+        "Double-check"
+    );
+
+    input.value = "";
+    assert.equal(app.sandbox.insertQuickSuggestion("status"), true);
+    assert.equal(input.value, "What is the status of the current task?");
+    assert.equal(
+        vm.runInContext('getRoomState("room-quick-suggestions").lastInsertedSuggestion', app.sandbox),
+        undefined
+    );
+    assert.equal(app.storage.vc_quick_suggestion_usage, JSON.stringify({ status: 1 }));
+
+    input.value = "";
+    assert.equal(app.sandbox.insertQuickSuggestion("most-used"), true);
+    assert.equal(input.value, "What is the status of the current task?");
+    assert.equal(app.storage.vc_quick_suggestion_usage, JSON.stringify({ status: 2 }));
+});
+
+test("browser composer sends through gateway contracts without a confirmation dialog", async () => {
     const app = loadFrontend();
     const input = app.sandbox.document.getElementById("command-input");
     const requests = [];
@@ -610,14 +695,55 @@ test("browser composer prepares and confirms through gateway contracts", async (
         });
     };
 
-    await app.sandbox.showConfirmation();
+    await app.sandbox.sendMessage();
     assert.equal(requests[0].url, "/api/gateway/interact");
-    assert.equal(app.sandbox.document.getElementById("btn-confirm-send").disabled, false);
-
-    await app.sandbox.sendDraftedMessage();
     assert.equal(requests[1].url, "/api/gateway/confirm");
     assert.equal(JSON.parse(requests[1].options.body).nonce, "nonce-browser");
     assert.equal(input.value, "");
+});
+
+test("pressing Enter sends the composer and Shift+Enter remains multiline", async () => {
+    const app = loadFrontend();
+    const input = app.sandbox.document.getElementById("command-input");
+    const requests = [];
+    vm.runInContext('activeRoomId = "room-enter";', app.sandbox);
+    input.value = "@codex send with Enter";
+    app.sandbox.fetch = (url, options) => {
+        requests.push({ url, options });
+        if (url === "/api/gateway/interact") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    confirmation_snapshot: {
+                        schema_version: "1.0",
+                        immutable_interaction_id: "int-enter",
+                        room_id: "room-enter",
+                        agent: "codex",
+                        exact_message: "@codex send with Enter",
+                        permission_tier: "commit",
+                        expires_at: Date.now() / 1000 + 60,
+                        nonce: "nonce-enter"
+                    }
+                })
+            });
+        }
+        return Promise.resolve({
+            ok: true,
+            json: async () => ({ status: "posted", rocket_chat_msg_ids: ["rc-enter"] })
+        });
+    };
+
+    const preventDefault = () => {};
+    await input.listeners.keydown({ key: "Enter", shiftKey: false, preventDefault });
+    assert.deepEqual(requests.slice(0, 2).map(request => request.url), [
+        "/api/gateway/interact",
+        "/api/gateway/confirm"
+    ]);
+    assert.equal(input.value, "");
+
+    input.value = "keep\nwriting";
+    await input.listeners.keydown({ key: "Enter", shiftKey: true, preventDefault });
+    assert.equal(input.value, "keep\nwriting");
 });
 
 test("recent stats bar renders formatted agent metrics", () => {
@@ -1160,7 +1286,8 @@ test("attention rail uses position for ranked priority without printing rank or 
 
     await app.sandbox.fetchAttentionQueue(true);
     const html = app.sandbox.document.getElementById("channels-list").innerHTML;
-    assert.equal(html.includes("attn-badge-ranked"), false);
+    assert.equal(html.includes("attn-badge-ready"), true);
+    assert.equal(html.includes("attn-ready-dot"), true);
     assert.equal(html.includes("#1 · 125"), false);
     assert.ok(html.includes("attn-badge-busy"));
     assert.ok(html.includes("Busy 5m"));
@@ -1262,15 +1389,13 @@ test("attention rail sorts configured channels by score then recent activity", (
     assert.deepEqual([...order].sort((a, b) => a - b), order);
 });
 
-test("confirmation gate freezes and then releases a pending attention queue", async () => {
+test("composer text freezes attention queue updates until the turn ends", async () => {
     const app = loadFrontend();
-    const gate = app.sandbox.document.getElementById("confirmation-gate");
     vm.runInContext(`
         roomsList = [{ id: "r1", name: "voice_channel" }];
         activeRoomId = "r1";
-        commandInput.value = "";
+        commandInput.value = "message in progress";
     `, app.sandbox);
-    gate.classList.remove("hidden");
 
     app.sandbox.fetch = (url) => {
         if (url === "/api/attention/queue") {
@@ -1289,9 +1414,10 @@ test("confirmation gate freezes and then releases a pending attention queue", as
     await app.sandbox.fetchAttentionQueue(false);
     assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), true);
 
-    app.sandbox.hideConfirmation();
+    app.sandbox.document.getElementById("command-input").value = "";
+    app.sandbox.syncCommandDraftState("");
+    app.sandbox.applyPendingAttentionQueueIfReady();
 
-    assert.equal(gate.classList.contains("hidden"), true);
     assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), false);
     assert.ok(app.sandbox.document.getElementById("channels-list").innerHTML.includes("Busy 2m"));
 });
@@ -1389,4 +1515,316 @@ test("attention settings modal is a top-level overlay, not nested inside the hid
     );
     assert.notEqual(ancestorsOfChannelsResizeHandle, null, "channel sidebar resize handle must exist");
     assert.deepEqual(stack.map(e => e.id).filter(Boolean), [], "index.html must have balanced tags at EOF");
+});
+
+test("agent-model-modal is a top-level overlay and opens cleanly without hidden parents", async () => {
+    const htmlContent = fs.readFileSync(path.join(__dirname, "../frontend/index.html"), "utf8");
+    const tagPattern = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
+    const voidTags = new Set(["br", "img", "input", "hr", "meta", "link", "source", "area", "base", "col", "embed", "param", "track", "wbr"]);
+
+    const stack = [];
+    let ancestorsOfAgentModelModal = null;
+    let match;
+    while ((match = tagPattern.exec(htmlContent)) !== null) {
+        const [, closing, tagName, attrs, selfClosing] = match;
+        const tag = tagName.toLowerCase();
+        if (closing) {
+            const idx = stack.map(e => e.tag).lastIndexOf(tag);
+            if (idx !== -1) stack.length = idx;
+            continue;
+        }
+        const idMatch = /\bid\s*=\s*"([^"]*)"/.exec(attrs || "");
+        const id = idMatch ? idMatch[1] : null;
+        if (id === "agent-model-modal" && ancestorsOfAgentModelModal === null) {
+            ancestorsOfAgentModelModal = stack.map(e => e.id).filter(Boolean);
+        }
+        if (!voidTags.has(tag) && !selfClosing) stack.push({ tag, id });
+    }
+
+    assert.notEqual(ancestorsOfAgentModelModal, null, "agent-model-modal must exist in index.html");
+    assert.ok(
+        !ancestorsOfAgentModelModal.includes("attention-settings-modal"),
+        "agent-model-modal must not be nested inside #attention-settings-modal",
+    );
+    assert.ok(
+        !ancestorsOfAgentModelModal.includes("settings-modal"),
+        "agent-model-modal must not be nested inside #settings-modal",
+    );
+
+    const app = loadFrontend();
+    const modal = app.sandbox.document.getElementById("agent-model-modal");
+    assert.ok(modal, "agent-model-modal element must be present in DOM");
+    assert.equal(modal.style.display, "none", "modal starts hidden");
+
+    app.sandbox.openAgentModelModal("codex");
+    assert.equal(modal.style.display, "flex", "openAgentModelModal sets display:flex");
+});
+
+test("model toolbar is logo-only at rest and uses each logo as the selector trigger", () => {
+    const htmlContent = fs.readFileSync(path.join(__dirname, "../frontend/index.html"), "utf8");
+    const cssContent = fs.readFileSync(path.join(__dirname, "../frontend/index.css"), "utf8");
+
+    for (const agent of ["codex", "agy", "claude", "grok"]) {
+        assert.match(
+            htmlContent,
+            new RegExp(`id="btn-agent-${agent}"[^>]*class="[^"]*model-agent-control|class="[^"]*model-agent-control[^"]*"[^>]*id="btn-agent-${agent}"`),
+        );
+        assert.match(htmlContent, new RegExp(`id="btn-agent-${agent}"[^>]*draggable="true"`));
+        assert.match(htmlContent, new RegExp(`id="model-label-${agent}"`));
+    }
+    assert.equal(htmlContent.includes('id="btn-agent-gemini"'), false);
+    assert.equal(htmlContent.includes('id="model-label-gemini"'), false);
+    assert.equal(htmlContent.includes("btn-tune-model"), false);
+    assert.equal(htmlContent.includes("agent-model-chip"), false);
+    assert.match(cssContent, /\.model-agent-control\s*\{[^}]*max-width:\s*38px/s);
+    assert.match(cssContent, /\.model-agent-control:hover[^{]*\{[^}]*max-width:\s*240px/s);
+});
+
+test("dragged agent targets are inserted at the start of the composer draft", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        activeRoomId = "room-agent-drag";
+        roomsList = [{ id: "room-agent-drag", name: "voice_channel" }];
+    `, app.sandbox);
+    const commandInput = app.sandbox.document.getElementById("command-input");
+
+    commandInput.value = "what changed?";
+    assert.equal(app.sandbox.insertAgentMentionIntoComposer("codex"), true);
+    assert.equal(commandInput.value, "@codex what changed?");
+    assert.equal(app.storage["vc_draft_room-agent-drag"], "@codex what changed?");
+    assert.equal(
+        vm.runInContext('getRoomState("room-agent-drag").draftText', app.sandbox),
+        "@codex what changed?"
+    );
+
+    commandInput.value = "@claude review this branch";
+    assert.equal(app.sandbox.insertAgentMentionIntoComposer("agy"), true);
+    assert.equal(commandInput.value, "@agy review this branch");
+
+    commandInput.readOnly = true;
+    commandInput.value = "locked draft";
+    assert.equal(app.sandbox.insertAgentMentionIntoComposer("grok"), false);
+    assert.equal(commandInput.value, "locked draft");
+});
+
+test("model modal renders only the selected agent's complete ACLI catalog", async () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        activeRoomId = "room-model-ui";
+        roomsList = [{ id: "room-model-ui", name: "voice_channel" }];
+    `, app.sandbox);
+    const agents = {
+        codex: {
+            agent: "codex", available: true,
+            current_model: "gpt-5.6-sol", current_effort: "high",
+            display_model: "GPT 5.6 Sol", display_effort: "high",
+            display_label: "Codex · GPT 5.6 Sol · high",
+            available_models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.4", "o3"],
+            available_efforts: ["low", "medium", "high", "xhigh", "max"]
+        },
+        agy: { agent: "agy", available: true, current_model: "Gemini 3.5 Flash (High)", current_effort: "low", display_model: "Gemini 3.5 Flash (High)", display_effort: "low", available_models: ["Gemini 3.5 Flash (High)", "Gemini 3.1 Pro (High)"], available_efforts: ["low", "high"] },
+        claude: {
+            agent: "claude", available: true,
+            current_model: "claude-sonnet-5", current_effort: "high",
+            display_model: "Claude Sonnet 5", display_effort: "high",
+            available_models: [
+                "claude-sonnet-4-6", "claude-opus-4-8", "claude-opus-4-7",
+                "claude-haiku-3-5", "sonnet", "opus", "haiku",
+                "claude-sonnet-5", "claude-fable-5", "fable"
+            ],
+            available_efforts: ["low", "medium", "high", "xhigh", "max"]
+        },
+        grok: { agent: "grok", available: true, current_model: "grok-4.5", current_effort: "high", display_model: "Grok 4.5", display_effort: "high", available_models: ["grok-4.5", "grok-build"], available_efforts: ["low", "high", "xhigh"] }
+    };
+    app.sandbox.fetch = url => {
+        assert.match(url, /roomId=room-model-ui/);
+        assert.match(url, /channelName=voice_channel/);
+        return Promise.resolve({
+            ok: true,
+            json: async () => ({
+                success: true,
+                room_id: "room-model-ui",
+                channel_name: "voice_channel",
+                agents
+            })
+        });
+    };
+
+    await app.sandbox.openAgentModelModal("codex");
+    const modelSelect = app.sandbox.document.getElementById("model-select-input");
+    const effortSelect = app.sandbox.document.getElementById("effort-select-input");
+    assert.equal(modelSelect.disabled, false);
+    assert.match(modelSelect.innerHTML, /gpt-5\.6-sol/);
+    assert.match(modelSelect.innerHTML, /gpt-5\.6-terra/);
+    assert.match(modelSelect.innerHTML, />o3</);
+    assert.equal(modelSelect.innerHTML.includes("grok-4.5"), false);
+    assert.equal(modelSelect.innerHTML.includes("Gemini 3.5 Flash"), false);
+    assert.match(effortSelect.innerHTML, /value="xhigh"/);
+
+    await app.sandbox.openAgentModelModal("claude");
+    for (const model of agents.claude.available_models) {
+        assert.ok(modelSelect.innerHTML.includes(model), `Claude selector must include ${model}`);
+    }
+    assert.equal(modelSelect.innerHTML.includes("gpt-5.6-sol"), false);
+    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+        assert.ok(effortSelect.innerHTML.includes(`value="${effort}"`), `effort selector must include ${effort}`);
+    }
+});
+
+test("AGY model families synchronize effort choices from ACLI slug metadata", async () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        activeRoomId = "room-agy-model-ui";
+        roomsList = [{ id: "room-agy-model-ui", name: "voice_channel" }];
+    `, app.sandbox);
+    const agy = {
+        agent: "agy",
+        available: true,
+        current_model: "gemini-3.6-flash-low",
+        current_effort: "low",
+        selector_model: "gemini-3.6-flash",
+        selector_effort: "low",
+        display_model: "Gemini 3.6 Flash",
+        display_effort: "low",
+        available_models: [
+            "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high",
+            "gemini-3.1-pro-low", "gemini-3.1-pro-high"
+        ],
+        available_efforts: ["low", "medium", "high", "xhigh", "max"],
+        model_options: [
+            { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", efforts: ["low", "medium", "high"] },
+            { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", efforts: ["low", "high"] }
+        ]
+    };
+    app.sandbox.fetch = url => {
+        assert.match(url, /roomId=room-agy-model-ui/);
+        return Promise.resolve({
+            ok: true,
+            json: async () => ({
+                success: true,
+                room_id: "room-agy-model-ui",
+                channel_name: "voice_channel",
+                agents: { agy }
+            })
+        });
+    };
+
+    await app.sandbox.openAgentModelModal("agy");
+    const modelSelect = app.sandbox.document.getElementById("model-select-input");
+    const effortSelect = app.sandbox.document.getElementById("effort-select-input");
+    assert.equal(modelSelect.value, "gemini-3.6-flash");
+    assert.match(modelSelect.innerHTML, /Gemini 3\.6 Flash/);
+    assert.equal(modelSelect.innerHTML.includes("gemini-3.6-flash-low"), false);
+    assert.match(effortSelect.innerHTML, /value="medium"/);
+    assert.equal(effortSelect.innerHTML.includes('value="xhigh"'), false);
+
+    modelSelect.value = "gemini-3.1-pro";
+    modelSelect.listeners.change();
+    assert.match(effortSelect.innerHTML, /value="low"/);
+    assert.match(effortSelect.innerHTML, /value="high"/);
+    assert.equal(effortSelect.innerHTML.includes('value="medium"'), false);
+});
+
+test("Apply dispatches the native model command without a confirmation dialog or composer changes", async () => {
+    let confirmationCalls = 0;
+    let confirmApplied = true;
+    const app = loadFrontend({ confirm: () => { confirmationCalls += 1; throw new Error("window.confirm should not be called"); } });
+    vm.runInContext(`
+        activeRoomId = "room-model-apply";
+        roomsList = [{ id: "room-model-apply", name: "voice_channel" }];
+    `, app.sandbox);
+    const commandInput = app.sandbox.document.getElementById("command-input");
+    commandInput.value = "Keep this unrelated draft";
+    const sendFeedback = app.sandbox.document.getElementById("send-feedback");
+    sendFeedback.textContent = "Failed to send message: stale test error";
+    sendFeedback.className = "send-feedback error";
+    sendFeedback.style.display = "block";
+    app.sandbox.document.getElementById("model-target-agent").value = "codex";
+    app.sandbox.document.getElementById("model-select-input").value = "gpt-5.6-terra";
+    app.sandbox.document.getElementById("effort-select-input").value = "high";
+
+    const requests = [];
+    const agents = {
+        codex: { agent: "codex", available: true, current_model: "gpt-5.6-terra", current_effort: "high", display_model: "GPT 5.6 Terra", display_effort: "high", display_label: "Codex · GPT 5.6 Terra · high", available_models: ["gpt-5.6-sol", "gpt-5.6-terra"], available_efforts: ["low", "high"] },
+        agy: { agent: "agy", available: true, current_model: "Gemini 3.5 Flash (High)", current_effort: "low", display_model: "Gemini 3.5 Flash (High)", display_effort: "low", available_models: ["Gemini 3.5 Flash (High)"], available_efforts: ["low"] },
+        claude: { agent: "claude", available: true, current_model: "claude-opus-5", current_effort: "high", display_model: "Claude Opus 5", display_effort: "high", available_models: ["claude-opus-5"], available_efforts: ["high"] },
+        grok: { agent: "grok", available: true, current_model: "grok-4.5", current_effort: "high", display_model: "Grok 4.5", display_effort: "high", available_models: ["grok-4.5"], available_efforts: ["high"] }
+    };
+    app.sandbox.fetch = (url, options = {}) => {
+        requests.push({ url, options });
+        if (url === "/api/agent-models/prepare") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    confirmation_message: "Change Codex in #voice_channel?",
+                    confirmation_snapshot: {
+                        schema_version: "1.0",
+                        immutable_interaction_id: "int-model-ui",
+                        room_id: "room-model-apply",
+                        agent: "codex",
+                        exact_message: "!model codex gpt-5.6-terra high",
+                        permission_tier: "commit",
+                        expires_at: 9999999999,
+                        nonce: "nonce-model-ui"
+                    },
+                    change: {
+                        formatted_command: "!model codex gpt-5.6-terra high",
+                        target_model: "gpt-5.6-terra",
+                        target_effort: "high"
+                    }
+                })
+            });
+        }
+        if (url === "/api/agent-models/confirm") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    status: "applied",
+                    applied: confirmApplied,
+                    effective: { current_model: "gpt-5.6-terra", current_effort: "high" },
+                    rocket_chat_msg_ids: ["rc-model-ui"]
+                })
+            });
+        }
+        if (url.startsWith("/api/agent-models?")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({ success: true, room_id: "room-model-apply", channel_name: "voice_channel", agents })
+            });
+        }
+        throw new Error("Unexpected request: " + url);
+    };
+
+    await app.sandbox.applyAgentModelSwitch(false);
+
+    assert.equal(confirmationCalls, 0);
+    assert.equal(commandInput.value, "Keep this unrelated draft");
+    assert.equal(requests.some(request => request.url === "/api/gateway/interact"), false);
+    const confirmRequest = requests.find(request => request.url === "/api/agent-models/confirm");
+    assert.ok(confirmRequest);
+    const confirmBody = JSON.parse(confirmRequest.options.body);
+    assert.equal(confirmBody.confirmation_snapshot.exact_message, "!model codex gpt-5.6-terra high");
+    assert.equal(
+        app.sandbox.document.getElementById("model-control-status").innerText,
+        "Applied: GPT 5.6 Terra · high."
+    );
+    assert.equal(sendFeedback.style.display, "none");
+    assert.equal(sendFeedback.textContent, "");
+    assert.equal(sendFeedback.className, "send-feedback hidden");
+
+    // A successful Rocket.Chat post can briefly precede ACLI's persisted
+    // state becoming visible. That is pending, not a model-switch error.
+    confirmApplied = false;
+    await app.sandbox.applyAgentModelSwitch(false);
+    const pendingStatus = app.sandbox.document.getElementById("model-control-status");
+    assert.equal(pendingStatus.className, "model-control-status pending");
+    assert.equal(
+        pendingStatus.innerText,
+        "The model command was sent to Rocket.Chat; ACLI is still finalizing the persisted change."
+    );
+    assert.equal(sendFeedback.style.display, "none");
+    assert.equal(sendFeedback.textContent, "");
+    assert.equal(sendFeedback.className, "send-feedback hidden");
 });

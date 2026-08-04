@@ -2,11 +2,13 @@ import os
 import sys
 import time
 import json
+import ast
 import logging
 import re
 import asyncio
 import shutil
 import subprocess
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body
@@ -41,6 +43,7 @@ from app.rc_ingress import IngressConfigurationError, build_ingress_message, ext
 from app.supervision_strategy import (
     build_strategy_context,
     load_channel_registry,
+    normalize_narrator_summary,
     parse_response_assistant_output,
     read_project_context,
     resolve_channel_profile,
@@ -381,14 +384,22 @@ def classify_message(msg: dict) -> dict:
         if stopped:
             return {"lane": "system", "event": stopped}
 
-        # Explicit dispatcher failure notices, e.g. "❌ **@agy** failed: ..."
-        failed_match = re.search(r"❌\s+\*\*@([a-zA-Z0-9_]+)\*\*\s+failed", text)
+        # Explicit dispatcher failure notices, including the timeout form ACLI
+        # emits without the usual ❌ prefix.  Timeout notices are terminal: if
+        # they remain ordinary text, the attention rail can show Busy forever.
+        failed_match = re.search(
+            r"❌\s+\*\*@([a-zA-Z0-9_]+)\*\*\s+failed"
+            r"|\*\*@([a-zA-Z0-9_]+)\*\*\s+hit\s+the\s+\d+s\s+timeout",
+            text,
+            re.IGNORECASE,
+        )
         if failed_match:
+            agent = failed_match.group(1) or failed_match.group(2)
             return {
                 "lane": "system",
                 "event": {
                     "kind": "error",
-                    "agent": failed_match.group(1),
+                    "agent": agent,
                     "model": None,
                     "elapsed_seconds": None,
                     "stopped": False,
@@ -881,6 +892,34 @@ async def get_attention_queue(now: Optional[float] = None):
                     except Exception:
                         activity_map[cname_key] = None
 
+    # /api/history normally hydrates the supervisor, but the browser polls that
+    # endpoint only for the focused room. Refresh active tasks here as part of
+    # the all-channel attention poll so a background response can clear Busy
+    # before the queue is scored.
+    active_supervised_room_ids = {
+        task.room_id
+        for task in task_supervisor.all()
+        if task.state in {TaskState.POSTED, TaskState.ROUTED, TaskState.WORKING}
+    }
+    background_room_ids = {
+        room.get("_id")
+        for room in room_by_cname.values()
+        if room.get("_id") in active_supervised_room_ids
+    }
+    if background_room_ids:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                refreshes = [
+                    _refresh_active_task_room(client, room_id)
+                    for room_id in background_room_ids
+                ]
+                results = await asyncio.gather(*refreshes, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.debug("Could not refresh a background task room: %s", result)
+        except Exception as err:
+            logger.debug("Could not refresh background task rooms for attention: %s", err)
+
     # Collect task supervisor summaries per channel
     room_summaries: Dict[str, Dict[str, Any]] = {}
     for citem in channel_registry:
@@ -956,6 +995,61 @@ async def update_attention_config(payload: Dict[str, Any] = Body(...)):
     except Exception as err:
         logger.warning(f"Failed to update channel attention config: {err}")
         raise HTTPException(status_code=400, detail=str(err))
+
+def _ingest_supervised_history(room_id: str, raw_messages: List[dict], cleaned_messages: List[dict]) -> List[str]:
+    """Apply classified room events to the durable supervisor exactly once."""
+    supervised_interaction_ids = []
+    for raw_message, cleaned_message in zip(raw_messages, cleaned_messages):
+        record = task_supervisor.ingest_event(
+            room_id,
+            raw_message.get("_id"),
+            timestamp_to_epoch(raw_message.get("ts")),
+            cleaned_message.get("event", {}),
+        )
+        if record and record.interaction_id not in supervised_interaction_ids:
+            supervised_interaction_ids.append(record.interaction_id)
+    return supervised_interaction_ids
+
+
+async def _refresh_active_task_room(client: httpx.AsyncClient, room_id: str) -> None:
+    """Hydrate supervision for a background room before its attention is scored.
+
+    The browser normally hydrates a room through /api/history, but that endpoint
+    is intentionally scoped to the visible room. Attention polling is the one
+    place that already surveys all channels, so it also refreshes only rooms
+    that still have an active supervised task. This clears stale Busy markers
+    when a response arrives while Ed is viewing another channel.
+    """
+    params = {"roomId": room_id, "count": 100, "offset": 0}
+    response = await client.get(
+        f"{get_rc_base_url()}/api/v1/channels.history",
+        headers={"X-Auth-Token": RC_AUTH_TOKEN, "X-User-Id": RC_USER_ID},
+        params=params,
+    )
+    if response.status_code != 200:
+        response = await client.get(
+            f"{get_rc_base_url()}/api/v1/groups.history",
+            headers={"X-Auth-Token": RC_AUTH_TOKEN, "X-User-Id": RC_USER_ID},
+            params=params,
+        )
+    if response.status_code != 200:
+        return
+    payload = response.json()
+    if not payload.get("success"):
+        return
+
+    raw_messages = list(payload.get("messages", []))
+    raw_messages.reverse()
+    seen_ids = set()
+    deduped_raw = []
+    for message in raw_messages:
+        message_id = message.get("_id")
+        if message_id and message_id not in seen_ids:
+            seen_ids.add(message_id)
+            deduped_raw.append(message)
+    cleaned_messages, _ = process_history_messages(deduped_raw)
+    _ingest_supervised_history(room_id, deduped_raw, cleaned_messages)
+
 
 @app.get("/api/history")
 async def get_history(
@@ -1036,16 +1130,7 @@ async def get_history(
     raw_messages = deduped_raw
 
     cleaned_messages, rolling_stats = process_history_messages(raw_messages)
-    supervised_interaction_ids = []
-    for raw_message, cleaned_message in zip(raw_messages, cleaned_messages):
-        record = task_supervisor.ingest_event(
-            room_id,
-            raw_message.get("_id"),
-            timestamp_to_epoch(raw_message.get("ts")),
-            cleaned_message.get("event", {}),
-        )
-        if record and record.interaction_id not in supervised_interaction_ids:
-            supervised_interaction_ids.append(record.interaction_id)
+    supervised_interaction_ids = _ingest_supervised_history(room_id, raw_messages, cleaned_messages)
     
     return {
         "success": True,
@@ -1160,12 +1245,11 @@ async def generate_digest(req: DigestRequest):
         
     rules = (
         "1. Speak directly to Ed. Refer to him as 'Ed' or 'you'.\n"
-        "2. Synthesize what is happening into EXACTLY TWO SHORT PARAGRAPHS.\n"
-        "   - Paragraph 1: High-level overview of the recent conversation context and requests.\n"
-        "   - Paragraph 2: Current progress, actions completed, and active status.\n"
-        "3. Do NOT use bullet points, numbered lists, or Markdown header formatting (no # or *).\n"
-        "4. Keep it crisp, conversational, and under 200 words total.\n"
-        "5. Skip all greeting and sign-off boilerplate."
+        "2. Give exactly one short paragraph summarizing what is happening and the meaningful outcome.\n"
+        "3. Stay high-level: omit technical details, filenames, paths, tests, logs, commands, message IDs, and minor points.\n"
+        "4. Mention only material decisions, blocking issues, or clarifications Ed actually needs to address; omit categories that do not apply.\n"
+        "5. Do not mention small issues or routine cleanup. Keep it crisp, conversational, and under 180 words.\n"
+        "6. Skip greetings, sign-offs, Markdown headings, bullets, and numbered lists."
     )
     with open(task_instructions_path, "w", encoding="utf-8") as f:
         f.write(rules)
@@ -1247,6 +1331,7 @@ async def generate_digest(req: DigestRequest):
                 logger.warning(f"Could not remove temp job_dir '{job_dir}': {e}")
         
     if success and digest_text:
+        digest_text = normalize_narrator_summary(digest_text)
         # Persist summary
         save_summary(room_id, digest_text)
         return {
@@ -1255,9 +1340,9 @@ async def generate_digest(req: DigestRequest):
             "prior_summary_used": prior_summary_used
         }
         
-    # Rule-based fallback summary with agent attribution in exactly two paragraphs
+    # Rule-based fallback summary: one high-level paragraph.
     logger.warning("Worker failed or returned error. Falling back to rule-based summary.")
-    p1_parts = ["Ed, here is the context overview of recent updates in this channel."]
+    p1_parts = ["Ed, here is the high-level context from the recent channel updates."]
     user_counts = {}
     for m in lane_b_c:
         agent_name = m.get("event", {}).get("agent") if m.get("lane") == "agent" else None
@@ -1267,19 +1352,18 @@ async def generate_digest(req: DigestRequest):
     for user, count in user_counts.items():
         p1_parts.append(f"{user} contributed {count} updates.")
         
-    p2_parts = []
     if lane_b_c:
         last_msg = lane_b_c[-1]
         agent_name = last_msg.get("event", {}).get("agent") if last_msg.get("lane") == "agent" else None
         last_user = agent_name or last_msg.get("name") or last_msg.get("username") or "Unknown"
-        last_text = last_msg.get("text", "")
-        if len(last_text) > 100:
-            last_text = last_text[:100] + "..."
-        p2_parts.append(f"Current status: The latest activity was from {last_user}, stating: {last_text}")
+        p1_parts.append(
+            f"The latest activity was from {last_user}. The AI narrator was unavailable, "
+            "so review the response directly for its substantive outcome."
+        )
     else:
-        p2_parts.append("Current status: No active agent replies or user requests in the current window.")
+        p1_parts.append("There are no active agent replies or user requests in the current window.")
         
-    fallback_digest = " ".join(p1_parts) + "\n\n" + " ".join(p2_parts)
+    fallback_digest = " ".join(p1_parts)
     
     # Persist fallback summary
     try:
@@ -1351,13 +1435,43 @@ async def _generate_response_assistant_once(req: ResponseAssistantRequest):
     instructions = (
         build_strategy_context(profile)
         + "\n\n=== NARRATOR CONTRACT ===\n"
-        + "Speak directly to Ed. The digest must be exactly two short paragraphs, "
-          "plain text, under 180 words total: first what the response means in context, "
-          "then current status, blockers, and what decision is now needed. Do not use "
-          "headings, bullets, greetings, or sign-offs.\n"
+        + "Speak directly to Ed. The digest field must be exactly one short paragraph "
+          "summarizing what is happening and the meaningful outcome. Keep it high-level "
+          "and conversational. Do not include technical details, implementation mechanics, "
+          "filenames, file paths, test names, logs, commands, message IDs, or minor points.\n"
+        + "Put only material items requiring Ed's attention in attention_items. A decision "
+          "is a meaningful choice, tradeoff, direction, or approval. An issue must materially "
+          "block progress, threaten the result, or require meaningful rework; classify it as "
+          "major or moderate and never include small defects or routine cleanup. A clarification "
+          "is missing or confused intent, scope, priority, outcome, or constraints that affects "
+          "the next step. An approval is a consequential action requiring Ed's authorization; "
+          "omit it when a decision item already says the same thing. Omit every category that "
+          "does not apply, and return an empty list when nothing needs Ed's attention.\n"
+        + "For coding work, judge decisions around scope, architecture, behavior, tradeoffs, "
+          "and important limitations; issues around real blockers, failed core behavior, "
+          "substantial review findings, security or data risk, and meaningful rework; and "
+          "clarifications around requirements, expected behavior, boundaries, acceptance "
+          "criteria, or implementation direction. Never surface code-level detail by itself.\n"
+        + "For non-coding work, judge decisions around priority, strategy, commitments, and "
+          "direction; issues around material constraints, dependencies, conflicts, risks, or "
+          "missing resources; clarifications around goals, audience, timing, preferences, "
+          "responsibility, or desired outcome; and approvals for contacting, publishing, "
+          "purchasing, submitting, scheduling, spending resources, or irreversible commitments.\n"
+        + "Do not invent uncertainty, inflate a small issue, or ask Ed to decide something the "
+          "responding agent can reasonably resolve independently. Do not put the suggested "
+          "workflow or next-message draft in the digest.\n"
         + "Base both outputs on the same evidence. Treat the latest real agent response "
           "as the trigger, but use the bounded history and approved matter documents to "
-          "avoid a shallow or repetitive next step."
+          "avoid a shallow or repetitive next step.\n"
+        + "Also produce exactly two quick_suggestions for the composer chip row. Each "
+          "item needs a 1–2 word label (very short; e.g. Double-check, Next action, Your "
+          "take, Overall plan, Green light?, Fix gaps, Pressure-test) and a full command "
+          "string Ed can click to drop into the input. Prefer commands that start with "
+          "@worker when another agent should act next. These chips are not the long "
+          "suggested_message draft; they are alternate one-click asks. Match the situation: "
+          "coding phases (verify, next action, plan location, checkpoint, remediation) vs "
+          "non-coding (priority, opinion, clarify, next step). After one agent replies, often "
+          "suggest getting another worker's opinion (e.g. after Grok, ask Codex 'Your take')."
     )
     worker_name = os.environ.get("VC_RESPONSE_ASSISTANT_WORKER", "codex")
     assistant_model = os.environ.get("VC_RESPONSE_ASSISTANT_MODEL")
@@ -1447,9 +1561,10 @@ async def _generate_response_assistant_once(req: ResponseAssistantRequest):
         parsed = parse_response_assistant_output(ai_output, profile, latest_response)
         ai_digest_valid = parsed.pop("_ai_digest_valid", False)
         ai_suggestion_valid = parsed.pop("_ai_suggestion_valid", False)
-        if ai_digest_valid and ai_suggestion_valid:
+        ai_quick_valid = parsed.pop("_ai_quick_valid", False)
+        if ai_digest_valid and ai_suggestion_valid and ai_quick_valid:
             generation_mode = "ai"
-        elif ai_digest_valid or ai_suggestion_valid:
+        elif ai_digest_valid or ai_suggestion_valid or ai_quick_valid:
             generation_mode = "hybrid"
         else:
             generation_mode = "fallback"
@@ -1461,15 +1576,11 @@ async def _generate_response_assistant_once(req: ResponseAssistantRequest):
                 or latest_response.get("username")
                 or "the agent"
             )
-            latest_text = re.sub(r"\s+", " ", str(latest_response.get("text") or "")).strip()
-            latest_text = latest_text[:420] + ("..." if len(latest_text) > 420 else "")
             parsed["digest"] = (
                 f"Ed, {latest_author} has returned a substantive response in {req.room_name or 'this channel'}. "
-                f"The main update is: {latest_text}"
-                "\n\n"
-                f"The system classified the next workflow phase as {parsed['phase']}. "
-                "The draft below is a conservative fallback for your review because the AI coordinator was unavailable."
+                "The AI narrator was unavailable, so review the response directly for its meaningful outcome."
             )
+            parsed["attention_items"] = []
 
         save_summary(room_id, parsed["digest"])
         return {
@@ -1614,17 +1725,28 @@ async def deduplicate_nonce(nonce: str, execute_func):
                 processed_nonces.pop(nonce, None)
         raise e
 
-@app.post("/api/gateway/interact", response_model=GatewayResult)
-async def gateway_interact(req: InteractionRequest):
-    """Client-neutral interaction entrypoint.
-    Normalizes text input, selects room/agent, produces an Interpretation,
-    and returns a ConfirmationSnapshot inside GatewayResult.
-    """
+def _prepare_gateway_interaction(
+    req: InteractionRequest,
+    *,
+    allow_model_control: bool = False,
+) -> GatewayResult:
+    """Create a frozen gateway snapshot; typed callers may opt into !model only."""
     target_room = req.requested_room_id or RC_ROOM_ID
     target_agent = req.requested_agent or "codex"
-    
+
     raw_text = req.raw_input.strip()
-    if target_agent and not raw_text.startswith(f"@{target_agent}"):
+    if raw_text.startswith("!"):
+        if not allow_model_control or not re.fullmatch(
+            rf"!model\s+{re.escape(target_agent)}\s+.+",
+            raw_text,
+            flags=re.IGNORECASE,
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Control commands require a typed gateway endpoint",
+            )
+        refined_draft = raw_text
+    elif target_agent and not raw_text.startswith(f"@{target_agent}"):
         refined_draft = f"@{target_agent} {raw_text}"
     else:
         refined_draft = raw_text
@@ -1680,6 +1802,12 @@ async def gateway_interact(req: InteractionRequest):
             "confirmation_snapshot": conf_dict
         }
     )
+
+
+@app.post("/api/gateway/interact", response_model=GatewayResult)
+async def gateway_interact(req: InteractionRequest):
+    """Prepare an ordinary message; control operations use their typed endpoints."""
+    return _prepare_gateway_interaction(req)
 
 @app.post("/api/gateway/confirm", response_model=GatewayResult)
 async def gateway_confirm(conf: ConfirmationSnapshot):
@@ -1873,6 +2001,747 @@ async def send_message(req: MessageSendRequest):
         return await deduplicate_nonce(req.nonce, _do_send)
     else:
         return await _do_send()
+
+
+# Agent Model State & Control Endpoints
+MODEL_CONTROL_AGENTS = ("codex", "agy", "claude", "grok")
+MODEL_CONTROL_POLL_ATTEMPTS = int(os.environ.get("VC_MODEL_CONTROL_POLL_ATTEMPTS", "20"))
+MODEL_CONTROL_POLL_INTERVAL_SECONDS = float(
+    os.environ.get("VC_MODEL_CONTROL_POLL_INTERVAL_SECONDS", "0.5")
+)
+ACLI_CANONICAL_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+ACLI_DEVELOPMENT_ROOT = "/Users/ed/King/clawd_2/development_channel"
+
+
+def format_model_title(model_id: str) -> str:
+    if not model_id:
+        return "Default"
+    pretty_map = {
+        "gpt-5.6-sol": "GPT 5.6 Sol",
+        "gpt-5.6-terra": "GPT 5.6 Terra",
+        "gpt-5.6-luna": "GPT 5.6 Luna",
+        "gpt-5.4": "GPT 5.4",
+        "gpt-5.5": "GPT 5.5",
+        "gpt-5.4-mini": "GPT 5.4 Mini",
+        "gpt-5.3": "GPT 5.3",
+        "gpt-5.2": "GPT 5.2",
+        "gemini-3.6-flash": "Gemini 3.6 Flash",
+        "gemini-3.5-flash": "Gemini 3.5 Flash",
+        "gemini-3.1-pro": "Gemini 3.1 Pro",
+        "gemini-3-flash-preview": "Gemini 3 Flash",
+        "gemini-3.1-pro-preview": "Gemini 3.1 Pro",
+        "gemini-3-pro-preview": "Gemini 3 Pro",
+        "gemini-2.5-pro": "Gemini 2.5 Pro",
+        "gemini-2.5-flash": "Gemini 2.5 Flash",
+        "claude-sonnet-5": "Claude Sonnet 5",
+        "claude-sonnet-4-6": "Claude Sonnet 4.6",
+        "claude-opus-5": "Claude Opus 5",
+        "claude-opus-4-8": "Claude Opus 4.8",
+        "claude-opus-4-7": "Claude Opus 4.7",
+        "claude-haiku-3-5": "Claude Haiku 3.5",
+        "grok-4.5": "Grok 4.5",
+        "grok-4": "Grok 4",
+    }
+    return pretty_map.get(model_id.lower(), model_id)
+
+
+def format_agent_title(agent_id: str) -> str:
+    pretty_map = {
+        "agy": "AGY",
+    }
+    normalized = str(agent_id or "").strip().lower()
+    return pretty_map.get(normalized, normalized.capitalize())
+
+
+def _load_json_object(path: Path, description: str) -> Dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=f"{description} is unavailable for this channel") from exc
+    except (OSError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=503, detail=f"{description} could not be read for this channel") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=503, detail=f"{description} is not a JSON object")
+    return value
+
+
+def _resolve_acli_model_catalog_files() -> tuple[Path, Path]:
+    """Resolve ACLI's shared model definitions and configured catalog."""
+    explicit_root = os.environ.get("ACLI_DEVELOPMENT_ROOT", "").strip()
+    project_mount_root = os.environ.get("VOICE_GATEWAY_PROJECTS_ROOT", "").strip()
+    candidates = []
+    if explicit_root:
+        candidates.append(Path(explicit_root))
+    candidates.append(Path(ACLI_DEVELOPMENT_ROOT))
+    if project_mount_root:
+        candidates.append(Path(project_mount_root) / "clawd_2" / "development_channel")
+
+    unique_candidates = []
+    for candidate in candidates:
+        if candidate not in unique_candidates:
+            unique_candidates.append(candidate)
+
+    for root in unique_candidates:
+        models_file = root / "src" / "acli" / "core" / "models.py"
+        settings_file = root / "acli" / "acli_settings.json"
+        if models_file.is_file() and settings_file.is_file():
+            return models_file, settings_file
+
+    root = unique_candidates[0]
+    return (
+        root / "src" / "acli" / "core" / "models.py",
+        root / "acli" / "acli_settings.json",
+    )
+
+
+def _load_acli_model_definitions(path: Path) -> tuple[Dict[str, Any], List[str]]:
+    """Read ACLI's literal model defaults and canonical efforts without executing it."""
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail="ACLI model definitions are unavailable") from exc
+    except (OSError, SyntaxError, UnicodeError) as exc:
+        raise HTTPException(status_code=503, detail="ACLI model definitions could not be read") from exc
+
+    values: Dict[str, Any] = {}
+    requested_names = {"DEFAULT_AGENT_MODEL_CONFIG", "CANONICAL_EFFORTS"}
+    for node in tree.body:
+        name = None
+        value_node = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            value_node = node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            value_node = node.value
+        if name not in requested_names or value_node is None:
+            continue
+        try:
+            values[name] = ast.literal_eval(value_node)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"ACLI model definition '{name}' is not a literal value",
+            ) from exc
+
+    defaults = values.get("DEFAULT_AGENT_MODEL_CONFIG")
+    efforts = values.get("CANONICAL_EFFORTS")
+    if not isinstance(defaults, dict) or not isinstance(efforts, (list, tuple)):
+        raise HTTPException(status_code=503, detail="ACLI model definitions are incomplete")
+
+    canonical_efforts = [
+        str(effort).strip().lower()
+        for effort in efforts
+        if str(effort).strip().lower() in ACLI_CANONICAL_EFFORTS
+    ]
+    if not canonical_efforts:
+        raise HTTPException(status_code=503, detail="ACLI canonical effort definitions are empty")
+    return defaults, canonical_efforts
+
+
+def _merge_unique_strings(*collections: Any) -> List[str]:
+    merged: List[str] = []
+    seen = set()
+    for collection in collections:
+        if not isinstance(collection, (list, tuple)):
+            continue
+        for value in collection:
+            text = str(value).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            merged.append(text)
+    return merged
+
+
+def _agy_model_options(available_models: List[str], canonical_efforts: List[str]) -> List[Dict[str, Any]]:
+    """Translate AGY's effort-bearing CLI slugs into the shared model/effort UI contract."""
+    suffix_pattern = re.compile(r"^(.+)-(low|medium|high|xhigh|max)$", re.IGNORECASE)
+    variants: Dict[str, Dict[str, str]] = {}
+    for model in available_models:
+        match = suffix_pattern.fullmatch(model)
+        if match:
+            variants.setdefault(match.group(1), {})[match.group(2).lower()] = model
+
+    # A suffix is part of a selectable effort family only when ACLI publishes
+    # more than one variant. This keeps fixed slugs such as gpt-oss-120b-medium
+    # intact as ordinary models.
+    family_bases = {base for base, choices in variants.items() if len(choices) > 1}
+    options: List[Dict[str, Any]] = []
+    emitted_families = set()
+    for model in available_models:
+        match = suffix_pattern.fullmatch(model)
+        base = match.group(1) if match else ""
+        if base in family_bases:
+            if base in emitted_families:
+                continue
+            emitted_families.add(base)
+            choices = variants[base]
+            efforts = [
+                effort
+                for effort in ACLI_CANONICAL_EFFORTS
+                if effort in canonical_efforts and effort in choices
+            ]
+            options.append({
+                "id": base,
+                "label": format_model_title(base),
+                "command_model": base.replace("-", " "),
+                "efforts": efforts,
+                "canonical_by_effort": {effort: choices[effort] for effort in efforts},
+            })
+            continue
+        options.append({
+            "id": model,
+            "label": format_model_title(model),
+            "command_model": model,
+            "efforts": list(canonical_efforts),
+            "canonical_by_effort": {effort: model for effort in canonical_efforts},
+        })
+    return options
+
+
+def _load_shared_acli_model_catalog() -> tuple[Dict[str, Any], List[str]]:
+    """Mirror ACLI's configured-catalog-plus-code-defaults merge for the UI."""
+    models_file, settings_file = _resolve_acli_model_catalog_files()
+    defaults_map, canonical_efforts = _load_acli_model_definitions(models_file)
+    settings_data = _load_json_object(settings_file, "ACLI configured model catalog")
+    configured_map = settings_data.get("agent_models")
+    if not isinstance(configured_map, dict):
+        raise HTTPException(status_code=503, detail="ACLI configured model catalog is incomplete")
+
+    merged_map: Dict[str, Any] = {}
+    for agent in MODEL_CONTROL_AGENTS:
+        configured = configured_map.get(agent)
+        defaults = defaults_map.get(agent)
+        configured = configured if isinstance(configured, dict) else {}
+        defaults = defaults if isinstance(defaults, dict) else {}
+        if not configured and not defaults:
+            continue
+
+        aliases = dict(defaults.get("aliases", {})) if isinstance(defaults.get("aliases"), dict) else {}
+        if isinstance(configured.get("aliases"), dict):
+            aliases.update(configured["aliases"])
+
+        merged_efforts = _merge_unique_strings(
+            configured.get("available_efforts"),
+            defaults.get("available_efforts"),
+            canonical_efforts,
+        )
+        merged_efforts = [effort.lower() for effort in merged_efforts if effort.lower() in canonical_efforts]
+        merged_map[agent] = {
+            "default_model": configured.get("default_model") or defaults.get("default_model") or "",
+            "default_effort": configured.get("default_effort") or defaults.get("default_effort") or "low",
+            "available_models": _merge_unique_strings(
+                configured.get("available_models"),
+                defaults.get("available_models"),
+            ),
+            "available_efforts": merged_efforts,
+            "aliases": aliases,
+        }
+
+    return merged_map, [str(models_file), str(settings_file)]
+
+
+def _matter_root_candidates(folder_path: Optional[str], channel_name: str) -> List[Path]:
+    """Map a registry host folder to every readable location of that matter.
+
+    ``channels.json`` records host paths such as
+    ``/Users/ed/King/clawd_2/production_repo``.  Inside the container those
+    projects are mounted read-only under ``VOICE_GATEWAY_PROJECTS_ROOT``.
+    Without this translation every channel except voice_channel reported
+    "ACLI matter files are unavailable", which is what surfaced in the UI as a
+    permanent model-control error.
+    """
+    candidates: List[Path] = []
+
+    def _add(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    if folder_path:
+        configured = Path(str(folder_path))
+        _add(configured)
+        mount_root = os.environ.get("VOICE_GATEWAY_PROJECTS_ROOT", "").strip()
+        if mount_root:
+            try:
+                _add(Path(mount_root) / configured.relative_to("/Users/ed/King"))
+            except ValueError:
+                pass
+
+    # This matter's own acli/ directory is mounted directly at /app/acli even
+    # when the project-root mounts are absent.
+    if channel_name.casefold() == "voice_channel":
+        _add(Path.cwd())
+    return candidates
+
+
+def _resolve_model_state_root(room_id: Optional[str], channel_name: Optional[str]) -> tuple[dict, Path]:
+    """Resolve one registered ACLI matter for room-specific active model state."""
+    cname = (channel_name or "").strip()
+    if not cname:
+        # Room IDs are mapped through each registered matter's authoritative
+        # matter.json.  This keeps room-only gateway clients honest without a
+        # Rocket.Chat prose scrape or a voice_channel fallback.
+        channels, _ = load_channel_registry()
+        for channel in channels:
+            candidate_name = str(channel.get("channel_name") or "").strip()
+            candidate_folder = channel.get("folder_path")
+            if not candidate_name or not candidate_folder:
+                continue
+            matched = False
+            for candidate_root in _matter_root_candidates(str(candidate_folder), candidate_name):
+                matter_path = candidate_root / "acli" / "matter.json"
+                if not matter_path.is_file():
+                    continue
+                try:
+                    matter = json.loads(matter_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    continue
+                configured_room = str(((matter.get("channel") or {}).get("room_id")) or "")
+                if room_id and configured_room == room_id:
+                    cname = candidate_name
+                    matched = True
+                    break
+            if matched:
+                break
+
+    if not cname:
+        raise HTTPException(
+            status_code=404,
+            detail="No registered ACLI matter matches this Rocket.Chat room",
+        )
+
+    profile = resolve_channel_profile(cname)
+    if not profile.get("registered"):
+        raise HTTPException(status_code=404, detail=f"Channel '{cname}' is not registered with ACLI")
+
+    folder_path = profile.get("folder_path")
+    root = None
+    for candidate_root in _matter_root_candidates(folder_path, cname):
+        if (candidate_root / "acli" / "sessions.json").is_file():
+            root = candidate_root
+            break
+        if root is None and candidate_root.is_dir():
+            root = candidate_root
+    if root is None:
+        raise HTTPException(status_code=503, detail=f"ACLI matter files are unavailable for #{cname}")
+
+    matter_path = root / "acli" / "matter.json"
+    if room_id and matter_path.is_file():
+        matter = _load_json_object(matter_path, "ACLI matter metadata")
+        configured_room = str(((matter.get("channel") or {}).get("room_id")) or "")
+        if configured_room and configured_room != room_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Rocket.Chat room does not match the registered ACLI matter for #{cname}",
+            )
+    return profile, root
+
+
+def get_channel_agent_models(room_id: Optional[str] = None, channel_name: Optional[str] = None) -> Dict[str, Any]:
+    profile, root = _resolve_model_state_root(room_id, channel_name)
+    folder_path = profile.get("folder_path") or str(root)
+    sessions_file = root / "acli" / "sessions.json"
+    sessions_data = _load_json_object(sessions_file, "ACLI model state")
+
+    agent_settings_map, catalog_sources = _load_shared_acli_model_catalog()
+    sessions_agents_map = sessions_data.get("agents", {})
+
+    result_agents: Dict[str, Any] = {}
+
+    for ag in MODEL_CONTROL_AGENTS:
+        st = agent_settings_map.get(ag, {})
+        sess = sessions_agents_map.get(ag, {})
+
+        if not isinstance(st, dict) or not st:
+            result_agents[ag] = {
+                "agent": ag,
+                "available": False,
+                "error": "Agent has no catalog in ACLI's shared model configuration",
+                "available_models": [],
+                "available_efforts": [],
+            }
+            continue
+
+        def_model = st.get("default_model", "")
+        def_effort = st.get("default_effort", "low")
+
+        # ACLI's merged configured/default catalog is the provider boundary.
+        # Never inject a stale session value or a cross-provider UI fallback.
+        available_models = [str(model) for model in st.get("available_models", []) if str(model).strip()]
+        available_efforts = [
+            str(effort).strip().lower()
+            for effort in st.get("available_efforts", [])
+            if str(effort).strip().lower() in ACLI_CANONICAL_EFFORTS
+        ]
+        if not available_efforts:
+            available_efforts = list(ACLI_CANONICAL_EFFORTS)
+
+        curr_model = sess.get("current_model", "")
+        curr_effort = sess.get("current_effort", "")
+
+        # Match ACLI get_current_model/get_current_effort: an invalid stale
+        # override is ignored rather than exposed as another provider's model.
+        eff_model = curr_model if curr_model and curr_model in available_models else def_model
+        eff_effort = str(curr_effort or "").strip().lower()
+        if eff_effort not in available_efforts:
+            eff_effort = str(def_effort or "low").strip().lower()
+        if eff_effort not in available_efforts:
+            eff_effort = available_efforts[0]
+
+        model_options = [
+            {
+                "id": model,
+                "label": format_model_title(model),
+                "command_model": model,
+                "efforts": list(available_efforts),
+                "canonical_by_effort": {effort: model for effort in available_efforts},
+            }
+            for model in available_models
+        ]
+        selector_model = eff_model
+        selector_effort = eff_effort
+        selected_model_option = None
+        if ag == "agy":
+            model_options = _agy_model_options(available_models, available_efforts)
+            for option in model_options:
+                canonical_by_effort = option["canonical_by_effort"]
+                matching_effort = next(
+                    (effort for effort, canonical in canonical_by_effort.items() if canonical == eff_model),
+                    None,
+                )
+                if matching_effort:
+                    selected_model_option = option
+                    selector_model = option["id"]
+                    selector_effort = matching_effort
+                    # The effort encoded in AGY's model slug is authoritative.
+                    eff_effort = matching_effort
+                    break
+
+        disp_model = (
+            selected_model_option["label"]
+            if selected_model_option
+            else format_model_title(eff_model)
+        )
+        disp_effort = eff_effort or "low"
+
+        result_agents[ag] = {
+            "agent": ag,
+            "available": bool(available_models and eff_model),
+            "current_model": eff_model,
+            "current_effort": eff_effort,
+            "display_model": disp_model,
+            "display_effort": disp_effort,
+            "display_label": f"{format_agent_title(ag)} · {disp_model} · {disp_effort}",
+            "inherited_model": not bool(curr_model),
+            "inherited_effort": not bool(curr_effort),
+            "default_model": def_model,
+            "default_effort": def_effort,
+            "available_models": available_models,
+            "available_efforts": available_efforts,
+            "model_options": model_options,
+            "selector_model": selector_model,
+            "selector_effort": selector_effort,
+            "aliases": dict(st.get("aliases", {})),
+            "status": sess.get("status", "idle"),
+        }
+
+    return {
+        "success": True,
+        "room_id": room_id,
+        "channel_name": profile.get("channel_name", "voice_channel"),
+        "folder_path": str(folder_path) if folder_path else None,
+        "catalog_source": catalog_sources[-1],
+        "catalog_sources": catalog_sources,
+        "state_source": str(sessions_file),
+        "agents": result_agents,
+    }
+
+
+class AgentModelPrepareRequest(BaseModel):
+    room_id: str
+    channel_name: Optional[str] = None
+    agent: str
+    target_model: str
+    target_effort: Optional[str] = "high"
+
+
+class AgentModelConfirmRequest(BaseModel):
+    confirmation_snapshot: ConfirmationSnapshot
+    channel_name: Optional[str] = None
+
+
+@app.get("/api/agent-models")
+async def get_agent_models(roomId: Optional[str] = None, channelName: Optional[str] = None):
+    """GET /api/agent-models: Return effective and available model/effort configuration for target agents."""
+    return get_channel_agent_models(room_id=roomId, channel_name=channelName)
+
+
+@app.post("/api/agent-models/prepare")
+async def prepare_agent_model_switch(req: AgentModelPrepareRequest):
+    """POST /api/agent-models/prepare: Format and validate a proposed agent model control command with confirmation."""
+    agent_key = req.agent.lower().strip()
+    if agent_key not in MODEL_CONTROL_AGENTS:
+        raise HTTPException(status_code=400, detail=f"Invalid agent '{req.agent}'.")
+
+    models_info = get_channel_agent_models(room_id=req.room_id, channel_name=req.channel_name)
+    agent_info = models_info["agents"].get(agent_key)
+    if not agent_info or not agent_info.get("available"):
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' state not found.")
+
+    target_m = req.target_model.strip()
+    target_e = (req.target_effort or "low").strip().lower()
+
+    if target_e not in agent_info.get("available_efforts", []):
+        raise HTTPException(status_code=400, detail=f"Invalid effort level '{req.target_effort}'.")
+
+    selected_option = None
+    if target_m.lower() != "default":
+        if agent_key == "agy":
+            selected_option = next(
+                (
+                    option
+                    for option in agent_info.get("model_options", [])
+                    if str(option.get("id", "")).casefold() == target_m.casefold()
+                ),
+                None,
+            )
+            if not selected_option:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Target model '{target_m}' is not in available models for agent '{agent_key}'.",
+                )
+            if target_e not in selected_option.get("efforts", []):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Effort '{target_e}' is unavailable for AGY model '{target_m}'.",
+                )
+            target_m = str(selected_option["id"])
+        else:
+            available_by_casefold = {
+                str(model).casefold(): str(model) for model in agent_info.get("available_models", [])
+            }
+            canonical_target = available_by_casefold.get(target_m.casefold())
+            if not canonical_target:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Target model '{target_m}' is not in available models for agent '{agent_key}'.",
+                )
+            target_m = canonical_target
+
+    curr_m_disp = agent_info["display_model"]
+    curr_e = agent_info["display_effort"]
+    target_m_disp = format_model_title(target_m)
+
+    if target_m.lower() == "default":
+        formatted_cmd = f"!model {agent_key} default"
+        conf_msg = f"Reset {format_agent_title(agent_key)} in #{models_info['channel_name']} to default model and effort for future tasks?"
+    else:
+        command_model = selected_option["command_model"] if selected_option else target_m
+        formatted_cmd = f"!model {agent_key} {command_model} {target_e}"
+        conf_msg = f"Change {format_agent_title(agent_key)} in #{models_info['channel_name']} from {curr_m_disp} ({curr_e}) to {target_m_disp} ({target_e}) for future tasks?"
+
+    gateway_request = InteractionRequest(
+        raw_input=formatted_cmd,
+        requested_room_id=req.room_id,
+        requested_agent=agent_key,
+        client_id="browser_model_selector",
+    )
+    gateway_result = _prepare_gateway_interaction(gateway_request, allow_model_control=True)
+    gateway_snapshot = gateway_result.confirmation_snapshot
+    if gateway_snapshot is None:
+        raise HTTPException(status_code=500, detail="Gateway did not create a confirmation snapshot")
+
+    return {
+        "success": True,
+        "confirmation_message": conf_msg,
+        "confirmation_snapshot": gateway_snapshot.model_dump() if hasattr(gateway_snapshot, "model_dump") else gateway_snapshot.dict(),
+        "change": {
+            "room_id": req.room_id,
+            "channel_name": models_info["channel_name"],
+            "agent": agent_key,
+            "current_model": agent_info["current_model"],
+            "current_effort": curr_e,
+            "target_model": target_m,
+            "effective_target_model": (
+                selected_option["canonical_by_effort"][target_e]
+                if selected_option
+                else target_m
+            ),
+            "target_effort": target_e,
+            "formatted_command": formatted_cmd,
+        },
+    }
+
+
+def _validate_model_snapshot(
+    snapshot: ConfirmationSnapshot,
+    channel_name: Optional[str],
+) -> tuple[Dict[str, Any], str, str, bool]:
+    command = snapshot.exact_message.strip()
+    match = re.fullmatch(r"!model\s+([a-z0-9_]+)\s+(.+)", command, flags=re.IGNORECASE)
+    if not match:
+        raise HTTPException(status_code=400, detail="Confirmation is not an exact !model command")
+    agent_key = match.group(1).lower()
+    if agent_key not in MODEL_CONTROL_AGENTS or snapshot.agent != agent_key:
+        raise HTTPException(status_code=400, detail="Model command agent does not match confirmation")
+
+    models_info = get_channel_agent_models(snapshot.room_id, channel_name)
+    agent_info = models_info["agents"].get(agent_key) or {}
+    value = match.group(2)
+    if value.casefold() == "default":
+        if command != f"!model {agent_key} default":
+            raise HTTPException(status_code=400, detail="Default model command is not canonical")
+        return models_info, agent_key, str(agent_info.get("default_model") or ""), True
+
+    for option in agent_info.get("model_options", []):
+        for effort in option.get("efforts", []):
+            expected = f"!model {agent_key} {option.get('command_model')} {effort}"
+            if command == expected:
+                target = option.get("canonical_by_effort", {}).get(effort, option.get("id"))
+                return models_info, agent_key, str(target), False
+    raise HTTPException(status_code=400, detail="Model command is not in the current ACLI catalog")
+
+
+async def _wait_for_model_application(
+    *,
+    room_id: str,
+    channel_name: str,
+    agent: str,
+    target_model: str,
+    target_effort: Optional[str],
+    reset_default: bool,
+) -> Optional[Dict[str, Any]]:
+    for attempt in range(max(1, MODEL_CONTROL_POLL_ATTEMPTS)):
+        try:
+            state = get_channel_agent_models(room_id, channel_name)
+        except HTTPException as exc:
+            # ACLI currently rewrites sessions.json in place.  A poll that
+            # lands during that tiny write window can see a transient 503
+            # (including a partially-written JSON file) even though ACLI is
+            # applying the command successfully.  Keep polling instead of
+            # turning that recoverable race into a failed model switch.
+            if exc.status_code != 503:
+                raise
+            logger.info(
+                "Model state temporarily unavailable while waiting for ACLI "
+                "to apply %s in #%s; retrying (%s/%s)",
+                agent,
+                channel_name,
+                attempt + 1,
+                max(1, MODEL_CONTROL_POLL_ATTEMPTS),
+            )
+            state = None
+        info = state.get("agents", {}).get(agent) if state else {}
+        info = info or {}
+        model_matches = info.get("current_model") == target_model
+        effort_matches = reset_default or info.get("current_effort") == target_effort
+        inheritance_matches = not reset_default or (
+            info.get("inherited_model") and info.get("inherited_effort")
+        )
+        if model_matches and effort_matches and inheritance_matches:
+            return info
+        if attempt + 1 < max(1, MODEL_CONTROL_POLL_ATTEMPTS):
+            await asyncio.sleep(max(0.0, MODEL_CONTROL_POLL_INTERVAL_SECONDS))
+    return None
+
+
+@app.post("/api/agent-models/confirm")
+async def confirm_agent_model_switch(req: AgentModelConfirmRequest):
+    """Post the frozen native ``!model`` command verbatim and wait for ACLI state."""
+    snapshot = req.confirmation_snapshot
+    models_info, agent_key, target_model, reset_default = _validate_model_snapshot(
+        snapshot,
+        req.channel_name,
+    )
+    target_effort = None
+    if not reset_default:
+        target_effort = snapshot.exact_message.rsplit(" ", 1)[-1]
+
+    if snapshot.is_expired():
+        raise HTTPException(status_code=400, detail="Confirmation snapshot has expired")
+    if not task_supervisor.confirmation_matches(snapshot):
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation snapshot is unknown or does not match its interaction",
+        )
+    if not GATEWAY_RC_USER_ID or not GATEWAY_RC_AUTH_TOKEN:
+        raise HTTPException(status_code=503, detail="Rocket.Chat model-control sender is not configured")
+    if GATEWAY_RC_USER_ID == RC_USER_ID:
+        raise HTTPException(
+            status_code=503,
+            detail="Rocket.Chat model control must use the dedicated gateway identity",
+        )
+
+    existing_record = task_supervisor.get(snapshot.immutable_interaction_id)
+    if (
+        existing_record
+        and existing_record.state != TaskState.AWAITING_CONFIRMATION
+        and existing_record.rocket_chat_msg_ids
+    ):
+        message_id = existing_record.rocket_chat_msg_ids[-1]
+    else:
+        async def _post_native_model_command():
+            headers = {
+                "X-Auth-Token": GATEWAY_RC_AUTH_TOKEN,
+                "X-User-Id": GATEWAY_RC_USER_ID,
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "roomId": snapshot.room_id,
+                # This must remain a plain, visible Rocket.Chat command. ACLI's
+                # native !model resolver consumes it exactly as written here.
+                "text": snapshot.exact_message,
+            }
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        f"{get_rc_base_url()}/api/v1/chat.postMessage",
+                        headers=headers,
+                        json=payload,
+                    )
+            except Exception as exc:
+                logger.exception("Error posting native model command")
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Rocket.Chat post error: {response.text}",
+                )
+            response_data = response.json()
+            if not response_data.get("success"):
+                raise HTTPException(status_code=400, detail="Rocket.Chat model command post failed")
+            return str((response_data.get("message") or {}).get("_id") or "unknown")
+
+        message_id = await deduplicate_nonce(snapshot.nonce, _post_native_model_command)
+        if isinstance(message_id, dict):
+            message_id = str(message_id.get("msgId") or "unknown")
+        task_supervisor.mark_posted(snapshot.immutable_interaction_id, str(message_id))
+
+    applied = await _wait_for_model_application(
+        room_id=snapshot.room_id,
+        channel_name=models_info["channel_name"],
+        agent=agent_key,
+        target_model=target_model,
+        target_effort=target_effort,
+        reset_default=reset_default,
+    )
+    return {
+        "success": True,
+        "status": "applied" if applied else "posted",
+        "applied": bool(applied),
+        "message": (
+            "ACLI applied the model change."
+            if applied
+            else "Model command was posted to Rocket.Chat; ACLI acknowledgement is still pending."
+        ),
+        "rocket_chat_msg_ids": [str(message_id)],
+        "posted_command": snapshot.exact_message,
+        "agent": agent_key,
+        "effective": applied,
+    }
 
 # Route to serve frontend assets
 FRONTEND_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0"}

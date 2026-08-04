@@ -6,7 +6,7 @@ import time
 import unittest
 from pathlib import Path
 
-from app.contracts import ConfirmationSnapshot, InteractionRequest, TaskEvent, TaskState
+from app.contracts import AttentionState, ConfirmationSnapshot, InteractionRequest, TaskEvent, TaskState
 from app.task_supervisor import TaskSupervisor
 
 
@@ -190,6 +190,18 @@ class TestTaskSupervisor(unittest.TestCase):
         self.assertTrue(summary2["is_busy"])
         self.assertEqual(summary2["attention_state"].value, "none")
         self.assertEqual(summary2["working_since"], 205)
+
+    def test_stale_posted_task_is_not_reported_as_busy_forever(self):
+        task = make_task(self.supervisor, "int_stale_posted", "room-stale", "codex", created_at=100)
+        # mark_posted uses the current clock, so age the persisted record
+        # explicitly to model a dispatch left behind by a restart.
+        record = self.supervisor.get(task.interaction_id)
+        record.updated_at = time.time() - (15 * 60 + 1)
+        record.created_at = record.updated_at
+        summary = self.supervisor.get_channel_attention_summary("room-stale")
+        self.assertFalse(summary["is_busy"])
+        self.assertEqual(summary["attention_state"], AttentionState.NEEDS_HELP)
+        self.assertEqual(summary["stale_task_count"], 1)
 
     def test_backward_compatibility_loading_older_task_records(self):
         # Write JSON with older TaskRecord schema (without attention_state, working_since, ready_since)

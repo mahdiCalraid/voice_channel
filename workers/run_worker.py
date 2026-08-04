@@ -196,11 +196,17 @@ def main():
                     "=== CHANNEL STRATEGY AND OUTPUT RULES ===\n"
                     f"{instructions_str}\n\n"
                     "Return one JSON object only, without Markdown fences, using exactly these keys:\n"
-                    '{"digest":"exactly two short plain-text paragraphs separated by \\\\n\\\\n",'
+                    '{"digest":"exactly one short high-level summary paragraph",'
+                    '"attention_items":[{"type":"decision|issue|clarification|approval",'
+                    '"severity":"major|moderate|null","text":"one short plain-language item"}],'
                     '"phase":"planning|implementation|review|remediation|checkpoint|noncoding",'
                     '"suggested_agent":"worker name without @",'
                     '"suggested_message":"one complete editable draft beginning with @worker",'
+                    '"quick_suggestions":[{"label":"1-2 short words","command":"full clickable message, prefer @worker ..."}],'
                     '"rationale":"one short sentence explaining why this is the next move"}\n'
+                    "Provide exactly two quick_suggestions. Labels must be one or two words only "
+                    "(e.g. Double-check, Next action, Your take, Overall plan). Commands are "
+                    "separate from suggested_message and should be ready to paste into the composer.\n"
                     "Do not send anything. Do not include a !model command unless the strategy explicitly requires one.\n"
                     "JSON:"
                 )

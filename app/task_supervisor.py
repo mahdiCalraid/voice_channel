@@ -21,6 +21,10 @@ from app.contracts import (
 
 
 ACTIVE_STATES = {TaskState.POSTED, TaskState.ROUTED, TaskState.WORKING}
+# A dispatch that never reaches routing is not evidence of work after this
+# grace period.  Keeping it Busy indefinitely makes a failed/stale dispatch
+# indistinguishable from a live worker, especially after a gateway restart.
+STALE_POSTED_AFTER_SECONDS = 15 * 60
 TERMINAL_STATES = {
     TaskState.COMPLETED,
     TaskState.FAILED,
@@ -121,7 +125,16 @@ class TaskSupervisor:
                     "ready_since": None,
                     "active_task_count": 0,
                 }
-            active_tasks = [t for t in channel_tasks if t.state in ACTIVE_STATES]
+            now = time.time()
+            stale_posted_tasks = [
+                t for t in channel_tasks
+                if t.state == TaskState.POSTED
+                and now - max(t.updated_at, t.created_at) >= STALE_POSTED_AFTER_SECONDS
+            ]
+            active_tasks = [
+                t for t in channel_tasks
+                if t.state in ACTIVE_STATES and t not in stale_posted_tasks
+            ]
             if active_tasks:
                 working_times = [t.working_since for t in active_tasks if t.working_since is not None]
                 working_since = min(working_times) if working_times else min(t.updated_at for t in active_tasks)
@@ -132,6 +145,23 @@ class TaskSupervisor:
                     "attention_state": AttentionState.NONE,
                     "ready_since": None,
                     "active_task_count": len(active_tasks),
+                }
+
+            # A stale POSTED task has not produced routing/heartbeat evidence
+            # within the dispatch grace period.  Surface it as a problem, not
+            # as an endlessly running job; a later response or explicit event
+            # can still move the underlying record to its real terminal state.
+            if stale_posted_tasks:
+                stale_posted_tasks.sort(key=lambda t: max(t.updated_at, t.created_at))
+                target = stale_posted_tasks[0]
+                return {
+                    "room_id": room_id,
+                    "is_busy": False,
+                    "working_since": None,
+                    "attention_state": AttentionState.NEEDS_HELP,
+                    "ready_since": target.updated_at,
+                    "active_task_count": 0,
+                    "stale_task_count": len(stale_posted_tasks),
                 }
             
             # Among non-busy tasks, prefer the oldest task in an actionable state (NEEDS_REVIEW, NEEDS_DECISION, NEEDS_HELP)

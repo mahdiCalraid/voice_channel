@@ -141,6 +141,12 @@ test("response assistance finishing after a room switch updates only its origina
             });
         }
         if (url === "/api/response-assistant") return assistantPromise;
+        if (url.startsWith("/api/agent-models")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({ success: true, agents: {} })
+            });
+        }
         throw new Error("Unexpected request: " + url);
     };
 
@@ -175,6 +181,69 @@ test("response assistance finishing after a room switch updates only its origina
     assert.equal(
         app.sandbox.document.getElementById("command-input").value,
         "@codex room B draft"
+    );
+});
+
+test("smart quick suggestions keep room state and rendered labels isolated", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        roomsList = [
+            { id: "room-a", name: "voice_channel" },
+            { id: "room-b", name: "business.dev" }
+        ];
+        activeRoomId = "room-a";
+        applySmartQuickSuggestions("room-a", [
+            { label: "Review A", command: "@grok Review room A." },
+            { label: "Decide A", command: "@codex What should room A decide?" }
+        ]);
+    `, app.sandbox);
+
+    assert.equal(
+        app.sandbox.document.getElementById("quick-suggestion-smart-0").textContent,
+        "Review A"
+    );
+    assert.equal(
+        app.sandbox.document.getElementById("quick-suggestion-smart-1").textContent,
+        "Decide A"
+    );
+
+    vm.runInContext('selectRoom("room-b");', app.sandbox);
+    assert.equal(
+        app.sandbox.document.getElementById("quick-suggestion-smart-0").textContent,
+        "Next action"
+    );
+    assert.equal(
+        app.sandbox.document.getElementById("quick-suggestion-smart-1").textContent,
+        "Your take"
+    );
+    assert.deepEqual(
+        Array.from(vm.runInContext('getRoomState("room-a").smartQuickSuggestions.map(item => item.label)', app.sandbox)),
+        ["Review A", "Decide A"]
+    );
+    assert.equal(
+        vm.runInContext('getRoomState("room-b").smartQuickSuggestions', app.sandbox),
+        undefined
+    );
+
+    vm.runInContext(`
+        applySmartQuickSuggestions("room-b", [
+            { label: "Review B", command: "@agy Review room B." },
+            { label: "Plan B", command: "@claude What is the room B plan?" }
+        ]);
+        selectRoom("room-a");
+    `, app.sandbox);
+
+    assert.equal(
+        app.sandbox.document.getElementById("quick-suggestion-smart-0").textContent,
+        "Review A"
+    );
+    assert.equal(
+        app.sandbox.document.getElementById("quick-suggestion-smart-1").textContent,
+        "Decide A"
+    );
+    assert.deepEqual(
+        Array.from(vm.runInContext('getRoomState("room-b").smartQuickSuggestions.map(item => item.label)', app.sandbox)),
+        ["Review B", "Plan B"]
     );
 });
 

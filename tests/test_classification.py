@@ -170,6 +170,16 @@ class TestMessageClassification(unittest.TestCase):
         self.assertEqual(res["event"]["kind"], "error")
         self.assertEqual(res["event"]["agent"], "agy")
 
+    def test_timeout_notice_classified_as_error(self):
+        msg = {
+            "u": {"username": "acli_bot"},
+            "msg": "**@grok** hit the 1800s timeout. The run was stopped and a timeout review packet was captured.",
+        }
+        res = classify_message(msg)
+        self.assertEqual(res["lane"], "system")
+        self.assertEqual(res["event"]["kind"], "error")
+        self.assertEqual(res["event"]["agent"], "grok")
+
     def test_invalid_model_notice(self):
         msg = {
             "u": {"username": "acli_bot"},
@@ -570,7 +580,8 @@ class TestMessageClassification(unittest.TestCase):
         res = loop.run_until_complete(generate_digest(req))
         
         # Verify fallback rule-based digest was returned cleanly
-        self.assertTrue("Ed, here is the context overview" in res["digest"] or "Here is a quick summary" in res["digest"])
+        self.assertIn("Ed, here is the high-level context", res["digest"])
+        self.assertNotIn("\n", res["digest"])
         
         # Verify no orphan job directories remain in tmp/jobs
         jobs_dir = os.path.join("tmp", "jobs")

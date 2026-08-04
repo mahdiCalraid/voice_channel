@@ -12,10 +12,6 @@ let activeRoomId = null;
 let roomsList = [];
 let liveRequestSeq = 0;
 let loadOlderRequestSeq = 0;
-let confirmationTargetRoomId = null;
-let confirmationTargetText = null;
-let confirmationNonce = null;
-let gatewayConfirmationSnapshot = null;
 let roomHistoryStates = {};
 const historyState = window.VoiceChannelHistoryState;
 
@@ -37,10 +33,7 @@ const speedVal = document.getElementById("speed-val");
 const transcriptFeed = document.getElementById("transcript-feed");
 const commandInput = document.getElementById("command-input");
 const btnMic = document.getElementById("btn-mic");
-const confirmationGate = document.getElementById("confirmation-gate");
-const btnPreSend = document.getElementById("btn-pre-send");
-const btnCancelSend = document.getElementById("btn-cancel-send");
-const btnConfirmSend = document.getElementById("btn-confirm-send");
+const btnSend = document.getElementById("btn-send");
 const roomSelect = document.getElementById("room-select");
 const statsBar = document.getElementById("stats-bar");
 const digestSourcesContainer = document.getElementById("digest-sources-container");
@@ -73,7 +66,7 @@ const DISABLE_AUTO_NARRATION = true;
 
 const COMPOSER_HEIGHT_STORAGE_KEY = "vc_composer_height_px";
 // This floor leaves room for the target-agent strip, a usable writing field,
-// and the Draft Message / confirmation controls. The conversation pane keeps
+// and the Send control. The conversation pane keeps
 // its independent 180px floor in getComposerResizeBounds().
 const MIN_COMPOSER_HEIGHT_PX = 250;
 const MIN_CONVERSATION_HEIGHT_PX = 180;
@@ -88,6 +81,23 @@ const MIN_CONVERSATION_WIDTH_PX = 380;
 const NARRATOR_KEYBOARD_STEP_PX = 24;
 let narratorResizeState = null;
 
+const MODEL_CONTROL_AGENTS = ["codex", "agy", "claude", "grok"];
+const AGENT_DRAG_MIME = "application/x-voice-gateway-agent";
+const QUICK_SUGGESTION_USAGE_KEY = "vc_quick_suggestion_usage";
+const QUICK_SUGGESTIONS = [
+    { id: "status", label: "Status?", command: "What is the status of the current task?" },
+    { id: "blockers", label: "Blockers?", command: "Are there any blockers?" },
+    { id: "summarize", label: "Summarize", command: "Summarize the work done so far." },
+    { id: "what-changed", label: "What changed?", command: "What changed since the last update?" },
+    { id: "decisions", label: "List decisions", command: "List the important decisions made so far." },
+    { id: "attention", label: "What needs my attention?", command: "What needs my attention next?" }
+];
+const SMART_QUICK_DEFAULTS = [
+    { id: "smart-0", label: "Next action", command: "What is the single next action we should take now?" },
+    { id: "smart-1", label: "Your take", command: "What is your opinion on the latest update?" }
+];
+const QUICK_SUGGESTION_DEFAULT_ID = "status";
+
 const CHANNELS_WIDTH_STORAGE_KEY = "vc_channels_width_px";
 const CHANNELS_OPEN_STORAGE_KEY = "vc_channels_open";
 const MIN_CHANNELS_WIDTH_PX = 260;
@@ -95,8 +105,356 @@ const MAX_CHANNELS_WIDTH_PX = 420;
 const CHANNELS_KEYBOARD_STEP_PX = 20;
 let channelsResizeState = null;
 
+function normalizeModelControlAgent(agent) {
+    const normalized = String(agent || "").trim().toLowerCase();
+    return MODEL_CONTROL_AGENTS.includes(normalized) ? normalized : null;
+}
+
+function composerTextWithAgentMention(agent, currentText) {
+    const normalized = normalizeModelControlAgent(agent);
+    if (!normalized) return String(currentText || "");
+
+    const body = String(currentText || "")
+        .replace(/^\s+/, "")
+        .replace(/^@[a-zA-Z0-9_]+\s*/, "");
+    return body.trim() ? `@${normalized} ${body}` : `@${normalized} `;
+}
+
+function syncCommandDraftState(value) {
+    if (activeRoomId) {
+        const state = getRoomState(activeRoomId);
+        state.draftText = value;
+        if (state.lastInsertedSuggestion && value !== state.lastInsertedSuggestion) {
+            state.lastInsertedSuggestion = null;
+        }
+        if (String(value || "").trim()) {
+            localStorage.setItem("vc_draft_" + activeRoomId, value);
+        } else {
+            localStorage.removeItem("vc_draft_" + activeRoomId);
+        }
+    }
+    applyPendingAttentionQueueIfReady();
+}
+
+function insertAgentMentionIntoComposer(agent) {
+    const normalized = normalizeModelControlAgent(agent);
+    if (!normalized || !commandInput || commandInput.readOnly) return false;
+
+    const nextValue = composerTextWithAgentMention(normalized, commandInput.value);
+    commandInput.value = nextValue;
+    syncCommandDraftState(nextValue);
+    clearComposerFeedback();
+    commandInput.focus();
+    if (typeof commandInput.setSelectionRange === "function") {
+        commandInput.setSelectionRange(nextValue.length, nextValue.length);
+    }
+    return true;
+}
+
+function agentFromDragEvent(event) {
+    const transfer = event && event.dataTransfer;
+    if (!transfer || typeof transfer.getData !== "function") return null;
+    const customAgent = normalizeModelControlAgent(transfer.getData(AGENT_DRAG_MIME));
+    if (customAgent) return customAgent;
+    const textAgent = String(transfer.getData("text/plain") || "").match(/^@?([a-zA-Z0-9_]+)/);
+    return textAgent ? normalizeModelControlAgent(textAgent[1]) : null;
+}
+
+function bindAgentTargetControls() {
+    document.querySelectorAll(".model-agent-control").forEach(btn => {
+        if (btn.dataset.agentTargetInitialized === "true") return;
+        btn.dataset.agentTargetInitialized = "true";
+        btn.setAttribute("draggable", "true");
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            openAgentModelModal(btn.dataset.agent);
+        });
+        btn.addEventListener("dragstart", (e) => {
+            const agent = normalizeModelControlAgent(btn.dataset.agent);
+            if (!agent || !e.dataTransfer) return;
+            e.dataTransfer.effectAllowed = "copy";
+            e.dataTransfer.setData(AGENT_DRAG_MIME, agent);
+            e.dataTransfer.setData("text/plain", `@${agent}`);
+            btn.classList.add("is-dragging-agent");
+        });
+        btn.addEventListener("dragend", () => {
+            btn.classList.remove("is-dragging-agent");
+        });
+    });
+}
+
+function bindComposerAgentDropTarget() {
+    if (!commandInput || commandInput.dataset.agentDropInitialized === "true") return;
+    commandInput.dataset.agentDropInitialized = "true";
+    commandInput.addEventListener("dragover", (e) => {
+        if (!agentFromDragEvent(e) || commandInput.readOnly) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+        commandInput.classList.add("agent-drop-target");
+    });
+    commandInput.addEventListener("dragenter", (e) => {
+        if (agentFromDragEvent(e) && !commandInput.readOnly) {
+            commandInput.classList.add("agent-drop-target");
+        }
+    });
+    commandInput.addEventListener("dragleave", () => {
+        commandInput.classList.remove("agent-drop-target");
+    });
+    commandInput.addEventListener("drop", (e) => {
+        const agent = agentFromDragEvent(e);
+        if (!agent) return;
+        e.preventDefault();
+        commandInput.classList.remove("agent-drop-target");
+        insertAgentMentionIntoComposer(agent);
+    });
+}
+
+function initAgentTargeting() {
+    bindAgentTargetControls();
+    bindComposerAgentDropTarget();
+}
+
+function quickSuggestionById(id) {
+    return QUICK_SUGGESTIONS.find(suggestion => suggestion.id === id) || null;
+}
+
+function readQuickSuggestionUsage() {
+    try {
+        const stored = JSON.parse(localStorage.getItem(QUICK_SUGGESTION_USAGE_KEY) || "{}");
+        return stored && typeof stored === "object" ? stored : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+function mostUsedQuickSuggestion() {
+    const usage = readQuickSuggestionUsage();
+    let best = quickSuggestionById(QUICK_SUGGESTION_DEFAULT_ID);
+    let bestCount = Number(usage[best.id] || 0);
+
+    QUICK_SUGGESTIONS.forEach(suggestion => {
+        const count = Number(usage[suggestion.id] || 0);
+        if (count > bestCount) {
+            best = suggestion;
+            bestCount = count;
+        }
+    });
+    return best;
+}
+
+function updateMostUsedQuickSuggestionButton() {
+    const button = document.getElementById("quick-suggestion-most-used");
+    const suggestion = mostUsedQuickSuggestion();
+    if (!button || !suggestion) return suggestion;
+
+    button.textContent = suggestion.label;
+    button.dataset.quickSuggestion = "most-used";
+    button.title = `Most-used predefined quick suggestion: ${suggestion.label}`;
+    if (typeof button.setAttribute === "function") {
+        button.setAttribute("aria-label", `Most-used quick suggestion: ${suggestion.label}`);
+    }
+    return suggestion;
+}
+
+function recordQuickSuggestionUse(id) {
+    const usage = readQuickSuggestionUsage();
+    usage[id] = Number(usage[id] || 0) + 1;
+    try {
+        localStorage.setItem(QUICK_SUGGESTION_USAGE_KEY, JSON.stringify(usage));
+    } catch (e) {
+        // Usage is a convenience only; failure must not block inserting a message.
+    }
+}
+
+function getSmartQuickSuggestions(roomId = activeRoomId) {
+    if (!roomId) return SMART_QUICK_DEFAULTS.map(item => ({ ...item }));
+    const state = getRoomState(roomId);
+    if (Array.isArray(state.smartQuickSuggestions) && state.smartQuickSuggestions.length === 2) {
+        return state.smartQuickSuggestions;
+    }
+    return SMART_QUICK_DEFAULTS.map(item => ({ ...item }));
+}
+
+function normalizeSmartQuickSuggestions(items) {
+    if (!Array.isArray(items)) return null;
+    const cleaned = [];
+    for (const item of items) {
+        if (!item || typeof item !== "object") continue;
+        const label = String(item.label || "").trim().split(/\s+/).slice(0, 2).join(" ");
+        const command = String(item.command || "").trim();
+        if (!label || !command) continue;
+        cleaned.push({
+            id: `smart-${cleaned.length}`,
+            label: label.slice(0, 22),
+            command: command.slice(0, 500),
+        });
+        if (cleaned.length >= 2) break;
+    }
+    return cleaned.length === 2 ? cleaned : null;
+}
+
+function applySmartQuickSuggestions(roomId, items) {
+    const normalized = normalizeSmartQuickSuggestions(items) || SMART_QUICK_DEFAULTS.map(item => ({ ...item }));
+    if (roomId) {
+        getRoomState(roomId).smartQuickSuggestions = normalized;
+    }
+    if (!roomId || roomId === activeRoomId) {
+        renderSmartQuickSuggestionButtons(normalized);
+    }
+    return normalized;
+}
+
+function renderSmartQuickSuggestionButtons(items) {
+    const suggestions = Array.isArray(items) && items.length === 2
+        ? items
+        : getSmartQuickSuggestions(activeRoomId);
+    suggestions.forEach((suggestion, index) => {
+        const button = document.getElementById(`quick-suggestion-smart-${index}`);
+        if (!button) return;
+        button.textContent = suggestion.label;
+        button.dataset.quickSuggestion = suggestion.id;
+        button.disabled = false;
+        if (typeof button.setAttribute === "function") {
+            button.setAttribute("aria-disabled", "false");
+            button.setAttribute("aria-label", `Smart quick suggestion: ${suggestion.label}`);
+        }
+        if (button.classList && typeof button.classList.remove === "function") {
+            button.classList.remove("quick-suggestion-placeholder");
+            button.classList.add("quick-suggestion-smart");
+        }
+        button.title = `AI smart quick suggestion: ${suggestion.command}`;
+    });
+}
+
+function insertQuickSuggestion(id) {
+    if (!commandInput || commandInput.readOnly) return false;
+
+    let suggestion = null;
+    let recordUsageId = null;
+
+    if (id === "most-used") {
+        suggestion = mostUsedQuickSuggestion();
+        recordUsageId = suggestion ? suggestion.id : null;
+    } else if (String(id || "").startsWith("smart-")) {
+        const smart = getSmartQuickSuggestions(activeRoomId);
+        suggestion = smart.find(item => item.id === id) || null;
+    } else {
+        suggestion = quickSuggestionById(id);
+        recordUsageId = suggestion ? suggestion.id : null;
+    }
+
+    if (!suggestion) return false;
+
+    commandInput.value = suggestion.command;
+    // Quick suggestions are user-selected composer text. They intentionally
+    // do not set lastInsertedSuggestion, which is reserved for narrator drafts.
+    syncCommandDraftState(commandInput.value);
+    clearComposerFeedback();
+    if (recordUsageId) {
+        recordQuickSuggestionUse(recordUsageId);
+        updateMostUsedQuickSuggestionButton();
+    }
+    commandInput.focus();
+    return true;
+}
+
+function setQuickSuggestionsMenuOpen(isOpen) {
+    const menu = document.getElementById("quick-suggestions-menu");
+    const moreButton = document.getElementById("btn-more-quick-suggestions");
+    if (!menu || !moreButton) return;
+    menu.classList.toggle("hidden", !isOpen);
+    moreButton.setAttribute("aria-expanded", String(Boolean(isOpen)));
+}
+
+function bindQuickSuggestionControls() {
+    const moreButton = document.getElementById("btn-more-quick-suggestions");
+    if (moreButton && moreButton.dataset.quickSuggestionsInitialized !== "true") {
+        moreButton.dataset.quickSuggestionsInitialized = "true";
+        moreButton.addEventListener("click", event => {
+            event.stopPropagation();
+            const menu = document.getElementById("quick-suggestions-menu");
+            setQuickSuggestionsMenuOpen(Boolean(menu && menu.classList.contains("hidden")));
+        });
+    }
+
+    document.querySelectorAll(".quick-suggestion-btn, .quick-suggestion-menu-item").forEach(button => {
+        if (button.dataset.quickSuggestionInitialized === "true") return;
+        button.dataset.quickSuggestionInitialized = "true";
+        button.addEventListener("click", () => {
+            if (insertQuickSuggestion(button.dataset.quickSuggestion)) {
+                setQuickSuggestionsMenuOpen(false);
+            }
+        });
+    });
+
+    if (document.body && document.body.dataset.quickSuggestionsOutsideInitialized !== "true") {
+        document.body.dataset.quickSuggestionsOutsideInitialized = "true";
+        document.addEventListener("click", event => {
+            const container = document.getElementById("quick-suggestions");
+            if (container && !container.contains(event.target)) {
+                setQuickSuggestionsMenuOpen(false);
+            }
+        });
+        document.addEventListener("keydown", event => {
+            if (event.key === "Escape") {
+                setQuickSuggestionsMenuOpen(false);
+            }
+        });
+    }
+
+    updateMostUsedQuickSuggestionButton();
+    renderSmartQuickSuggestionButtons();
+}
+
+function bindMessageComposer() {
+    if (btnSend && btnSend.dataset.messageSendInitialized !== "true") {
+        btnSend.dataset.messageSendInitialized = "true";
+        btnSend.addEventListener("click", sendMessage);
+    }
+    if (commandInput && commandInput.dataset.messageSendInitialized !== "true") {
+        commandInput.dataset.messageSendInitialized = "true";
+        commandInput.addEventListener("keydown", event => {
+            if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+            event.preventDefault();
+            return sendMessage();
+        });
+    }
+}
+
 // Settings Management (U-01, U-02, U-03, U-05)
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 5;
+const THEMES = {
+    midnight: "Midnight",
+    "quiet-light": "Quiet Light",
+    nord: "Nord",
+    "high-contrast": "High Contrast",
+    "paper-light": "Paper Light",
+    "solarized-light": "Solarized Light",
+    "rose-pine-dawn": "Rosé Pine Dawn",
+    "mist-light": "Mist Light",
+    "sepia-light": "Sepia Light",
+    dracula: "Dracula",
+    "one-dark": "One Dark",
+    "solarized-dark": "Solarized Dark",
+    "tokyo-night": "Tokyo Night",
+    "catppuccin-mocha": "Catppuccin Mocha"
+};
+const THEME_COLOR_SCHEMES = {
+    "quiet-light": "light",
+    "paper-light": "light",
+    "solarized-light": "light",
+    "rose-pine-dawn": "light",
+    "mist-light": "light",
+    "sepia-light": "light",
+    midnight: "dark",
+    nord: "dark",
+    "high-contrast": "dark",
+    dracula: "dark",
+    "one-dark": "dark",
+    "solarized-dark": "dark",
+    "tokyo-night": "dark",
+    "catppuccin-mocha": "dark"
+};
 const SYSTEM_FONT_SIZES = {
     normal: 16,
     medium: 20,
@@ -115,6 +473,7 @@ const CHAT_FONT_FAMILIES = {
 };
 const DEFAULT_SETTINGS = {
     settingsVersion: SETTINGS_VERSION,
+    theme: "midnight",
     systemFontSize: "medium",
     chatFontFamily: "outfit",
     chatFontSize: 18,
@@ -259,6 +618,9 @@ function clampSettingNumber(value, fallback, minimum, maximum) {
 }
 
 function normalizeSettings(settings = {}) {
+    const theme = Object.prototype.hasOwnProperty.call(THEMES, settings.theme)
+        ? settings.theme
+        : DEFAULT_SETTINGS.theme;
     const systemFontSize = Object.prototype.hasOwnProperty.call(SYSTEM_FONT_SIZES, settings.systemFontSize)
         ? settings.systemFontSize
         : DEFAULT_SETTINGS.systemFontSize;
@@ -269,6 +631,7 @@ function normalizeSettings(settings = {}) {
         ...DEFAULT_SETTINGS,
         ...settings,
         settingsVersion: SETTINGS_VERSION,
+        theme,
         systemFontSize,
         chatFontFamily,
         chatFontSize: clampSettingNumber(settings.chatFontSize, DEFAULT_SETTINGS.chatFontSize, 12, 36),
@@ -301,6 +664,12 @@ function saveSettings(settings) {
 
 function applySettings(settings = getSettings()) {
     const normalized = normalizeSettings(settings);
+    document.body.dataset.theme = normalized.theme;
+    document.body.setAttribute("data-theme", normalized.theme);
+    document.body.style.setProperty(
+        "color-scheme",
+        THEME_COLOR_SCHEMES[normalized.theme] || "dark"
+    );
     document.body.classList.remove("font-normal", "font-medium", "font-large", "font-xlarge");
     document.body.classList.add("font-" + normalized.systemFontSize);
     document.body.style.setProperty("--system-font-size", SYSTEM_FONT_SIZES[normalized.systemFontSize] + "px");
@@ -361,8 +730,9 @@ function initSettingsModal() {
     const btnClose = document.getElementById("btn-close-settings");
     const btnSave = document.getElementById("btn-save-settings");
     const modal = document.getElementById("settings-modal");
-    
+
     const selSystemFontSize = document.getElementById("setting-system-font-size");
+    const selTheme = document.getElementById("setting-theme");
     const selChatFontFamily = document.getElementById("setting-chat-font-family");
     const inputChatFontSize = document.getElementById("setting-chat-font-size");
     const inputChatLineHeight = document.getElementById("setting-chat-line-height");
@@ -384,10 +754,11 @@ function initSettingsModal() {
         selChatFontWeight,
         inputChatLetterSpacing
     ].filter(Boolean);
+    const appearanceControls = [selTheme].filter(Boolean);
     let settingsBeforePreview = null;
-    
+
     if (!btnOpen || !modal) return;
-    
+
     const updateTypographyOutputs = () => {
         if (outputChatLineHeight && inputChatLineHeight) {
             outputChatLineHeight.value = Number(inputChatLineHeight.value).toFixed(2);
@@ -403,6 +774,7 @@ function initSettingsModal() {
     const settingsFromForm = (baseSettings = getSettings()) => normalizeSettings({
         ...baseSettings,
         settingsVersion: SETTINGS_VERSION,
+        theme: selTheme ? selTheme.value : DEFAULT_SETTINGS.theme,
         systemFontSize: selSystemFontSize ? selSystemFontSize.value : DEFAULT_SETTINGS.systemFontSize,
         chatFontFamily: selChatFontFamily ? selChatFontFamily.value : DEFAULT_SETTINGS.chatFontFamily,
         chatFontSize: inputChatFontSize ? inputChatFontSize.value : DEFAULT_SETTINGS.chatFontSize,
@@ -420,6 +792,7 @@ function initSettingsModal() {
     });
 
     const populateSettingsForm = settings => {
+        if (selTheme) selTheme.value = settings.theme;
         if (selSystemFontSize) selSystemFontSize.value = settings.systemFontSize;
         if (selChatFontFamily) selChatFontFamily.value = settings.chatFontFamily;
         if (inputChatFontSize) inputChatFontSize.value = String(settings.chatFontSize);
@@ -457,7 +830,10 @@ function initSettingsModal() {
         control.addEventListener("input", previewTypography);
         control.addEventListener("change", previewTypography);
     });
-    
+    appearanceControls.forEach(control => {
+        control.addEventListener("change", previewTypography);
+    });
+
     if (btnSave) {
         btnSave.addEventListener("click", () => {
             const updated = settingsFromForm(settingsBeforePreview || getSettings());
@@ -902,14 +1278,14 @@ function init() {
         }
         loadHistory();
     });
-    
+
     initSpeechSynthesis();
     initSpeechRecognition();
-    
+
     // Set up polling for status and transcript history every 5 seconds
     setInterval(checkStatus, 5000);
     setInterval(loadHistory, 5000);
-    
+
     // Bind Event Listeners
     btnGenerateDigest.addEventListener("click", handleGenerateDigest);
     btnPlayPause.addEventListener("click", handlePlayPause);
@@ -920,34 +1296,21 @@ function init() {
     }
     updateNarrationPlayState();
     btnMic.addEventListener("click", toggleSpeechInput);
-    btnPreSend.addEventListener("click", showConfirmation);
-    btnCancelSend.addEventListener("click", hideConfirmation);
-    btnConfirmSend.addEventListener("click", sendDraftedMessage);
-    
+    bindMessageComposer();
+    initAgentTargeting();
+
     if (commandInput) {
         commandInput.addEventListener("input", (e) => {
-            if (activeRoomId) {
-                const state = getRoomState(activeRoomId);
-                state.draftText = e.target.value;
-                if (state.lastInsertedSuggestion && e.target.value !== state.lastInsertedSuggestion) {
-                    state.lastInsertedSuggestion = null;
-                }
-                if (e.target.value.trim()) {
-                    localStorage.setItem("vc_draft_" + activeRoomId, e.target.value);
-                } else {
-                    localStorage.removeItem("vc_draft_" + activeRoomId);
-                }
-            }
-            applyPendingAttentionQueueIfReady();
+            syncCommandDraftState(e.target.value);
         });
     }
-    
+
     if (roomSelect) {
         roomSelect.addEventListener("change", (e) => {
             selectRoom(e.target.value);
         });
     }
-    
+
     // Channel Search Filter
     if (channelSearchInput) {
         channelSearchInput.addEventListener("input", (e) => {
@@ -976,23 +1339,8 @@ function init() {
             }
         });
     }
-    
-    // Agent buttons click handlers
-    document.querySelectorAll(".agent-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-            const agentName = btn.dataset.agent;
-            commandInput.value = `@${agentName} ` + commandInput.value;
-            commandInput.focus();
-        });
-    });
-    
-    // Quick Tag buttons click handlers
-    document.querySelectorAll(".tag-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-            commandInput.value = btn.dataset.cmd;
-            commandInput.focus();
-        });
-    });
+
+    bindQuickSuggestionControls();
 }
 
 function initNarratorSidebarState() {
@@ -1036,11 +1384,11 @@ async function checkStatus() {
         const response = await fetch("/api/status");
         if (!response.ok) throw new Error("HTTP error " + response.status);
         const data = await response.json();
-        
+
         // Update Rocket.Chat status chip
         const rc = data.rocket_chat;
         rcStatusChip.className = "status-chip";
-        
+
         if (rc.status === "connected") {
             rcStatusChip.classList.add("connected");
             rcStatusChip.querySelector(".status-label").innerText = `Rocket.Chat: Online`;
@@ -1064,17 +1412,17 @@ async function loadRooms() {
         const response = await fetch("/api/rooms");
         if (!response.ok) throw new Error("HTTP error " + response.status);
         const data = await response.json();
-        
+
         if (data.success && data.rooms && data.rooms.length > 0) {
             roomsList = data.rooms;
-            
+
             // Re-render select options
             if (roomSelect) {
                 roomSelect.innerHTML = roomsList.map(room => {
                     return `<option value="${room.id}">${escapeHTML(room.name)}</option>`;
                 }).join("");
             }
-            
+
             // Determine active room ID
             if (activeRoomId) {
                 // Check if stored room ID is still valid
@@ -1090,7 +1438,7 @@ async function loadRooms() {
                 // Default to 'production_repo' if present, otherwise 'voice_channel', otherwise first room
                 const prodRepoRoom = roomsList.find(r => r.name === "production_repo");
                 const voiceChanRoom = roomsList.find(r => r.name === "voice_channel");
-                
+
                 if (prodRepoRoom) {
                     activeRoomId = prodRepoRoom.id;
                 } else if (voiceChanRoom) {
@@ -1098,7 +1446,7 @@ async function loadRooms() {
                 } else {
                     activeRoomId = roomsList[0]?.id;
                 }
-                
+
                 if (roomSelect) roomSelect.value = activeRoomId;
                 localStorage.setItem("activeRoomId", activeRoomId);
             }
@@ -1106,6 +1454,7 @@ async function loadRooms() {
             await fetchAttentionQueue(true);
             renderChannelsList();
             updateHeaderRoomInfo();
+            await fetchAgentModels(activeRoomId, getRoomName(activeRoomId));
         } else {
             if (roomSelect) roomSelect.innerHTML = `<option value="">No rooms found</option>`;
             if (channelsListEl) channelsListEl.innerHTML = `<div class="empty-channels">No rooms found</div>`;
@@ -1144,7 +1493,7 @@ function saveRoomUIData(roomId) {
     state.sourcesListVisible = sourcesList ? !sourcesList.classList.contains("hidden") : false;
     state.sourcesArrowRotated = sourcesArrow ? sourcesArrow.classList.contains("rotated") : false;
     state.digestLoading = btnGenerateDigest ? btnGenerateDigest.disabled : false;
-    
+
     if (statsBar) {
         state.statsHtml = statsBar.innerHTML;
         state.statsVisible = statsBar.style.display !== "none";
@@ -1157,15 +1506,15 @@ function saveRoomUIData(roomId) {
 function restoreRoomUIData(roomId) {
     if (!roomId) return;
     const state = getRoomState(roomId);
-    
+
     if (state.draftText === undefined || state.draftText === null) {
         state.draftText = localStorage.getItem("vc_draft_" + roomId) || "";
     }
-    
+
     if (commandInput) {
         commandInput.value = state.draftText || "";
     }
-    
+
     currentDigestText = state.digestText || "";
     if (digestContent) {
         if (currentDigestText) {
@@ -1174,8 +1523,9 @@ function restoreRoomUIData(roomId) {
             digestContent.innerText = emptyNarratorText();
         }
     }
+    renderSmartQuickSuggestionButtons(state.smartQuickSuggestions);
     updateNarrationPlayState();
-    
+
     if (sourcesList) {
         sourcesList.innerHTML = state.digestSourcesHtml || "";
         if (state.sourcesListVisible) {
@@ -1185,15 +1535,15 @@ function restoreRoomUIData(roomId) {
         }
         bindSourceItemHandlers();
     }
-    
+
     if (digestSourcesContainer) {
         digestSourcesContainer.style.display = state.digestSourcesVisible ? "block" : "none";
     }
-    
+
     if (sourcesToggleText) {
         sourcesToggleText.innerText = state.sourcesToggleText || "Show Sources (0)";
     }
-    
+
     if (sourcesArrow) {
         if (state.sourcesArrowRotated) {
             sourcesArrow.classList.add("rotated");
@@ -1201,16 +1551,16 @@ function restoreRoomUIData(roomId) {
             sourcesArrow.classList.remove("rotated");
         }
     }
-    
+
     if (btnGenerateDigest) {
         btnGenerateDigest.disabled = state.digestLoading || false;
     }
-    
+
     if (statsBar) {
         statsBar.innerHTML = state.statsHtml || "";
         statsBar.style.display = state.statsVisible ? "flex" : "none";
     }
-    
+
     if (state.scrollTop !== undefined && state.scrollTop !== null) {
         state.savedScrollTop = state.scrollTop;
     } else {
@@ -1222,11 +1572,11 @@ function selectRoom(roomId) {
     if (!roomId) return;
     if (roomId === activeRoomId) return;
     const oldRoomId = activeRoomId;
-    
+
     if (oldRoomId && oldRoomId !== roomId) {
         saveRoomUIData(oldRoomId);
     }
-    
+
     activeRoomId = roomId;
     if (roomSelect) roomSelect.value = roomId;
     localStorage.setItem("activeRoomId", activeRoomId);
@@ -1240,6 +1590,11 @@ function updateHeaderRoomInfo() {
     if (activeRoom && currentRoomNameEl) {
         currentRoomNameEl.innerText = `#${activeRoom.name}`;
     }
+}
+
+function getRoomName(roomId) {
+    const room = roomsList.find(item => item.id === roomId);
+    return room ? room.name : null;
 }
 
 // Set up polling for status and transcript history every 5 seconds, attention queue every 15 seconds
@@ -1256,10 +1611,9 @@ if (digestContent) {
     digestContent.addEventListener("input", handleNarrationEdit);
 }
 updateNarrationPlayState();
-btnMic.addEventListener("click", toggleSpeechInput);
-btnPreSend.addEventListener("click", showConfirmation);
-btnCancelSend.addEventListener("click", hideConfirmation);
-btnConfirmSend.addEventListener("click", sendDraftedMessage);
+    btnMic.addEventListener("click", toggleSpeechInput);
+    bindMessageComposer();
+    bindQuickSuggestionControls();
 
 // Attention modal listeners
 const btnCloseAttn = document.getElementById("btn-close-attention-modal");
@@ -1269,21 +1623,30 @@ if (btnCloseAttn) btnCloseAttn.addEventListener("click", closeAttentionSettingsM
 if (btnCancelAttn) btnCancelAttn.addEventListener("click", closeAttentionSettingsModal);
 if (btnSaveAttn) btnSaveAttn.addEventListener("click", saveAttentionSettings);
 
+initAgentTargeting();
+
+const btnCloseModelModal = document.getElementById("btn-close-agent-model-modal");
+const btnCancelModelModal = document.getElementById("btn-cancel-agent-model");
+const btnApplyModelModal = document.getElementById("btn-apply-agent-model");
+const btnResetModelModal = document.getElementById("btn-reset-agent-model");
+const agentModelSelect = document.getElementById("model-select-input");
+
+if (btnCloseModelModal) btnCloseModelModal.addEventListener("click", closeAgentModelModal);
+if (btnCancelModelModal) btnCancelModelModal.addEventListener("click", closeAgentModelModal);
+if (btnApplyModelModal) btnApplyModelModal.addEventListener("click", () => applyAgentModelSwitch(false));
+if (btnResetModelModal) btnResetModelModal.addEventListener("click", () => applyAgentModelSwitch(true));
+if (agentModelSelect) agentModelSelect.addEventListener("change", () => {
+    const agentInput = document.getElementById("model-target-agent");
+    const agent = agentInput ? agentInput.value : "codex";
+    const info = currentAgentModelsData && currentAgentModelsData.agents
+        ? currentAgentModelsData.agents[agent]
+        : null;
+    renderAgentEffortOptions(info, agentModelSelect.value);
+});
+
 if (commandInput) {
     commandInput.addEventListener("input", (e) => {
-        if (activeRoomId) {
-            const state = getRoomState(activeRoomId);
-            state.draftText = e.target.value;
-            if (state.lastInsertedSuggestion && e.target.value !== state.lastInsertedSuggestion) {
-                state.lastInsertedSuggestion = null;
-            }
-            if (e.target.value.trim()) {
-                localStorage.setItem("vc_draft_" + activeRoomId, e.target.value);
-            } else {
-                localStorage.removeItem("vc_draft_" + activeRoomId);
-            }
-        }
-        applyPendingAttentionQueueIfReady();
+        syncCommandDraftState(e.target.value);
     });
 }
 
@@ -1317,10 +1680,7 @@ function formatElapsedSeconds(sec) {
 
 function isMidTurnActive() {
     const rawInput = commandInput ? commandInput.value.trim() : "";
-    const confirmationVisible = Boolean(
-        confirmationGate && !confirmationGate.classList.contains("hidden")
-    );
-    return rawInput.length > 0 || confirmationVisible;
+    return rawInput.length > 0;
 }
 
 async function fetchAttentionQueue(forceRender = false) {
@@ -1426,7 +1786,7 @@ async function openAttentionSettingsModal(channelName) {
         if (resp.ok) {
             const data = await resp.json();
             const channels = (data && data.config && data.config.channels) ? data.config.channels : {};
-            
+
             // Case-fold lookup
             const matchedKey = Object.keys(channels).find(k => k.toLowerCase() === channelName.toLowerCase());
             if (matchedKey && channels[matchedKey]) {
@@ -1437,7 +1797,7 @@ async function openAttentionSettingsModal(channelName) {
                 if (urgSelect) urgSelect.value = entry.urgency || "normal";
                 if (blockCb) blockCb.checked = !!entry.blocking;
                 if (boostCb) boostCb.checked = !!entry.temporary_boost_until;
-                
+
                 // Snooze retention
                 if (entry.snoozed_until) {
                     const dt = new Date(entry.snoozed_until);
@@ -1549,9 +1909,9 @@ async function saveAttentionSettings() {
 
 function renderChannelsList(filterText = "") {
     if (!channelsListEl) return;
-    
+
     const term = (filterText || "").trim().toLowerCase();
-    
+
     // Map attention queue item by canonical channel name (lowercase)
     const queueMap = new Map();
     (attentionQueueData || []).forEach(q => {
@@ -1601,7 +1961,7 @@ function renderChannelsList(filterText = "") {
     });
 
     const filtered = sortedRooms.filter(r => (r.name || "").toLowerCase().includes(term));
-    
+
     if (filtered.length === 0) {
         channelsListEl.innerHTML = `
             <div class="empty-channels">
@@ -1611,12 +1971,12 @@ function renderChannelsList(filterText = "") {
         `;
         return;
     }
-    
+
     channelsListEl.innerHTML = filtered.map(room => {
         const isActive = room.id === activeRoomId;
         const activeClass = isActive ? "active" : "";
         const qitem = queueMap.get((room.name || "").toLowerCase());
-        
+
         let badgeHTML = "";
 
         if (qitem) {
@@ -1625,7 +1985,18 @@ function renderChannelsList(filterText = "") {
                 const elapsedStr = formatElapsedSeconds(qitem.working_elapsed_seconds);
                 badgeHTML = `<span class="attn-badge attn-badge-busy" title="Agent is currently working">Busy ${elapsedStr}</span>`;
             } else if (category === "ranked") {
-                badgeHTML = "";
+                const attentionState = String(qitem.attention_state || "needs_review").toLowerCase();
+                const statusClass = attentionState === "needs_help"
+                    ? "attn-badge-needs-help"
+                    : attentionState === "needs_decision"
+                        ? "attn-badge-needs-decision"
+                        : "attn-badge-ready";
+                const statusTitle = attentionState === "needs_help"
+                    ? "Agent reported a problem"
+                    : attentionState === "needs_decision"
+                        ? "Your decision is needed"
+                        : "Response ready to review";
+                badgeHTML = `<span class="attn-badge ${statusClass}" title="${statusTitle}" aria-label="${statusTitle}"><span class="attn-ready-dot" aria-hidden="true"></span></span>`;
             } else if (category === "snoozed") {
                 badgeHTML = `<span class="attn-badge attn-badge-snoozed" title="Snoozed">Snoozed</span>`;
             } else if (category === "unconfigured") {
@@ -1656,7 +2027,7 @@ function renderChannelsList(filterText = "") {
             </div>
         `;
     }).join("");
-    
+
     channelsListEl.querySelectorAll(".channel-item").forEach(item => {
         const handleSelect = (e) => {
             if (e && e.target && e.target.closest(".btn-tune-channel")) {
@@ -1685,16 +2056,16 @@ function renderChannelsList(filterText = "") {
 }
 
 function handleRoomChange() {
-    // Always hide/cancel any pending confirmation gate on room switch
-    hideConfirmation();
-    
     // Restore UI state of the new active room
     restoreRoomUIData(activeRoomId);
     applyPendingAttentionQueueIfReady();
-    
+
+    // Fetch active agent models for the selected room
+    fetchAgentModels(activeRoomId, getRoomName(activeRoomId));
+
     // Clear lastMessageTimestamp so renderTranscript updates scroll properly
     lastMessageTimestamp = null;
-    
+
     const state = getRoomState(activeRoomId);
     if (state.orderedIds.length > 0) {
         // If we have cached messages, render them immediately!
@@ -1708,11 +2079,359 @@ function handleRoomChange() {
             </div>
         `;
     }
-    
+
     handleStop();
-    
+
     // Reload history to get latest updates
     loadHistory();
+}
+
+// Agent Model Configuration & State Management
+let currentAgentModelsData = null;
+let agentModelsFetchSeq = 0;
+
+function clearComposerFeedback() {
+    const feedbackEl = document.getElementById("send-feedback");
+    if (!feedbackEl) return;
+    feedbackEl.textContent = "";
+    feedbackEl.className = "send-feedback hidden";
+    feedbackEl.style.display = "none";
+}
+
+function setModelControlStatus(message, kind = "") {
+    const status = document.getElementById("model-control-status");
+    if (!status) return;
+    status.innerText = message || "";
+    status.className = `model-control-status${kind ? ` ${kind}` : ""}`;
+}
+
+function setAgentModelControlsLoading() {
+    MODEL_CONTROL_AGENTS.forEach(agent => {
+        const btn = document.getElementById(`btn-agent-${agent}`);
+        const label = document.getElementById(`model-label-${agent}`);
+        if (btn) {
+            btn.classList.remove("model-unavailable");
+            btn.title = `${formatAgentTitleJS(agent)} · Loading ACLI model…`;
+        }
+        if (label) label.innerText = "Loading…";
+    });
+}
+
+async function fetchAgentModels(roomId, channelName) {
+    const requestedRoomId = roomId || activeRoomId;
+    const requestedChannelName = channelName || getRoomName(requestedRoomId);
+    const requestSeq = ++agentModelsFetchSeq;
+    if (!requestedRoomId || !requestedChannelName) return null;
+    setAgentModelControlsLoading();
+    try {
+        const url = "/api/agent-models?"
+            + `roomId=${encodeURIComponent(requestedRoomId)}`
+            + `&channelName=${encodeURIComponent(requestedChannelName)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || "ACLI model state is unavailable");
+        if (requestSeq !== agentModelsFetchSeq || requestedRoomId !== activeRoomId) return null;
+        if (data && data.success && data.agents) {
+            currentAgentModelsData = data;
+            updateAgentBadgesUI(data.agents);
+            return data;
+        }
+        throw new Error("ACLI returned an incomplete model catalog");
+    } catch (err) {
+        if (requestSeq !== agentModelsFetchSeq || requestedRoomId !== activeRoomId) return null;
+        currentAgentModelsData = null;
+        MODEL_CONTROL_AGENTS.forEach(agent => {
+            const btn = document.getElementById(`btn-agent-${agent}`);
+            const label = document.getElementById(`model-label-${agent}`);
+            if (btn) {
+                btn.classList.add("model-unavailable");
+                btn.title = `${formatAgentTitleJS(agent)} · Model state unavailable`;
+            }
+            if (label) label.innerText = "Unavailable";
+        });
+        console.warn("Could not fetch agent models:", err);
+        return null;
+    }
+}
+
+function updateAgentBadgesUI(agents) {
+    if (!agents) return;
+    MODEL_CONTROL_AGENTS.forEach(ag => {
+        const info = agents[ag];
+        if (!info) return;
+
+        const btn = document.getElementById(`btn-agent-${ag}`);
+        const label = document.getElementById(`model-label-${ag}`);
+
+        if (btn) {
+            btn.classList.toggle("model-unavailable", !info.available);
+            btn.title = info.available
+                ? (info.display_label || `${ag} · ${info.display_model} · ${info.display_effort}`)
+                : `${formatAgentTitleJS(ag)} · Model state unavailable`;
+        }
+        if (label) {
+            label.innerText = info.available
+                ? `${info.display_model || "Default"} · ${info.display_effort || "low"}`
+                : "Unavailable";
+        }
+    });
+}
+
+function formatAgentTitleJS(agentId) {
+    const normalized = String(agentId || "").trim().toLowerCase();
+    const map = {
+        agy: "AGY"
+    };
+    return map[normalized] || (normalized ? normalized[0].toUpperCase() + normalized.slice(1) : "");
+}
+
+function formatModelTitleJS(modelId) {
+    if (!modelId) return "Default";
+    const map = {
+        "gpt-5.6-sol": "GPT 5.6 Sol",
+        "gpt-5.6-terra": "GPT 5.6 Terra",
+        "gpt-5.6-luna": "GPT 5.6 Luna",
+        "gpt-5.4": "GPT 5.4",
+        "gpt-5.5": "GPT 5.5",
+        "gpt-5.4-mini": "GPT 5.4 Mini",
+        "gpt-5.3": "GPT 5.3",
+        "gpt-5.2": "GPT 5.2",
+        "gemini-3.6-flash": "Gemini 3.6 Flash",
+        "gemini-3.5-flash": "Gemini 3.5 Flash",
+        "gemini-3.1-pro": "Gemini 3.1 Pro",
+        "gemini-3-flash-preview": "Gemini 3 Flash",
+        "gemini-3.1-pro-preview": "Gemini 3.1 Pro",
+        "gemini-3-pro-preview": "Gemini 3 Pro",
+        "gemini-2.5-pro": "Gemini 2.5 Pro",
+        "gemini-2.5-flash": "Gemini 2.5 Flash",
+        "claude-sonnet-5": "Claude Sonnet 5",
+        "claude-sonnet-4-6": "Claude Sonnet 4.6",
+        "claude-opus-5": "Claude Opus 5",
+        "claude-opus-4-8": "Claude Opus 4.8",
+        "claude-opus-4-7": "Claude Opus 4.7",
+        "claude-haiku-3-5": "Claude Haiku 3.5",
+        "grok-4.5": "Grok 4.5",
+        "grok-4": "Grok 4"
+    };
+    return map[modelId.toLowerCase()] || modelId;
+}
+
+function getAgentModelOptions(info) {
+    if (info && Array.isArray(info.model_options) && info.model_options.length) {
+        return info.model_options;
+    }
+    return ((info && info.available_models) || []).map(model => ({
+        id: model,
+        label: formatModelTitleJS(model),
+        efforts: (info && info.available_efforts) || []
+    }));
+}
+
+function renderAgentEffortOptions(info, modelId, preferredEffort = null) {
+    const effortEl = document.getElementById("effort-select-input");
+    if (!effortEl || !info) return;
+    const option = getAgentModelOptions(info).find(item => item.id === modelId);
+    const efforts = option && Array.isArray(option.efforts)
+        ? option.efforts
+        : (info.available_efforts || []);
+    const requested = preferredEffort || effortEl.value || info.selector_effort || info.current_effort;
+    const selectedEffort = efforts.includes(requested) ? requested : efforts[0];
+    effortEl.innerHTML = efforts.map(effort => {
+        const selected = effort === selectedEffort ? " selected" : "";
+        return `<option value="${escapeHTML(effort)}"${selected}>${escapeHTML(effort)}</option>`;
+    }).join("");
+    effortEl.value = selectedEffort || "";
+    effortEl.disabled = efforts.length === 0;
+}
+
+async function openAgentModelModal(agent) {
+    const modal = document.getElementById("agent-model-modal");
+    if (!modal) return;
+
+    // A prior ordinary-message failure must not follow the user into the
+    // separate model-control workflow.  Model control reports in its own
+    // inline status element below the selectors.
+    clearComposerFeedback();
+
+    const targetAgent = (agent || "codex").toLowerCase();
+    const targetAgentInput = document.getElementById("model-target-agent");
+    if (targetAgentInput) targetAgentInput.value = targetAgent;
+
+    const nameEl = document.getElementById("model-modal-agent-name");
+    const summaryEl = document.getElementById("model-modal-active-summary");
+    const selectEl = document.getElementById("model-select-input");
+    const effortEl = document.getElementById("effort-select-input");
+    const iconEl = document.getElementById("model-modal-agent-icon");
+    const applyButton = document.getElementById("btn-apply-agent-model");
+    const resetButton = document.getElementById("btn-reset-agent-model");
+
+    modal.style.display = "flex";
+    if (selectEl) {
+        selectEl.innerHTML = '<option value="">Loading ACLI models…</option>';
+        selectEl.disabled = true;
+    }
+    if (effortEl) {
+        effortEl.innerHTML = '<option value="">Loading efforts…</option>';
+        effortEl.disabled = true;
+    }
+    if (applyButton) applyButton.disabled = true;
+    if (resetButton) resetButton.disabled = true;
+    setModelControlStatus(`Loading ${targetAgent}'s shared ACLI catalog…`);
+
+    if (nameEl) nameEl.innerText = formatAgentTitleJS(targetAgent);
+
+    const roomName = getRoomName(activeRoomId);
+    const dataMatchesRoom = currentAgentModelsData
+        && currentAgentModelsData.room_id === activeRoomId
+        && currentAgentModelsData.channel_name
+        && roomName
+        && currentAgentModelsData.channel_name.toLowerCase() === roomName.toLowerCase();
+    if (!dataMatchesRoom) {
+        await fetchAgentModels(activeRoomId, roomName);
+    }
+
+    const info = (currentAgentModelsData && currentAgentModelsData.agents)
+        ? currentAgentModelsData.agents[targetAgent]
+        : null;
+    if (!info || !info.available || !Array.isArray(info.available_models) || !info.available_models.length) {
+        if (summaryEl) summaryEl.innerText = "Current model unavailable";
+        setModelControlStatus(
+            `No ACLI model catalog is available for ${targetAgent} in #${roomName || "this channel"}.`,
+            "error"
+        );
+        return;
+    }
+
+    const currModel = info.current_model;
+    const currEffort = info.selector_effort || info.current_effort;
+    const dispModel = info.display_model;
+
+    if (summaryEl) {
+        summaryEl.innerText = `Current Model: ${dispModel} (${currEffort || 'low'})`;
+    }
+
+    if (iconEl) {
+        iconEl.innerText = targetAgent.substring(0, 2).toUpperCase();
+    }
+
+    if (selectEl) {
+        let optsHtml = "";
+        const selectorModel = info.selector_model || currModel;
+        getAgentModelOptions(info).forEach(option => {
+            const isSel = (option.id.toLowerCase() === selectorModel.toLowerCase()) ? " selected" : "";
+            optsHtml += `<option value="${escapeHTML(option.id)}"${isSel}>${escapeHTML(option.label || formatModelTitleJS(option.id))}</option>`;
+        });
+        selectEl.innerHTML = optsHtml;
+        selectEl.value = selectorModel;
+        selectEl.disabled = false;
+    }
+
+    renderAgentEffortOptions(info, info.selector_model || currModel, currEffort);
+    if (applyButton) applyButton.disabled = false;
+    if (resetButton) resetButton.disabled = false;
+    setModelControlStatus("Models and all effort levels loaded from ACLI's shared configuration.");
+}
+
+function closeAgentModelModal() {
+    const modal = document.getElementById("agent-model-modal");
+    if (modal) modal.style.display = "none";
+}
+
+async function applyAgentModelSwitch(resetDefault = false) {
+    const targetAgentInput = document.getElementById("model-target-agent");
+    const agent = targetAgentInput ? targetAgentInput.value : "codex";
+    const modelSelect = document.getElementById("model-select-input");
+    const effortSelect = document.getElementById("effort-select-input");
+
+    const targetModel = resetDefault ? "default" : (modelSelect ? modelSelect.value : "default");
+    const targetEffort = effortSelect ? effortSelect.value : "high";
+    const roomId = activeRoomId;
+    const channelName = getRoomName(roomId);
+    const applyButton = document.getElementById("btn-apply-agent-model");
+    const resetButton = document.getElementById("btn-reset-agent-model");
+
+    // Clear any stale composer banner before starting a model-control action.
+    // The model command is sent by the typed endpoint, not by the composer.
+    clearComposerFeedback();
+
+    if (!roomId || !channelName || (!resetDefault && (!targetModel || !targetEffort))) {
+        setModelControlStatus("The selected room or ACLI model catalog is unavailable.", "error");
+        return;
+    }
+
+    if (applyButton) applyButton.disabled = true;
+    if (resetButton) resetButton.disabled = true;
+    setModelControlStatus("Validating the change with ACLI…");
+
+    try {
+        const prepResp = await fetch("/api/agent-models/prepare", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                room_id: roomId,
+                channel_name: channelName,
+                agent: agent,
+                target_model: targetModel,
+                target_effort: targetEffort
+            })
+        });
+
+        if (!prepResp.ok) {
+            const errData = await prepResp.json();
+            throw new Error(errData.detail || "Invalid model change request");
+        }
+
+        const prepData = await prepResp.json();
+        if (activeRoomId !== roomId) {
+            throw new Error("The active channel changed before dispatch; no model command was sent")
+        }
+        const snapshot = prepData.confirmation_snapshot;
+        const change = prepData.change || {};
+
+        setModelControlStatus(`Sending ${change.formatted_command || snapshot.exact_message} to Rocket.Chat…`);
+        const confirmResp = await fetch("/api/agent-models/confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                confirmation_snapshot: snapshot,
+                channel_name: channelName
+            })
+        });
+        const confirmData = await confirmResp.json();
+        if (!confirmResp.ok) {
+            throw new Error(confirmData.detail || "Rocket.Chat rejected the model command");
+        }
+
+        await fetchAgentModels(roomId, channelName);
+        clearComposerFeedback();
+        if (confirmData.applied) {
+            const effective = confirmData.effective || {};
+            setModelControlStatus(
+                `Applied: ${formatModelTitleJS(effective.current_model || change.target_model)} · ${effective.current_effort || change.target_effort}.`,
+                "success"
+            );
+            const updated = currentAgentModelsData && currentAgentModelsData.agents
+                ? currentAgentModelsData.agents[agent]
+                : null;
+            const summaryEl = document.getElementById("model-modal-active-summary");
+            if (summaryEl && updated) {
+                summaryEl.innerText = `Current Model: ${updated.display_model} (${updated.current_effort})`;
+            }
+        } else {
+            setModelControlStatus(
+                confirmData.message
+                    || "The model command was sent to Rocket.Chat; ACLI is still finalizing the persisted change.",
+                "pending"
+            );
+        }
+    } catch (err) {
+        console.error("Error applying model switch:", err);
+        clearComposerFeedback();
+        setModelControlStatus(`Model change failed: ${err.message}`, "error");
+    } finally {
+        if (applyButton) applyButton.disabled = false;
+        if (resetButton) resetButton.disabled = false;
+    }
 }
 
 // 2. Transcript Management
@@ -1929,19 +2648,19 @@ function checkForAutoNarrate(targetRoomId, newRealResponses) {
 
 async function loadHistory() {
     if (!activeRoomId || activeRoomId === "loading" || activeRoomId === "error") return;
-    
+
     const currentSeq = ++liveRequestSeq;
     const targetRoomId = activeRoomId;
-    
+
     try {
         const response = await fetch(`/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=30`);
         if (!response.ok) throw new Error("HTTP error " + response.status);
         const data = await response.json();
-        
+
         if (currentSeq !== liveRequestSeq || targetRoomId !== activeRoomId) {
             return;
         }
-        
+
         if (data.success && data.messages) {
             const state = getRoomState(targetRoomId);
             const wasInitialized = Boolean(state.pollInitialized);
@@ -2018,11 +2737,11 @@ function renderTranscript(messages, state = null) {
         `;
         return;
     }
-    
+
     // Check if user is scrolled near bottom before update (within 120px)
     const isNearBottom = (transcriptFeed.scrollHeight - transcriptFeed.scrollTop - transcriptFeed.clientHeight) < 120;
     const isInitialLoad = (lastMessageTimestamp === null);
-    
+
     // Check if we have new messages since last render
     let shouldScroll = false;
     if (messages.length > 0) {
@@ -2032,7 +2751,7 @@ function renderTranscript(messages, state = null) {
             shouldScroll = true;
         }
     }
-    
+
     // Generate HTML for Load Older button/loader at the top
     let loadOlderBtnHtml = '';
     if (state && state.hasMoreOlder) {
@@ -2058,7 +2777,7 @@ function renderTranscript(messages, state = null) {
     const msgsHtml = messages.map(msg => {
         const date = new Date(msg.timestamp);
         const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        
+
         // Handle Lane A: System Events
         if (msg.lane === 'system') {
             const kind = msg.event?.kind || 'other';
@@ -2070,25 +2789,25 @@ function renderTranscript(messages, state = null) {
                 </div>
             `;
         }
-        
+
         // Handle Lane B/C: Agent and User Messages
         const laneClass = msg.lane === 'user' ? 'user' : 'agent';
         const cardClass = `chat-msg ${laneClass}`;
-        
+
         // Relayed agent name resolution
         let displayName = msg.name || msg.username;
         if (msg.event?.kind === 'agent_response' && msg.event?.agent) {
             const agentName = msg.event.agent;
             displayName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
         }
-        
+
         // Response time badge
         let respTimeBadge = '';
         if (msg.event?.response_time_seconds !== undefined && msg.event?.response_time_seconds !== null) {
             const formatted = formatDuration(msg.event.response_time_seconds);
             respTimeBadge = `<span class="response-time-badge">${formatted} response</span>`;
         }
-        
+
         return `
             <div class="${cardClass}" data-id="${msg.id}">
                 <div class="chat-header">
@@ -2100,7 +2819,7 @@ function renderTranscript(messages, state = null) {
             </div>
         `;
     }).join("");
-    
+
     transcriptFeed.innerHTML = loadOlderBtnHtml + msgsHtml;
 
     // Auto-scroll ONLY if it's the initial room load OR user was already near the bottom
@@ -2117,11 +2836,11 @@ function renderStats(stats) {
         statsBar.style.display = "none";
         return;
     }
-    
+
     const items = Object.entries(stats).map(([agent, data]) => {
         const displayName = agent.charAt(0).toUpperCase() + agent.slice(1);
         let details = [];
-        
+
         if (data.runs > 0) {
             details.push(`${data.runs} run${data.runs > 1 ? 's' : ''}`);
             details.push(`avg ${formatDuration(data.avg_response_time)}`);
@@ -2129,9 +2848,9 @@ function renderStats(stats) {
         if (data.msg_count > 0) {
             details.push(`${data.msg_count} msg${data.msg_count > 1 ? 's' : ''}`);
         }
-        
+
         const detailsStr = details.length > 0 ? ` (${details.join(" · ")})` : "";
-        
+
         if (data.status === "working") {
             const elapsedStr = data.current_elapsed > 0 ? ` for ${formatDuration(data.current_elapsed)}` : "";
             return `
@@ -2150,7 +2869,7 @@ function renderStats(stats) {
             `;
         }
     }).join("<span class='stats-divider'>|</span>");
-    
+
     if (items.trim() === "") {
         statsBar.style.display = "none";
     } else {
@@ -2161,7 +2880,7 @@ function renderStats(stats) {
 
 function escapeHTML(str) {
     if (!str) return "";
-    return str.replace(/[&<>'"]/g, 
+    return str.replace(/[&<>'"]/g,
         tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
     );
 }
@@ -2199,7 +2918,7 @@ function getSystemText(msg) {
     const ev = msg.event || {};
     const kind = ev.kind;
     const agent = escapeHTML(ev.agent || 'Agent');
-    
+
     switch (kind) {
         case 'routing': {
             const modelName = escapeHTML(ev.model?.name || 'unknown');
@@ -2217,12 +2936,12 @@ function getSystemText(msg) {
             }
             return `Routing to <strong>@${agent}</strong> [${modelName} (${provider}) · ${effort} effort]${statusSuffix}`;
         }
-            
+
         case 'heartbeat': {
             const timeFormatted = formatDuration(ev.elapsed_seconds) || 'active';
             return `<strong>@${agent}</strong> is working (${timeFormatted} elapsed)`;
         }
-            
+
         case 'model_selected': {
             const mName = escapeHTML(ev.model?.name || 'unknown');
             const mProv = escapeHTML(ev.model?.provider || 'unknown');
@@ -2230,27 +2949,27 @@ function getSystemText(msg) {
             const effortStr = mEff ? ` · ${mEff} effort` : '';
             return `Model for <strong>@${agent}</strong> → <code>${mName}</code> (${mProv}${effortStr})`;
         }
-            
+
         case 'attachment': {
             const count = ev.count || 1;
             return `Downloaded ${count} attachment(s) to inbox`;
         }
-            
+
         case 'stopped':
             return `<strong>@${agent}</strong> run stopped or cancelled`;
-            
+
         case 'error': {
             let detail = (ev.raw_text || msg.text || '').replace(/\s+/g, ' ').trim();
             if (detail.length > 140) detail = detail.slice(0, 140) + '…';
             return `Error for <strong>@${agent}</strong>: ${escapeHTML(detail)}`;
         }
-            
+
         case 'membership':
             return `Membership update: ${escapeHTML(msg.text || '')}`;
-            
+
         case 'system_startup':
             return `Voice Console daemon connected`;
-            
+
         default:
             return escapeHTML(msg.text || '');
     }
@@ -2258,14 +2977,14 @@ function getSystemText(msg) {
 
 function renderMarkdown(text) {
     if (!text) return "";
-    
+
     // Clean relayed agent prefix if it exists
     let cleanText = text;
     const relayPrefixMatch = text.match(/^\*\*@[a-zA-Z0-9_]+\*\*:\s*([\s\S]*)/);
     if (relayPrefixMatch) {
         cleanText = relayPrefixMatch[1];
     }
-    
+
     if (typeof marked !== 'undefined') {
         try {
             marked.setOptions({
@@ -2281,7 +3000,7 @@ function renderMarkdown(text) {
             console.error("Markdown parsing failed, falling back to plaintext:", e);
         }
     }
-    
+
     // Fallback simple parsing
     let html = escapeHTML(cleanText);
     html = html.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
@@ -2324,10 +3043,10 @@ function initSpeechSynthesis() {
         ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Unsupported`;
         return;
     }
-    
+
     // Warm up the engine
     window.speechSynthesis.cancel();
-    
+
     ttsStatusChip.className = "status-chip active";
     ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Ready`;
 }
@@ -2370,7 +3089,7 @@ async function handleGenerateDigest(options = {}) {
         "working"
     );
     digestContent.innerHTML = "<em>Reviewing the response and preparing narration plus the next draft...</em>";
-    
+
     const settings = getSettings();
     const limit = settings.historyLimit || 20;
     // Rocket.Chat's raw window can be dominated by ACLI heartbeats and routing
@@ -2392,19 +3111,19 @@ async function handleGenerateDigest(options = {}) {
         );
         if (!histResponse.ok) throw new Error("Failed to fetch messages");
         const histData = await histResponse.json();
-        
+
         if (!histData.success || !histData.messages || histData.messages.length === 0) {
             if (targetRoomId === activeRoomId) {
                 digestContent.innerText = "No messages available to summarize.";
             }
             return;
         }
-        
+
         // Generate the narrator text and next-message draft in one grounded AI call.
         const digestResponse = await fetch("/api/response-assistant", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 messages: histData.messages,
                 roomId: targetRoomId,
                 room_name: getRoomName(targetRoomId),
@@ -2412,7 +3131,7 @@ async function handleGenerateDigest(options = {}) {
                 history_limit: limit
             })
         });
-        
+
         const digestData = await digestResponse.json();
         if (!digestResponse.ok) throw new Error(digestData.detail || "Failed to generate response assistance");
 
@@ -2465,7 +3184,7 @@ async function handleGenerateDigest(options = {}) {
             automaticTriggerId
             && digestData.automatic_action_allowed === false
         );
-        
+
         targetState.digestText = digestData.digest;
         targetState.lastAssistedId = digestData.trigger_message_id || options.triggerMessageId || null;
         targetState.failedAssistantId = null;
@@ -2484,6 +3203,7 @@ async function handleGenerateDigest(options = {}) {
         const inserted = applySuggestedDraft(targetRoomId, digestData.suggested_message);
         targetState.suggestionPhase = digestData.phase || "";
         targetState.suggestionRationale = digestData.rationale || "";
+        applySmartQuickSuggestions(targetRoomId, digestData.quick_suggestions);
         if (inserted && targetRoomId === activeRoomId) {
             showSendFeedback(
                 `AI next-step draft ready for review (${digestData.phase || "next step"}). It has not been sent.`,
@@ -2496,7 +3216,7 @@ async function handleGenerateDigest(options = {}) {
                 "success"
             );
         }
-        
+
         // Render Auditable Sources List
         const sourceIds = digestData.included_message_ids || [];
         let sourceHtml = "";
@@ -2550,7 +3270,7 @@ async function handleGenerateDigest(options = {}) {
         if (automaticTriggerId) {
             markAutomaticAssistanceCompleted(targetRoomId, automaticTriggerId);
         }
-        
+
     } catch (err) {
         if (targetRoomId === activeRoomId) {
             console.error("Response assistance failed:", err);
@@ -2595,31 +3315,31 @@ function speakText(text) {
         || !('speechSynthesis' in window)
         || typeof SpeechSynthesisUtterance === "undefined"
     ) return;
-    
+
     // Cancel any ongoing speech
     window.speechSynthesis.cancel();
-    
+
     currentUtterance = new SpeechSynthesisUtterance(text);
     currentUtterance.rate = speechRate;
-    
+
     // Choose a high quality voice if available
     const voices = window.speechSynthesis.getVoices();
     // Prefer standard, natural sounding English voices (Google, Daniel, Samantha, etc.)
-    const preferredVoice = voices.find(v => 
+    const preferredVoice = voices.find(v =>
         (v.name.includes("Natural") || v.name.includes("Google") || v.name.includes("Samantha")) && v.lang.startsWith("en")
     ) || voices.find(v => v.lang.startsWith("en"));
-    
+
     if (preferredVoice) {
         currentUtterance.voice = preferredVoice;
     }
-    
+
     currentUtterance.onstart = () => {
         isPlaying = true;
         visualizer.classList.add("playing");
         playIcon.textContent = "pause";
         ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Speaking`;
     };
-    
+
     currentUtterance.onend = () => {
         isPlaying = false;
         visualizer.classList.remove("playing");
@@ -2627,7 +3347,7 @@ function speakText(text) {
         ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Ready`;
         currentUtterance = null;
     };
-    
+
     currentUtterance.onerror = (e) => {
         console.error("SpeechSynthesis error:", e);
         isPlaying = false;
@@ -2636,7 +3356,7 @@ function speakText(text) {
         ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Error`;
         currentUtterance = null;
     };
-    
+
     window.speechSynthesis.speak(currentUtterance);
 }
 
@@ -2644,7 +3364,7 @@ function handlePlayPause() {
     // Generation is intentionally separate: an empty Play control is inert.
     // Generate Digest creates both the narration and suggested reply.
     if (!String(currentDigestText || "").trim()) return;
-    
+
     if (window.speechSynthesis.speaking) {
         if (window.speechSynthesis.paused) {
             window.speechSynthesis.resume();
@@ -2674,7 +3394,7 @@ function handleStop() {
 function handleSpeedChange() {
     speechRate = parseFloat(speedRange.value);
     speedVal.innerText = `${speechRate.toFixed(1)}x`;
-    
+
     // If speaking, restart from the beginning (or let the rate change take effect for the next utterance)
     if (window.speechSynthesis.speaking && currentUtterance) {
         // For browsers that support changing rate mid-speech
@@ -2694,19 +3414,19 @@ function initSpeechRecognition() {
         btnMic.title = "Voice input is not supported in this browser.";
         return;
     }
-    
+
     recognition = new SpeechRecognition();
     recognition.continuous = false; // Stop listening when user stops speaking
     recognition.interimResults = false;
     recognition.lang = "en-US";
-    
+
     recognition.onstart = () => {
         isListening = true;
         btnMic.classList.remove("btn-secondary");
         btnMic.classList.add("btn-danger", "pulsing");
         btnMic.querySelector(".material-symbols-rounded").textContent = "mic_off";
     };
-    
+
     recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript;
         if (commandInput.value) {
@@ -2716,12 +3436,12 @@ function initSpeechRecognition() {
         }
         commandInput.focus();
     };
-    
+
     recognition.onerror = (e) => {
         console.error("Speech Recognition error:", e);
         stopListening();
     };
-    
+
     recognition.onend = () => {
         stopListening();
     };
@@ -2729,7 +3449,7 @@ function initSpeechRecognition() {
 
 function toggleSpeechInput() {
     if (!recognition) return;
-    
+
     if (isListening) {
         recognition.stop();
         stopListening();
@@ -2759,7 +3479,7 @@ function showSendFeedback(message, type) {
     feedbackEl.textContent = message;
     feedbackEl.className = "send-feedback " + type;
     feedbackEl.style.display = "block";
-    
+
     if (type === "success") {
         setTimeout(() => {
             if (feedbackEl.textContent === message) {
@@ -2769,37 +3489,6 @@ function showSendFeedback(message, type) {
     }
 }
 
-function showConfirmation() {
-    let text = commandInput.value.trim();
-    if (!text || !activeRoomId) return;
-    
-    // Auto-prepend default target agent if no @agent tag is present (U-05)
-    if (!text.startsWith("@")) {
-        const settings = getSettings();
-        const defAgent = settings.defaultAgent || "codex";
-        text = `@${defAgent} ${text}`;
-        commandInput.value = text;
-    }
-    
-    confirmationTargetRoomId = activeRoomId;
-    confirmationTargetText = text;
-    confirmationNonce = null;
-    gatewayConfirmationSnapshot = null;
-    
-    // Lock text input during confirmation
-    commandInput.readOnly = true;
-    
-    confirmationGate.classList.remove("hidden");
-    btnPreSend.classList.add("hidden");
-    btnConfirmSend.disabled = true;
-    
-    // Clear any stale feedback
-    const feedbackEl = document.getElementById("send-feedback");
-    if (feedbackEl) feedbackEl.style.display = "none";
-
-    return prepareGatewayInteraction(text, activeRoomId);
-}
-
 function extractRequestedAgent(text) {
     const match = text.match(/^@([a-zA-Z0-9_]+)/);
     if (match) return match[1];
@@ -2807,10 +3496,25 @@ function extractRequestedAgent(text) {
     return settings.defaultAgent || "codex";
 }
 
-async function prepareGatewayInteraction(text, roomId) {
-    showSendFeedback("Preparing gateway confirmation...", "success");
+async function sendMessage() {
+    let text = commandInput.value.trim();
+    if (!text || !activeRoomId) return;
+
+    const targetRoomId = activeRoomId;
+    // Auto-prepend the configured agent when the message has no explicit target.
+    if (!text.startsWith("@")) {
+        const settings = getSettings();
+        const defAgent = settings.defaultAgent || "codex";
+        text = `@${defAgent} ${text}`;
+        commandInput.value = text;
+        syncCommandDraftState(text);
+    }
+
+    if (btnSend) btnSend.disabled = true;
+    showSendFeedback("Sending message...", "success");
+
     try {
-        const response = await fetch("/api/gateway/interact", {
+        const prepareResponse = await fetch("/api/gateway/interact", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -2818,121 +3522,61 @@ async function prepareGatewayInteraction(text, roomId) {
                 client_id: "browser_console",
                 input_mode: "text",
                 raw_input: text,
-                requested_room_id: roomId,
+                requested_room_id: targetRoomId,
                 requested_agent: extractRequestedAgent(text)
             })
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "Gateway could not prepare confirmation");
+        const prepareData = await prepareResponse.json();
+        if (!prepareResponse.ok) {
+            throw new Error(prepareData.detail || "Gateway could not prepare the message");
+        }
 
-        const snapshot = data.confirmation_snapshot || data.provider_metadata?.confirmation_snapshot;
-        if (!snapshot) throw new Error("Gateway response did not include a confirmation snapshot");
-        if (activeRoomId !== roomId || commandInput.value.trim() !== text) return;
+        const snapshot = prepareData.confirmation_snapshot
+            || prepareData.provider_metadata?.confirmation_snapshot;
+        if (!snapshot) throw new Error("Gateway did not return a message dispatch snapshot");
 
-        gatewayConfirmationSnapshot = snapshot;
-        confirmationTargetRoomId = snapshot.room_id;
-        confirmationTargetText = snapshot.exact_message;
-        confirmationNonce = snapshot.nonce;
-        btnConfirmSend.disabled = false;
-        showSendFeedback("Review and confirm the gateway-prepared transmission.", "success");
-    } catch (err) {
-        console.error("Gateway interaction preparation failed:", err);
-        hideConfirmation();
-        showSendFeedback("Could not prepare message: " + err.message, "error");
-    }
-}
-
-function hideConfirmation() {
-    confirmationTargetRoomId = null;
-    confirmationTargetText = null;
-    confirmationNonce = null;
-    gatewayConfirmationSnapshot = null;
-    
-    // Unlock input
-    commandInput.readOnly = false;
-    
-    confirmationGate.classList.add("hidden");
-    btnPreSend.classList.remove("hidden");
-    
-    // Reset buttons state
-    btnConfirmSend.disabled = false;
-    btnCancelSend.disabled = false;
-    
-    const feedbackEl = document.getElementById("send-feedback");
-    if (feedbackEl) {
-        feedbackEl.style.display = "none";
-    }
-
-    applyPendingAttentionQueueIfReady();
-}
-
-async function sendDraftedMessage() {
-    const text = commandInput.value.trim();
-    if (!text || !activeRoomId) return;
-    
-    // Safety check: ensure active room hasn't changed since confirmation was opened
-    if (confirmationTargetRoomId && confirmationTargetRoomId !== activeRoomId) {
-        showSendFeedback("Active channel changed while drafting message. Please review before sending.", "error");
-        hideConfirmation();
-        return;
-    }
-    
-    // Safety check: ensure text hasn't changed
-    if (confirmationTargetText && text !== confirmationTargetText) {
-        showSendFeedback("Draft content changed. Please draft and confirm again.", "error");
-        hideConfirmation();
-        return;
-    }
-    
-    const targetRoomId = confirmationTargetRoomId || activeRoomId;
-    if (!gatewayConfirmationSnapshot) {
-        showSendFeedback("Gateway confirmation is still being prepared. Please wait.", "error");
-        return;
-    }
-    
-    // Prevent double clicks/sends and cancel requests while in-flight
-    btnConfirmSend.disabled = true;
-    btnCancelSend.disabled = true;
-    
-    showSendFeedback("Transmitting confirmed gateway message...", "success");
-    
-    try {
+        // Dispatch the prepared snapshot immediately; the user no longer needs
+        // to interact with a second confirmation control in the composer.
         const response = await fetch("/api/gateway/confirm", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(gatewayConfirmationSnapshot)
+            body: JSON.stringify(snapshot)
         });
-        
+
         const data = await response.json();
-        
+
         if (!response.ok) {
             throw new Error(data.detail || "Failed to post message");
         }
-        
+
         if (data.status === "posted") {
-            commandInput.value = "";
-            commandInput.readOnly = false;
-            localStorage.removeItem("vc_draft_" + targetRoomId);
             const state = getRoomState(targetRoomId);
-            state.draftText = "";
-            hideConfirmation();
-            
+            // Do not erase text Ed started typing after Send was pressed.
+            const inputStillMatches = activeRoomId === targetRoomId
+                && commandInput.value.trim() === text;
+            if (inputStillMatches) {
+                localStorage.removeItem("vc_draft_" + targetRoomId);
+                state.draftText = "";
+                commandInput.value = "";
+                syncCommandDraftState("");
+            } else if (activeRoomId !== targetRoomId) {
+                localStorage.removeItem("vc_draft_" + targetRoomId);
+                state.draftText = "";
+            }
+
             // Display successful send feedback with message ID
             const msgId = data.rocket_chat_msg_ids?.[0] || "unknown";
-            showSendFeedback(`Message transmitted successfully. ID: ${msgId}`, "success");
-            
+            showSendFeedback(`Message sent successfully. ID: ${msgId}`, "success");
+
             loadHistory(); // Reload history immediately to see the new message
         } else {
             showSendFeedback("Error sending message to Rocket.Chat", "error");
-            btnConfirmSend.disabled = false;
-            btnCancelSend.disabled = false;
         }
     } catch (err) {
         console.error("Post message failed:", err);
         showSendFeedback("Failed to send message: " + err.message, "error");
-        
-        // Retain draft and allow retry
-        btnConfirmSend.disabled = false;
-        btnCancelSend.disabled = false;
+    } finally {
+        if (btnSend) btnSend.disabled = false;
+        applyPendingAttentionQueueIfReady();
     }
 }

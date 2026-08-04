@@ -219,30 +219,56 @@ def build_strategy_context(profile: dict) -> str:
     )
 
 
-def normalize_two_paragraph_digest(text: str) -> str:
+def normalize_narrator_summary(text: str) -> str:
+    """Normalize the high-level spoken summary to one bounded paragraph."""
     cleaned = re.sub(r"```(?:json)?|```", "", str(text or "")).strip()
-    paragraphs = [re.sub(r"\s+", " ", part).strip() for part in re.split(r"\n\s*\n", cleaned) if part.strip()]
-    if len(paragraphs) == 2:
-        normalized = paragraphs
-    else:
-        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", " ".join(paragraphs)) if part.strip()]
-        if len(sentences) >= 2:
-            midpoint = max(1, len(sentences) // 2)
-            normalized = [" ".join(sentences[:midpoint]), " ".join(sentences[midpoint:])]
-        else:
-            one = paragraphs[0] if paragraphs else "No substantive agent update was available to summarize."
-            normalized = [
-                one,
-                "The channel is ready for Ed to review the latest response and choose the next step.",
-            ]
+    summary = re.sub(r"\s+", " ", cleaned).strip()
+    if not summary:
+        summary = "No substantive agent update was available to summarize."
+    words = summary.split()
+    return " ".join(words[:100]) + ("…" if len(words) > 100 else "")
 
-    # Prompt compliance is best-effort; enforce the spoken-word size contract at
-    # the application boundary as well.
-    bounded = []
-    for paragraph in normalized:
-        words = paragraph.split()
-        bounded.append(" ".join(words[:90]) + ("…" if len(words) > 90 else ""))
-    return "\n\n".join(bounded)
+
+def normalize_attention_items(value: Any) -> List[dict]:
+    """Accept only material, typed attention items from the model."""
+    if not isinstance(value, list):
+        return []
+
+    allowed_types = {"decision", "issue", "clarification", "approval"}
+    normalized = []
+    seen = set()
+    for item in value[:4]:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip().lower()
+        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
+        if item_type not in allowed_types or not text or item_type in seen:
+            continue
+        severity = str(item.get("severity") or "").strip().lower() or None
+        if item_type == "issue":
+            if severity not in {"major", "moderate"}:
+                continue
+        else:
+            severity = None
+        words = text.split()
+        normalized.append({
+            "type": item_type,
+            "severity": severity,
+            "text": " ".join(words[:45]) + ("…" if len(words) > 45 else ""),
+        })
+        seen.add(item_type)
+    return normalized
+
+
+def format_narrator_digest(summary: str, attention_items: List[dict]) -> str:
+    """Return only the spoken summary; attention items stay structured and separate.
+
+    ``attention_items`` remains in the signature for callers that may still pass
+    the parsed list, but it must never become narrator/TTS text. The API returns
+    those items independently for attention surfaces.
+    """
+    del attention_items
+    return normalize_narrator_summary(summary)
 
 
 def _extract_json_object(output: str) -> Dict[str, Any]:
@@ -292,6 +318,173 @@ def fallback_suggestion(profile: dict, latest_message: dict) -> Tuple[str, str, 
     return "claude", "@claude Please review the latest plan or recommendation, add any important strategic concerns, and identify what must be settled before implementation begins.", "planning"
 
 
+def _normalize_quick_label(label: Any) -> str:
+    """Keep smart-chip labels to one or two short words."""
+    text = re.sub(r"\s+", " ", str(label or "")).strip()
+    text = re.sub(r"[^\w\s\-?/]", "", text)
+    words = [w for w in text.split(" ") if w][:2]
+    cleaned = " ".join(words).strip(" -")
+    if not cleaned or len(cleaned) > 22:
+        return ""
+    return cleaned
+
+
+def _normalize_quick_command(command: Any, allowed_agents: set) -> str:
+    text = re.sub(r"\s+", " ", str(command or "")).strip()
+    if not text or len(text) > 500:
+        return ""
+    match = re.match(r"^@([a-zA-Z0-9_]+)\s+(.+)$", text)
+    if match:
+        agent = match.group(1).lower()
+        if agent not in allowed_agents:
+            return ""
+        body = match.group(2).strip()
+        if not body:
+            return ""
+        return f"@{agent} {body}"
+    return text
+
+
+def fallback_quick_suggestions(profile: dict, latest_message: dict, phase: str) -> List[dict]:
+    """Phase-aware 1–2 word chips when the model omits or botches smart suggestions."""
+    latest_agent = str(
+        (latest_message.get("event") or {}).get("agent")
+        or latest_message.get("username")
+        or ""
+    ).lower()
+    channel_type = profile.get("channel_type")
+    default_worker = str(profile.get("default_worker") or "codex").lower()
+
+    if channel_type != "acli_coding":
+        return [
+            {
+                "id": "smart-0",
+                "label": "Next step",
+                "command": f"@{default_worker} What is the most useful low-risk next step from the latest update?",
+            },
+            {
+                "id": "smart-1",
+                "label": "Your take",
+                "command": f"@{default_worker} What is your opinion on the latest recommendation?",
+            },
+        ]
+
+    if phase == "review" or latest_agent == "agy":
+        return [
+            {
+                "id": "smart-0",
+                "label": "Double-check",
+                "command": "@grok Independently double-check the implementation against the agreed task and list concrete gaps.",
+            },
+            {
+                "id": "smart-1",
+                "label": "Your take",
+                "command": "@codex What is your opinion on the latest result before we advance?",
+            },
+        ]
+    if phase == "remediation" or latest_agent == "grok":
+        return [
+            {
+                "id": "smart-0",
+                "label": "Fix gaps",
+                "command": "@codex Assess the review findings and fix only small in-scope defects you can verify.",
+            },
+            {
+                "id": "smart-1",
+                "label": "Next action",
+                "command": "@agy Turn the largest remaining gap into one bounded remediation step and implement it.",
+            },
+        ]
+    if phase == "checkpoint" or latest_agent == "claude":
+        return [
+            {
+                "id": "smart-0",
+                "label": "Green light?",
+                "command": "@claude Is there a clear green light for the next bounded step, and what is still open?",
+            },
+            {
+                "id": "smart-1",
+                "label": "Overall plan",
+                "command": "@claude Summarize the overall plan and where we are relative to it.",
+            },
+        ]
+    if phase == "implementation":
+        return [
+            {
+                "id": "smart-0",
+                "label": "Implement",
+                "command": "@agy Implement the next bounded step from the agreed plan and report verification evidence.",
+            },
+            {
+                "id": "smart-1",
+                "label": "Next action",
+                "command": "What is the single next action we should take now?",
+            },
+        ]
+    if phase == "planning" or latest_agent == "codex":
+        return [
+            {
+                "id": "smart-0",
+                "label": "Pressure-test",
+                "command": "@grok Pressure-test the current plan and name what must be resolved first.",
+            },
+            {
+                "id": "smart-1",
+                "label": "Overall plan",
+                "command": "@claude Where are we in the overall plan, and what is the next decision?",
+            },
+        ]
+    return [
+        {
+            "id": "smart-0",
+            "label": "Next action",
+            "command": "What is the single next action we should take now?",
+        },
+        {
+            "id": "smart-1",
+            "label": "Your take",
+            "command": f"@{default_worker} What is your opinion on the latest update?",
+        },
+    ]
+
+
+def normalize_quick_suggestions(
+    raw_items: Any,
+    profile: dict,
+    latest_message: dict,
+    phase: str,
+) -> Tuple[List[dict], bool]:
+    """Return exactly two smart chips; ai_valid is True only when both AI items were usable."""
+    allowed = set(allowed_suggestion_agents(profile))
+    cleaned: List[dict] = []
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            label = _normalize_quick_label(item.get("label") or item.get("title"))
+            command = _normalize_quick_command(
+                item.get("command") or item.get("message") or item.get("text"),
+                allowed,
+            )
+            if not label or not command:
+                continue
+            # Avoid two chips with the same label.
+            if any(existing["label"].casefold() == label.casefold() for existing in cleaned):
+                continue
+            cleaned.append({
+                "id": f"smart-{len(cleaned)}",
+                "label": label,
+                "command": command,
+            })
+            if len(cleaned) >= 2:
+                break
+
+    ai_valid = len(cleaned) == 2
+    if not ai_valid:
+        cleaned = fallback_quick_suggestions(profile, latest_message, phase)
+    return cleaned[:2], ai_valid
+
+
 def parse_response_assistant_output(output: str, profile: dict, latest_message: dict) -> dict:
     parsed = _extract_json_object(output)
     fallback_agent, fallback_message, fallback_phase = fallback_suggestion(profile, latest_message)
@@ -299,7 +492,9 @@ def parse_response_assistant_output(output: str, profile: dict, latest_message: 
 
     raw_digest = parsed.get("digest")
     ai_digest_valid = isinstance(raw_digest, str) and bool(raw_digest.strip())
-    digest = normalize_two_paragraph_digest(raw_digest if ai_digest_valid else "")
+    summary = normalize_narrator_summary(raw_digest if ai_digest_valid else "")
+    attention_items = normalize_attention_items(parsed.get("attention_items"))
+    digest = format_narrator_digest(summary, attention_items)
 
     message = str(parsed.get("suggested_message") or "").strip()
     agent = str(parsed.get("suggested_agent") or "").strip().lstrip("@").lower()
@@ -330,12 +525,21 @@ def parse_response_assistant_output(output: str, profile: dict, latest_message: 
     if phase not in allowed_phases:
         phase = fallback_phase
     rationale = re.sub(r"\s+", " ", str(parsed.get("rationale") or "")).strip()
+    quick_suggestions, ai_quick_valid = normalize_quick_suggestions(
+        parsed.get("quick_suggestions"),
+        profile,
+        latest_message,
+        phase,
+    )
     return {
         "digest": digest,
+        "attention_items": attention_items,
         "suggested_agent": agent,
         "suggested_message": message,
+        "quick_suggestions": quick_suggestions,
         "phase": phase,
         "rationale": rationale,
         "_ai_digest_valid": ai_digest_valid,
         "_ai_suggestion_valid": ai_suggestion_valid,
+        "_ai_quick_valid": ai_quick_valid,
     }

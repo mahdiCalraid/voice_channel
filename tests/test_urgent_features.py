@@ -22,10 +22,11 @@ class TestUrgentFeatures(unittest.TestCase):
         shell = self.client.get("/")
         self.assertEqual(shell.status_code, 200)
         self.assertEqual(shell.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("index.js?v=narrator-resize-1", shell.text)
-        self.assertIn("index.css?v=narrator-resize-1", shell.text)
+        self.assertIn("index.js?v=theme-presets-2", shell.text)
+        self.assertIn("index.css?v=theme-presets-2", shell.text)
         self.assertIn("history_state.js?v=response-assistant-3", shell.text)
         self.assertIn('id="setting-system-font-size"', shell.text)
+        self.assertIn('id="setting-theme"', shell.text)
         self.assertIn('id="setting-chat-font-family"', shell.text)
         self.assertIn('id="setting-chat-font-size"', shell.text)
         self.assertIn('id="setting-chat-line-height"', shell.text)
@@ -50,9 +51,9 @@ class TestUrgentFeatures(unittest.TestCase):
         self.assertIn("--narrator-sidebar-width", stylesheet.text)
 
         for asset_path in (
-            "/index.js?v=narrator-resize-1",
+            "/index.js?v=theme-presets-2",
             "/history_state.js?v=response-assistant-3",
-            "/index.css?v=narrator-resize-1",
+            "/index.css?v=theme-presets-2",
         ):
             with self.subTest(asset_path=asset_path):
                 asset = self.client.get(asset_path)
@@ -66,7 +67,7 @@ class TestUrgentFeatures(unittest.TestCase):
     @patch("app.main.read_prior_summaries")
     @patch("app.main.save_summary")
     @patch("subprocess.run")
-    def test_digest_generation_two_paragraphs(self, mock_subproc_run, mock_save, mock_summaries, mock_docs):
+    def test_digest_generation_one_high_level_paragraph(self, mock_subproc_run, mock_save, mock_summaries, mock_docs):
         mock_docs.return_value = "Matter docs"
         mock_summaries.return_value = []
         mock_save.return_value = None
@@ -80,7 +81,7 @@ class TestUrgentFeatures(unittest.TestCase):
                 with open(out_path, "w", encoding="utf-8") as f:
                     json.dump({
                         "ok": True,
-                        "output": "Paragraph 1: Codex completed the initial architecture setup and verified contract endpoints.\n\nParagraph 2: All 65 Python tests and 12 Node tests are passing cleanly."
+                        "output": "Codex completed the requested setup and the work is ready for the next step."
                     }, f)
             res = MagicMock()
             res.returncode = 0
@@ -101,14 +102,14 @@ class TestUrgentFeatures(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         digest = data.get("digest", "")
-        self.assertIn("Paragraph 1:", digest)
-        self.assertIn("Paragraph 2:", digest)
+        self.assertIn("Codex completed", digest)
+        self.assertNotIn("\n", digest)
 
     @patch("app.main.read_matter_docs")
     @patch("app.main.read_prior_summaries")
     @patch("app.main.save_summary")
     @patch("subprocess.run")
-    def test_fallback_digest_two_paragraphs(self, mock_subproc_run, mock_save, mock_summaries, mock_docs):
+    def test_fallback_digest_one_high_level_paragraph(self, mock_subproc_run, mock_save, mock_summaries, mock_docs):
         mock_docs.return_value = "Matter docs"
         mock_summaries.return_value = []
         mock_save.return_value = None
@@ -130,9 +131,8 @@ class TestUrgentFeatures(unittest.TestCase):
         resp = self.client.post("/api/digest", json=payload)
         self.assertEqual(resp.status_code, 200)
         digest = resp.json().get("digest", "")
-        self.assertIn("\n\n", digest)
-        paragraphs = digest.split("\n\n")
-        self.assertEqual(len(paragraphs), 2)
+        self.assertIn("high-level context", digest)
+        self.assertNotIn("\n", digest)
 
     @patch("httpx.AsyncClient.get")
     def test_rooms_endpoint_returns_recency_and_sorts(self, mock_get):
