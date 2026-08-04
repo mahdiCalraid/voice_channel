@@ -1,7 +1,7 @@
 # Urgent Daily-Use Implementation Plan
 
 Status established: 2026-07-30  
-Last updated: 2026-07-31
+Last updated: 2026-08-03
 Branch: `urgent/daily-use-console`  
 Parent (return-to): `codex/adaptive-voice-gateway`  
 Historical UI foundation: `feature/full-screen-voice-console` / `IMPLEMENTATION_PLAN.md`  
@@ -214,7 +214,7 @@ Status: `VERIFIED` (2026-08-01)
 
 ### U-07. Smoke and daily-use checkpoint
 
-Status: `NOT STARTED`
+Status: `VERIFIED` (2026-08-03; user-confirmed daily-use checkpoint)
 
 **Do:**
 
@@ -230,7 +230,9 @@ Status: `NOT STARTED`
 
 ### U-08. Chatterbox local TTS feasibility gate
 
-Status: `NOT STARTED`
+Status: `IN PROGRESS` (technical trial complete; quality decision pending)
+
+Trial evidence: [`U08_FEASIBILITY.md`](U08_FEASIBILITY.md)
 
 **Purpose:** determine whether a local Chatterbox service on Ed's Mac is a materially
 better narrator than the current browser Web Speech voice, without changing the
@@ -367,7 +369,7 @@ Voice commands for the scheduler are explicitly **out of scope** for U-10.
 
 ## 8. Immediate next task
 
-**U-07** (Smoke and daily-use checkpoint) is the current active task. **U-10** (U-10a state overlay, U-10b scoring, U-10c rail integration and UI fixes) and **U-06** (Gateway membership checklist) are complete and verified. Chatterbox (U-08/U-09) is paused. Do not start Omi, mobile, cloud exposure, or voice cloning under this urgent plan.
+**U-08** (Chatterbox local TTS feasibility) is the current active task. **U-07**, **U-10** (U-10a state overlay, U-10b scoring, U-10c rail integration and UI fixes), and **U-06** (Gateway membership checklist) are complete and verified. U-09 remains blocked until Ed makes the U-08 quality decision. Do not start Omi, mobile, cloud exposure, or voice cloning under this urgent plan.
 
 ## 9. Operating rules for agents
 
