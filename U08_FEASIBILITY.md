@@ -49,6 +49,34 @@ The Chatterbox output generated successfully and was played locally. A meaningfu
 quality comparison against the current browser/macOS voice still requires Ed's
 subjective listen-and-choose decision; this automated trial cannot establish that.
 
+## Digest-length latency measurement (2026-08-04)
+
+The first trial used a short fixture, which understates the latency a real narrator
+digest would show. This run used a 132-word digest paragraph (46 s of speech), the
+realistic length, on a warm loopback service. Script and audio:
+`scratch/tts_ab/` (untracked; audio is disposable).
+
+| Variant | Time to first audio | Total synthesis | Audio length |
+| --- | ---: | ---: | ---: |
+| Chatterbox, whole paragraph in one request | **17.22 s** | 17.22 s | 46.03 s |
+| Chatterbox, sentence-chunked (6 chunks) | **1.76 s** | 12.83 s | 45.66 s |
+| macOS `say` / browser Web Speech | **< 1 s** | n/a (streams) | ~46 s |
+
+Real-time factor for the whole-paragraph run was 0.374, better than the 0.58 implied
+by the short fixture. The decisive result is the chunked run: every chunk after the
+first synthesized in less time than the previous chunk's playback duration
+(worst case 5.18 s of synthesis behind 7.76 s of playback), so streaming playback
+never starves and the perceived wait is the first sentence only.
+
+Warm-service resident memory measured 0.17 GiB between requests in this run; the
+earlier 1.3 GiB figure was taken during active synthesis. Boot volume free space is
+now 17 GiB with the model cache held under `/tmp`.
+
+**Design consequence:** whole-paragraph synthesis is not viable — 17 s of silence
+after pressing Play would be worse than today's voice regardless of timbre. If U-09
+proceeds it must synthesize sentence by sentence and start playback on the first
+chunk, and fall back to browser speech on latency, not only on error.
+
 ## Current gate decision
 
 **Technical feasibility: pass.** The local service starts, stays loopback-only, loads
