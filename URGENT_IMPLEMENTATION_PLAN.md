@@ -266,7 +266,7 @@ working digest, suggestion, or confirmation flows.
 
 ### U-09. Chatterbox provider integration
 
-Status: `IMPLEMENTED — local playback verified`
+Status: `IMPLEMENTED — local playback verified; Fast/Nice voice selection added`
 
 **Do:**
 
@@ -290,6 +290,9 @@ Status: `IMPLEMENTED — local playback verified`
 6. Document the local deployment contract: one warm Chatterbox process on the Mac,
    Gateway-to-service loopback only, no raw-audio retention by default, and no public
    port exposure.
+7. Give Ed an explicit persisted **Fast voice / Nice voice** choice. Fast uses the
+   browser voice immediately; Nice requests server-side Chatterbox only when selected,
+   with the existing server/browser fallback chain preserved.
 
 **Done when:**
 
@@ -315,6 +318,36 @@ Status: `IMPLEMENTED — local playback verified`
   `macOS say` voice (default `Ava (Premium)`), then the phone's browser voice.
 - `VC_TTS_PROVIDER=browser` is an explicit emergency switch that disables the server
   provider while retaining the browser voice path.
+
+### U-09A. Narrator latency and pause reduction
+
+Status: `PLANNED`
+
+**Purpose:** keep Fast voice available for urgent work while making the optional Nice
+voice feel more continuous and responsive on the Mac and on remote clients.
+
+**Do, in this order:**
+
+1. Establish a repeatable benchmark using 15-, 30-, and 60-second narration fixtures:
+   cold-start time, warm time-to-first-audio, total synthesis time, real-time factor,
+   and the number/duration of audible gaps between sentence chunks.
+2. Keep one warm Chatterbox process and pre-warm it after Gateway restart. Do not load
+   multiple models or install Chatterbox on client phones.
+3. Start the next sentence's synthesis while the current sentence is playing. Queue
+   only a bounded number of transient chunks so memory and cancellation remain safe.
+4. Tune chunk boundaries and target a short first chunk so Nice voice reaches first audio
+   quickly without creating unnatural sentence breaks.
+5. Add a latency-aware fallback: if Nice voice misses the agreed first-audio budget or
+   a chunk fails, stop the remote queue cleanly and continue with Fast voice.
+6. Re-run the benchmark remotely through the authenticated Gateway, verifying that the
+   phone receives only transient audio and that Chatterbox remains private on loopback.
+7. Record the before/after numbers and Ed's listening judgment before changing the
+   default. Fast remains the default unless Nice voice meets the acceptance gate.
+
+**Acceptance gate:** Fast starts in under one second; Nice voice starts its first
+sentence within two seconds warm and has no repeated audible gaps longer than one
+second during the benchmark, while preserving stop, fallback, and transient-audio
+privacy behavior.
 
 ### U-10. Attention scheduler in the channel list
 
@@ -385,7 +418,7 @@ Voice commands for the scheduler are explicitly **out of scope** for U-10.
 
 ## 8. Immediate next task
 
-**U-08** (Chatterbox local TTS feasibility) is the current active task. **U-07**, **U-10** (U-10a state overlay, U-10b scoring, U-10c rail integration and UI fixes), and **U-06** (Gateway membership checklist) are complete and verified. U-09 remains blocked until Ed makes the U-08 quality decision. Do not start Omi, mobile, cloud exposure, or voice cloning under this urgent plan.
+**U-09A** (Narrator latency and pause reduction) is the next active task. **U-07**, **U-08**, **U-09**, **U-10** (U-10a state overlay, U-10b scoring, U-10c rail integration and UI fixes), and **U-06** (Gateway membership checklist) are complete or verified. Do not start Omi, mobile, cloud exposure, or voice cloning under this urgent plan.
 
 ## 9. Operating rules for agents
 

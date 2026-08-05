@@ -7,6 +7,8 @@ let currentUtterance = null;
 let currentRemoteAudio = null;
 let remotePlayback = null;
 let ttsProvider = "browser";
+let chatterboxAvailable = false;
+let voiceMode = "fast";
 let speechRate = 1.0;
 let lastMessageTimestamp = null;
 let recognition = null;
@@ -33,6 +35,8 @@ const playIcon = document.getElementById("play-icon");
 const btnStop = document.getElementById("btn-stop");
 const speedRange = document.getElementById("speed-range");
 const speedVal = document.getElementById("speed-val");
+const niceVoiceToggle = document.getElementById("toggle-nice-voice");
+const voiceModeStatus = document.getElementById("voice-mode-status");
 const transcriptFeed = document.getElementById("transcript-feed");
 const commandInput = document.getElementById("command-input");
 const btnMic = document.getElementById("btn-mic");
@@ -486,7 +490,8 @@ const DEFAULT_SETTINGS = {
     chatLetterSpacing: 0,
     historyLimit: 20,
     defaultAgent: "codex",
-    autoNarrate: true
+    autoNarrate: true,
+    voiceMode: "fast"
 };
 
 const AUTOMATIC_ASSISTANCE_LEASE_MS = 90 * 1000;
@@ -630,6 +635,7 @@ function normalizeSettings(settings = {}) {
     const chatFontFamily = Object.prototype.hasOwnProperty.call(CHAT_FONT_FAMILIES, settings.chatFontFamily)
         ? settings.chatFontFamily
         : DEFAULT_SETTINGS.chatFontFamily;
+    const voiceMode = settings.voiceMode === "nice" ? "nice" : "fast";
     return {
         ...DEFAULT_SETTINGS,
         ...settings,
@@ -637,6 +643,7 @@ function normalizeSettings(settings = {}) {
         theme,
         systemFontSize,
         chatFontFamily,
+        voiceMode,
         chatFontSize: clampSettingNumber(settings.chatFontSize, DEFAULT_SETTINGS.chatFontSize, 12, 36),
         chatLineHeight: clampSettingNumber(settings.chatLineHeight, DEFAULT_SETTINGS.chatLineHeight, 1, 2.4),
         chatParagraphSpacing: clampSettingNumber(
@@ -667,6 +674,8 @@ function saveSettings(settings) {
 
 function applySettings(settings = getSettings()) {
     const normalized = normalizeSettings(settings);
+    voiceMode = normalized.voiceMode;
+    updateVoiceModeUI(normalized.voiceMode);
     document.body.dataset.theme = normalized.theme;
     document.body.setAttribute("data-theme", normalized.theme);
     document.body.style.setProperty(
@@ -687,6 +696,60 @@ function applySettings(settings = getSettings()) {
     } else {
         setAssistantStatus("Automatic: off", "off");
     }
+}
+
+function updateTTSModeStatus() {
+    if (!ttsStatusChip) return;
+    const label = ttsStatusChip.querySelector(".status-label");
+    if (!label) return;
+    if (voiceMode === "nice") {
+        label.innerText = chatterboxAvailable
+            ? "Nice voice: Ready"
+            : "Nice voice unavailable · Fast fallback";
+    } else {
+        label.innerText = "Fast voice: Ready";
+    }
+}
+
+function updateVoiceModeUI(mode = voiceMode) {
+    voiceMode = mode === "nice" ? "nice" : "fast";
+    if (niceVoiceToggle) {
+        niceVoiceToggle.checked = voiceMode === "nice";
+        if (typeof niceVoiceToggle.setAttribute === "function") {
+            niceVoiceToggle.setAttribute("aria-checked", String(voiceMode === "nice"));
+        }
+    }
+    if (voiceModeStatus) {
+        voiceModeStatus.innerText = voiceMode === "nice"
+            ? (chatterboxAvailable
+                ? "Server Chatterbox voice — nicer, but slower"
+                : "Chatterbox is unavailable — fast voice will be used")
+            : "Fast browser voice — starts immediately";
+    }
+    updateTTSModeStatus();
+}
+
+function setVoiceMode(mode, persist = true) {
+    const nextMode = mode === "nice" ? "nice" : "fast";
+    if (isPlaying || currentRemoteAudio || remotePlayback || currentUtterance) {
+        handleStop();
+    }
+    const nextSettings = normalizeSettings({ ...getSettings(), voiceMode: nextMode });
+    if (persist) {
+        saveSettings(nextSettings);
+    } else {
+        applySettings(nextSettings);
+    }
+    updateVoiceModeUI(nextMode);
+}
+
+function initVoiceModeControl() {
+    if (!niceVoiceToggle || niceVoiceToggle.dataset.voiceModeInitialized === "true") return;
+    niceVoiceToggle.dataset.voiceModeInitialized = "true";
+    niceVoiceToggle.addEventListener("change", () => {
+        setVoiceMode(niceVoiceToggle.checked ? "nice" : "fast");
+    });
+    updateVoiceModeUI(getSettings().voiceMode);
 }
 
 function setAssistantStatus(text, state = "on") {
@@ -1266,6 +1329,7 @@ function initChannelsSidebar() {
 // Initialize application
 function init() {
     applySettings();
+    initVoiceModeControl();
     initSettingsModal();
     initComposerResizer();
     initNarratorResizer();
@@ -3049,28 +3113,32 @@ function initSpeechSynthesis() {
         window.speechSynthesis.cancel();
     }
 
+    voiceMode = getSettings().voiceMode;
     ttsProvider = "browser";
+    chatterboxAvailable = false;
     ttsStatusChip.className = "status-chip active";
-    ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Checking server voice`;
+    ttsStatusChip.querySelector(".status-label").innerText = voiceMode === "nice"
+        ? "Nice voice: Checking server"
+        : "Fast voice: Ready";
+    updateVoiceModeUI(voiceMode);
     // The model and its cache remain on the Gateway host. A phone only receives
     // transient WAV chunks; if this check or playback fails, use its browser voice.
     if (typeof fetch === "function") {
         fetch("/api/gateway/tts/status")
             .then(response => response.ok ? response.json() : null)
             .then(status => {
-                if (status && status.chatterbox_available) {
-                    ttsProvider = "chatterbox";
-                    ttsStatusChip.querySelector(".status-label").innerText = "Speech Engine: Chatterbox ready";
-                } else {
-                    ttsStatusChip.querySelector(".status-label").innerText = browserSpeechAvailable
-                        ? "Speech Engine: Browser fallback"
-                        : "Speech Engine: Unsupported";
+                chatterboxAvailable = Boolean(status && status.chatterbox_available);
+                updateVoiceModeUI(voiceMode);
+                if (!browserSpeechAvailable && !chatterboxAvailable) {
+                    ttsStatusChip.querySelector(".status-label").innerText = "Speech Engine: Unsupported";
                 }
             })
             .catch(() => {
-                ttsStatusChip.querySelector(".status-label").innerText = browserSpeechAvailable
-                    ? "Speech Engine: Browser fallback"
-                    : "Speech Engine: Unsupported";
+                chatterboxAvailable = false;
+                updateVoiceModeUI(voiceMode);
+                if (!browserSpeechAvailable) {
+                    ttsStatusChip.querySelector(".status-label").innerText = "Speech Engine: Unsupported";
+                }
             });
     }
 }
@@ -3436,6 +3504,7 @@ async function speakChatterboxText(text) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     text: chunks[index],
+                    voice_mode: "nice",
                     provider: "chatterbox",
                     mode: "summary",
                     rate: Math.round(200 * speechRate)
@@ -3466,7 +3535,8 @@ async function speakChatterboxText(text) {
 }
 
 function startNarration(text) {
-    if (ttsProvider === "chatterbox") {
+    if (voiceMode === "nice" && chatterboxAvailable) {
+        ttsProvider = "chatterbox";
         speakChatterboxText(text).catch(error => {
             console.warn("Chatterbox playback failed; using browser speech:", error);
             if (remotePlayback) remotePlayback = null;
@@ -3475,10 +3545,13 @@ function startNarration(text) {
                 currentRemoteAudio = null;
             }
             ttsProvider = "browser";
+            chatterboxAvailable = false;
+            updateVoiceModeUI(voiceMode);
             speakBrowserText(text);
         });
         return;
     }
+    ttsProvider = "browser";
     speakBrowserText(text);
 }
 
@@ -3529,7 +3602,7 @@ function handleStop() {
     }
     window.speechSynthesis.cancel();
     currentUtterance = null;
-    setPlaybackUI(false, ttsProvider === "chatterbox" ? "Speech Engine: Chatterbox ready" : "Speech Engine: Browser ready");
+    updateVoiceModeUI(voiceMode);
 }
 
 function handleSpeedChange() {

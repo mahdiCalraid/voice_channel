@@ -8,6 +8,7 @@ from app.main import app
 from app.tts_adapter import (
     TTSRequest,
     get_system_voices,
+    provider_for_request,
     stop_tts,
     is_active_playback,
     speak_text,
@@ -63,6 +64,8 @@ class TestTTSAdapter(unittest.TestCase):
         self.assertTrue(data["is_available"])
         self.assertIsInstance(data["available_voices"], list)
         self.assertIn("chatterbox_available", data)
+        self.assertEqual(data["default_voice_mode"], "fast")
+        self.assertIn("fast", data["available_voice_modes"])
 
     @patch("app.main.synthesize_audio")
     def test_tts_speak_endpoint_returns_transient_audio(self, mock_synthesize):
@@ -96,6 +99,16 @@ class TestTTSAdapter(unittest.TestCase):
         result = asyncio.run(synthesize_audio(TTSRequest(text="Fallback.", provider="browser")))
         self.assertFalse(result["success"])
         self.assertEqual(result["fallback"], "browser")
+
+    def test_voice_mode_maps_fast_and_nice_to_server_contract(self):
+        self.assertEqual(
+            provider_for_request(TTSRequest(text="Fast.", voice_mode="fast")),
+            "browser",
+        )
+        self.assertEqual(
+            provider_for_request(TTSRequest(text="Nice.", voice_mode="nice")),
+            "chatterbox",
+        )
 
     @patch("app.tts_adapter.TTS_FALLBACK_PROVIDER", "browser")
     @patch("app.tts_adapter.synthesize_chatterbox")

@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
-    <link rel="stylesheet" href="index.css?v=theme-presets-2">
+    <link rel="stylesheet" href="index.css?v=voice-mode-1">
 </head>
 <body>
     <div class="app-layout">
@@ -342,6 +342,21 @@
                         </div>
                         <input type="range" id="speed-range" min="0.5" max="2.0" step="0.1" value="1.0">
                     </div>
+
+                    <div class="voice-mode-control">
+                        <div class="voice-mode-heading">
+                            <span class="material-symbols-rounded">record_voice_over</span>
+                            <div>
+                                <label class="voice-mode-label" for="toggle-nice-voice">Nice voice</label>
+                                <p id="voice-mode-status">Fast browser voice — starts immediately</p>
+                            </div>
+                            <label class="switch-control" title="Use the server-side Chatterbox voice">
+                                <input type="checkbox" id="toggle-nice-voice" aria-label="Use nice voice">
+                                <span class="switch-slider" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                        <p class="voice-mode-help">Off is fastest. On uses the better server voice when Chatterbox is ready, with fast voice fallback.</p>
+                    </div>
                 </div>
             </div>
         </aside>
@@ -644,6 +659,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="history_state.js?v=response-assistant-3"></script>
-    <script src="index.js?v=theme-presets-2"></script>
+    <script src="index.js?v=voice-mode-1"></script>
 </body>
 </html>

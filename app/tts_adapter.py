@@ -26,6 +26,7 @@ class TTSRequest(BaseModel):
     mode: str = Field(default="summary", description="'summary' or 'full'")
     voice: Optional[str] = None
     provider: Optional[str] = Field(default=None, description="chatterbox or browser")
+    voice_mode: Optional[str] = Field(default=None, description="fast or nice")
     rate: Optional[int] = Field(default=200, ge=100, le=400, description="Words per minute for macOS say")
 
 class TTSStatus(BaseModel):
@@ -36,6 +37,8 @@ class TTSStatus(BaseModel):
     provider: str = "chatterbox"
     chatterbox_available: bool = False
     fallback_provider: str = "browser"
+    available_voice_modes: List[str] = ["fast", "nice"]
+    default_voice_mode: str = "fast"
 
 _active_process: Optional[subprocess.Popen] = None
 
@@ -55,6 +58,22 @@ MAX_TTS_AUDIO_BYTES = int(os.environ.get("VC_MAX_TTS_AUDIO_BYTES", str(12 * 1024
 def configured_provider() -> str:
     """Return the server-side primary provider, never a browser-bundled setting."""
     return TTS_PROVIDER if TTS_PROVIDER in {"chatterbox", "browser", "macos_say"} else "chatterbox"
+
+
+def provider_for_request(req: TTSRequest) -> str:
+    """Map the user-facing speed/quality choice to a server provider.
+
+    The browser never needs to know where Chatterbox lives.  ``voice_mode`` is
+    deliberately a small, stable contract while ``provider`` remains available
+    for internal tests and explicit provider integrations.
+    """
+    requested_mode = (req.voice_mode or "").strip().lower()
+    if requested_mode == "fast":
+        return "browser"
+    if requested_mode == "nice":
+        return "chatterbox"
+    requested_provider = (req.provider or configured_provider()).strip().lower()
+    return requested_provider if requested_provider in {"chatterbox", "browser", "macos_say"} else "browser"
 
 
 async def chatterbox_health() -> bool:
@@ -233,7 +252,7 @@ async def synthesize_audio(req: TTSRequest) -> Dict[str, Any]:
     Browser speech is intentionally represented as a fallback instruction rather
     than synthesized here: on a phone, the browser must own that fallback voice.
     """
-    provider = (req.provider or configured_provider()).strip().lower()
+    provider = provider_for_request(req)
     if provider == "chatterbox":
         result = await synthesize_chatterbox(req)
         if result.get("success"):

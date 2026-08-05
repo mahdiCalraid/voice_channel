@@ -470,6 +470,25 @@ test("narrator sidebar toggle opens, closes, and persists state in localStorage"
     assert.equal(sidebar.classList.contains("collapsed"), false);
 });
 
+test("nice voice switch is opt-in and persists the selected voice mode", () => {
+    const app = loadFrontend();
+    app.sandbox.initVoiceModeControl();
+    const toggle = app.sandbox.document.getElementById("toggle-nice-voice");
+
+    assert.equal(toggle.checked, false);
+    assert.equal(vm.runInContext('getSettings().voiceMode', app.sandbox), "fast");
+
+    toggle.checked = true;
+    toggle.listeners.change();
+    assert.equal(vm.runInContext('getSettings().voiceMode', app.sandbox), "nice");
+    assert.equal(JSON.parse(app.storage.vc_settings).voiceMode, "nice");
+
+    toggle.checked = false;
+    toggle.listeners.change();
+    assert.equal(vm.runInContext('getSettings().voiceMode', app.sandbox), "fast");
+    assert.equal(JSON.parse(app.storage.vc_settings).voiceMode, "fast");
+});
+
 test("legacy interface font preference migrates to the split typography settings", () => {
     const app = loadFrontend({
         storage: {

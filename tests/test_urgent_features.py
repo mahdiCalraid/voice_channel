@@ -22,8 +22,8 @@ class TestUrgentFeatures(unittest.TestCase):
         shell = self.client.get("/")
         self.assertEqual(shell.status_code, 200)
         self.assertEqual(shell.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("index.js?v=theme-presets-2", shell.text)
-        self.assertIn("index.css?v=theme-presets-2", shell.text)
+        self.assertIn("index.js?v=voice-mode-1", shell.text)
+        self.assertIn("index.css?v=voice-mode-1", shell.text)
         self.assertIn("history_state.js?v=response-assistant-3", shell.text)
         self.assertIn('id="setting-system-font-size"', shell.text)
         self.assertIn('id="setting-theme"', shell.text)
@@ -34,6 +34,7 @@ class TestUrgentFeatures(unittest.TestCase):
         self.assertIn('id="narrator-resize-handle"', shell.text)
         self.assertIn('id="digest-content"', shell.text)
         self.assertIn('contenteditable="plaintext-only"', shell.text)
+        self.assertIn('id="toggle-nice-voice"', shell.text)
         self.assertIn("Editable narration", shell.text)
         self.assertIn("<span>Play</span>", shell.text)
 
