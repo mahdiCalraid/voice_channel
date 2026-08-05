@@ -5,6 +5,7 @@ __pycache__/
 *.db
 .env
 .venv/
+.venv-chatterbox/
 env/
 tmp/
 acli/gateway_state/

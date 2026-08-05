@@ -266,7 +266,7 @@ working digest, suggestion, or confirmation flows.
 
 ### U-09. Chatterbox provider integration
 
-Status: `IMPLEMENTED — local playback verification pending`
+Status: `IMPLEMENTED — local playback verified`
 
 **Do:**
 

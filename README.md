@@ -91,6 +91,14 @@ The existing service can be built and started with:
 
 It listens on port `6891`.
 
+`restart.sh` also provisions the Mac-local Chatterbox environment on first use
+and starts its MLX-Audio server on loopback port `8765` before the Gateway. The
+first narration downloads the configured model into the user's Hugging Face
+cache; subsequent Play actions use the warm server. Set
+`VC_CHATTERBOX_AUTOSTART=0` only when deliberately disabling the preferred
+narrator. Phones and other clients receive transient audio from the Gateway and
+never install the model or voice files.
+
 Run the automated suites with:
 
 ```bash

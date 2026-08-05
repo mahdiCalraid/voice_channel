@@ -8,8 +8,16 @@ echo "=============================================="
 
 # Check if docker is running
 if ! docker ps > /dev/null 2>&1; then
-    echo "❌ Error: Docker is not running or accessible. Please start Docker first."
-    exit 1
+  echo "❌ Error: Docker is not running or accessible. Please start Docker first."
+  exit 1
+fi
+
+# Chatterbox is a host-side MLX service: Docker cannot use the Mac GPU. Keep it
+# loopback-only and start it before the Gateway so the first browser load sees
+# the preferred narrator instead of caching the browser fallback status.
+if [ "${VC_CHATTERBOX_AUTOSTART:-1}" = "1" ]; then
+  echo "Starting local Chatterbox narrator..."
+  ./start_chatterbox.sh --background
 fi
 
 # Stop and remove existing container
