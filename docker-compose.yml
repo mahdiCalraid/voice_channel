@@ -19,6 +19,13 @@ services:
       - GATEWAY_RC_INGRESS_SECRET=${GATEWAY_RC_INGRESS_SECRET:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - VC_WORKER=${VC_WORKER:-codex}
+      # Chatterbox stays on the Mac/server. The browser never receives this URL
+      # or the model name; override this only when the Gateway runs in Docker.
+      - VC_TTS_PROVIDER=${VC_TTS_PROVIDER:-chatterbox}
+      - VC_TTS_FALLBACK_PROVIDER=${VC_TTS_FALLBACK_PROVIDER:-macos_say}
+      - VC_TTS_FALLBACK_VOICE=${VC_TTS_FALLBACK_VOICE:-Ava (Premium)}
+      - VC_CHATTERBOX_URL=${VC_CHATTERBOX_URL:-http://host.docker.internal:8765}
+      - VC_CHATTERBOX_MODEL=${VC_CHATTERBOX_MODEL:-mlx-community/chatterbox-turbo-8bit}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -230,7 +230,7 @@ Status: `VERIFIED` (2026-08-03; user-confirmed daily-use checkpoint)
 
 ### U-08. Chatterbox local TTS feasibility gate
 
-Status: `IN PROGRESS` (technical trial complete; quality decision pending)
+Status: `VERIFIED` (Ed approved the chunked voice quality and server-side design)
 
 Trial evidence: [`U08_FEASIBILITY.md`](U08_FEASIBILITY.md)
 
@@ -264,9 +264,9 @@ working digest, suggestion, or confirmation flows.
 - The result explicitly says whether to proceed with U-09; no narrator UI or default
   provider changes are made merely by passing the trial.
 
-### U-09. Chatterbox provider integration (only after U-08 go decision)
+### U-09. Chatterbox provider integration
 
-Status: `BLOCKED BY U-08`
+Status: `IMPLEMENTED — local playback verification pending`
 
 **Do:**
 
@@ -299,6 +299,22 @@ Status: `BLOCKED BY U-08`
   the browser voice fallback.
 - Tests and one local live playback verify that there is no automatic readout and no
   durable generated-audio artifact.
+
+## U-09 deployment contract
+
+- Run one MLX-Audio Chatterbox service on the Mac/server at `127.0.0.1:8765`.
+- The checked-in launcher is `./start_chatterbox.sh`; point
+  `VC_CHATTERBOX_PYTHON` at the Python environment containing `mlx-audio`.
+- If the Gateway is Dockerized on that same Mac, set `VC_CHATTERBOX_URL` to
+  `http://host.docker.internal:8765`; do not expose port 8765 publicly.
+- The Gateway performs bounded, sentence-sized requests and never writes generated
+  audio to the repository, ACLI runtime, or durable storage.
+- A remote phone downloads only the current transient WAV chunk and plays it locally;
+  no Chatterbox package, model, or voice files are installed on the phone.
+- When Chatterbox is unavailable, the Mac Gateway tries the configured transient
+  `macOS say` voice (default `Ava (Premium)`), then the phone's browser voice.
+- `VC_TTS_PROVIDER=browser` is an explicit emergency switch that disables the server
+  provider while retaining the browser voice path.
 
 ### U-10. Attention scheduler in the channel list
 

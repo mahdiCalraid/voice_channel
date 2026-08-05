@@ -4,6 +4,9 @@
 let currentDigestText = "";
 let isPlaying = false;
 let currentUtterance = null;
+let currentRemoteAudio = null;
+let remotePlayback = null;
+let ttsProvider = "browser";
 let speechRate = 1.0;
 let lastMessageTimestamp = null;
 let recognition = null;
@@ -3037,18 +3040,39 @@ function sanitizeHTML(html) {
 
 // 3. Text-to-Speech (TTS) Narrator
 function initSpeechSynthesis() {
-    if (!('speechSynthesis' in window)) {
-        console.error("Speech Synthesis is not supported in this browser.");
-        ttsStatusChip.className = "status-chip error";
-        ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Unsupported`;
-        return;
+    const browserSpeechAvailable = (
+        'speechSynthesis' in window
+        && typeof window.speechSynthesis.cancel === "function"
+    );
+    if (browserSpeechAvailable) {
+        // Warm up the fallback engine.
+        window.speechSynthesis.cancel();
     }
 
-    // Warm up the engine
-    window.speechSynthesis.cancel();
-
+    ttsProvider = "browser";
     ttsStatusChip.className = "status-chip active";
-    ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Ready`;
+    ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Checking server voice`;
+    // The model and its cache remain on the Gateway host. A phone only receives
+    // transient WAV chunks; if this check or playback fails, use its browser voice.
+    if (typeof fetch === "function") {
+        fetch("/api/gateway/tts/status")
+            .then(response => response.ok ? response.json() : null)
+            .then(status => {
+                if (status && status.chatterbox_available) {
+                    ttsProvider = "chatterbox";
+                    ttsStatusChip.querySelector(".status-label").innerText = "Speech Engine: Chatterbox ready";
+                } else {
+                    ttsStatusChip.querySelector(".status-label").innerText = browserSpeechAvailable
+                        ? "Speech Engine: Browser fallback"
+                        : "Speech Engine: Unsupported";
+                }
+            })
+            .catch(() => {
+                ttsStatusChip.querySelector(".status-label").innerText = browserSpeechAvailable
+                    ? "Speech Engine: Browser fallback"
+                    : "Speech Engine: Unsupported";
+            });
+    }
 }
 
 async function handleGenerateDigest(options = {}) {
@@ -3309,7 +3333,42 @@ async function handleGenerateDigest(options = {}) {
     }
 }
 
-function speakText(text) {
+function setPlaybackUI(playing, label = null) {
+    isPlaying = playing;
+    visualizer.classList.toggle("playing", playing);
+    playIcon.textContent = playing ? "pause" : "play_arrow";
+    if (label) ttsStatusChip.querySelector(".status-label").innerText = label;
+}
+
+function splitNarrationIntoChunks(text) {
+    const clean = String(text || "").trim();
+    if (!clean) return [];
+    const sentences = clean.match(/[^.!?]+[.!?]+(?:["'’)]*)|[^.!?]+$/g) || [clean];
+    const chunks = [];
+    for (const sentence of sentences) {
+        const part = sentence.trim();
+        if (!part) continue;
+        if (part.length <= 1800) {
+            chunks.push(part);
+            continue;
+        }
+        let words = part.split(/\s+/);
+        let current = "";
+        for (const word of words) {
+            const candidate = current ? `${current} ${word}` : word;
+            if (candidate.length > 1800 && current) {
+                chunks.push(current);
+                current = word;
+            } else {
+                current = candidate;
+            }
+        }
+        if (current) chunks.push(current);
+    }
+    return chunks;
+}
+
+function speakBrowserText(text) {
     if (
         !text
         || !('speechSynthesis' in window)
@@ -3334,25 +3393,19 @@ function speakText(text) {
     }
 
     currentUtterance.onstart = () => {
-        isPlaying = true;
-        visualizer.classList.add("playing");
-        playIcon.textContent = "pause";
+        setPlaybackUI(true, "Speech Engine: Browser speaking");
         ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Speaking`;
     };
 
     currentUtterance.onend = () => {
-        isPlaying = false;
-        visualizer.classList.remove("playing");
-        playIcon.textContent = "play_arrow";
+        setPlaybackUI(false, "Speech Engine: Browser ready");
         ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Ready`;
         currentUtterance = null;
     };
 
     currentUtterance.onerror = (e) => {
         console.error("SpeechSynthesis error:", e);
-        isPlaying = false;
-        visualizer.classList.remove("playing");
-        playIcon.textContent = "play_arrow";
+        setPlaybackUI(false, "Speech Engine: Browser error");
         ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Error`;
         currentUtterance = null;
     };
@@ -3360,12 +3413,91 @@ function speakText(text) {
     window.speechSynthesis.speak(currentUtterance);
 }
 
+// Kept as the stable local fallback seam used by the frontend harness and by
+// browsers without an Audio implementation.
+function speakText(text) {
+    speakBrowserText(text);
+}
+
+async function speakChatterboxText(text) {
+    if (typeof Audio === "undefined" || typeof URL === "undefined" || !URL.createObjectURL) {
+        throw new Error("Remote audio playback is unavailable in this browser");
+    }
+    const chunks = splitNarrationIntoChunks(text);
+    const token = {};
+    remotePlayback = { token, chunks, index: 0, loading: true };
+    setPlaybackUI(true, "Speech Engine: Chatterbox preparing");
+    try {
+        for (let index = 0; index < chunks.length; index += 1) {
+            if (!remotePlayback || remotePlayback.token !== token) return;
+            remotePlayback.index = index;
+            const response = await fetch("/api/gateway/tts/speak", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    text: chunks[index],
+                    provider: "chatterbox",
+                    mode: "summary",
+                    rate: Math.round(200 * speechRate)
+                })
+            });
+            if (!response.ok) throw new Error(`Chatterbox returned ${response.status}`);
+            const blob = await response.blob();
+            if (!remotePlayback || remotePlayback.token !== token) return;
+            const audio = new Audio(URL.createObjectURL(blob));
+            currentRemoteAudio = audio;
+            remotePlayback.loading = false;
+            setPlaybackUI(true, "Speech Engine: Chatterbox speaking");
+            await new Promise((resolve, reject) => {
+                audio.onended = resolve;
+                audio.onerror = () => reject(new Error("Remote audio playback failed"));
+                Promise.resolve(audio.play()).catch(reject);
+            });
+            URL.revokeObjectURL(audio.src);
+            currentRemoteAudio = null;
+        }
+    } finally {
+        if (remotePlayback && remotePlayback.token === token) {
+            remotePlayback = null;
+            currentRemoteAudio = null;
+            setPlaybackUI(false, "Speech Engine: Chatterbox ready");
+        }
+    }
+}
+
+function startNarration(text) {
+    if (ttsProvider === "chatterbox") {
+        speakChatterboxText(text).catch(error => {
+            console.warn("Chatterbox playback failed; using browser speech:", error);
+            if (remotePlayback) remotePlayback = null;
+            if (currentRemoteAudio) {
+                try { currentRemoteAudio.pause(); } catch (e) {}
+                currentRemoteAudio = null;
+            }
+            ttsProvider = "browser";
+            speakBrowserText(text);
+        });
+        return;
+    }
+    speakBrowserText(text);
+}
+
 function handlePlayPause() {
     // Generation is intentionally separate: an empty Play control is inert.
     // Generate Digest creates both the narration and suggested reply.
     if (!String(currentDigestText || "").trim()) return;
 
-    if (window.speechSynthesis.speaking) {
+    if (currentRemoteAudio || (remotePlayback && remotePlayback.loading)) {
+        if (currentRemoteAudio) {
+            if (currentRemoteAudio.paused) {
+                currentRemoteAudio.play().catch(() => {});
+                setPlaybackUI(true, "Speech Engine: Chatterbox speaking");
+            } else {
+                currentRemoteAudio.pause();
+                setPlaybackUI(false, "Speech Engine: Chatterbox paused");
+            }
+        }
+    } else if (window.speechSynthesis.speaking) {
         if (window.speechSynthesis.paused) {
             window.speechSynthesis.resume();
             isPlaying = true;
@@ -3379,16 +3511,25 @@ function handlePlayPause() {
         }
     } else {
         // Play from scratch
-        speakText(currentDigestText);
+        startNarration(currentDigestText);
     }
 }
 
 function handleStop() {
+    if (remotePlayback) {
+        remotePlayback = null;
+        if (currentRemoteAudio) {
+            try { currentRemoteAudio.pause(); } catch (e) {}
+            if (typeof URL !== "undefined" && URL.revokeObjectURL && currentRemoteAudio.src) {
+                URL.revokeObjectURL(currentRemoteAudio.src);
+            }
+            currentRemoteAudio = null;
+        }
+        fetch("/api/gateway/tts/stop", { method: "POST" }).catch(() => {});
+    }
     window.speechSynthesis.cancel();
-    isPlaying = false;
-    visualizer.classList.remove("playing");
-    playIcon.textContent = "play_arrow";
-    ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Ready`;
+    currentUtterance = null;
+    setPlaybackUI(false, ttsProvider === "chatterbox" ? "Speech Engine: Chatterbox ready" : "Speech Engine: Browser ready");
 }
 
 function handleSpeedChange() {
@@ -3396,12 +3537,15 @@ function handleSpeedChange() {
     speedVal.innerText = `${speechRate.toFixed(1)}x`;
 
     // If speaking, restart from the beginning (or let the rate change take effect for the next utterance)
-    if (window.speechSynthesis.speaking && currentUtterance) {
+    if (currentRemoteAudio || remotePlayback) {
+        handleStop();
+        startNarration(currentDigestText);
+    } else if (window.speechSynthesis.speaking && currentUtterance) {
         // For browsers that support changing rate mid-speech
         currentUtterance.rate = speechRate;
         // In some browsers, we must cancel and restart to apply rate changes:
         if (isPlaying) {
-            speakText(currentDigestText);
+            speakBrowserText(currentDigestText);
         }
     }
 }

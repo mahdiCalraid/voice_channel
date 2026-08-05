@@ -12,7 +12,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import httpx
@@ -37,6 +37,10 @@ from app.tts_adapter import (
     stop_tts,
     is_active_playback,
     speak_text,
+    synthesize_audio,
+    chatterbox_health,
+    configured_provider,
+    TTS_FALLBACK_PROVIDER,
 )
 from app.task_supervisor import TaskSupervisor
 from app.rc_ingress import IngressConfigurationError, build_ingress_message, extract_interaction_id
@@ -1930,18 +1934,33 @@ async def gateway_task_status(interaction_id: str):
 @app.get("/api/gateway/tts/status", response_model=TTSStatus)
 async def gateway_tts_status():
     voices = get_system_voices()
+    provider = configured_provider()
+    chatterbox_available = await chatterbox_health() if provider == "chatterbox" else False
     return TTSStatus(
-        engine="macos_say" if sys.platform == "darwin" else "web_speech_api",
+        engine="chatterbox" if chatterbox_available else ("macos_say" if sys.platform == "darwin" else "web_speech_api"),
         is_available=True,
         active_playback=is_active_playback(),
-        available_voices=voices
+        available_voices=voices,
+        provider=provider,
+        chatterbox_available=chatterbox_available,
+        fallback_provider=TTS_FALLBACK_PROVIDER,
     )
 
 @app.post("/api/gateway/tts/speak")
 async def gateway_tts_speak(req: TTSRequest):
-    res = await speak_text(req)
+    res = await synthesize_audio(req)
     if not res.get("success"):
-        raise HTTPException(status_code=400, detail=res.get("error", "TTS execution failed"))
+        # The browser uses this status to switch to its local speech engine.
+        raise HTTPException(status_code=503, detail=res.get("error", "TTS execution failed"))
+    if res.get("audio"):
+        return Response(
+            content=res["audio"],
+            media_type=res.get("content_type", "audio/wav"),
+            headers={
+                "Cache-Control": "no-store",
+                "X-TTS-Engine": str(res.get("engine", "unknown")),
+            },
+        )
     return res
 
 @app.post("/api/gateway/tts/stop")

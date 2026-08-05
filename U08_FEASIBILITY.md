@@ -82,6 +82,6 @@ chunk, and fall back to browser speech on latency, not only on error.
 **Technical feasibility: pass.** The local service starts, stays loopback-only, loads
 one model, passes a health check, synthesizes audio, and has a usable warm latency.
 
-**U-09 decision: pending quality gate.** Do not integrate Chatterbox or change the
-default narrator until Ed confirms that its voice quality is materially better for
-editable narrator text. Browser Web Speech remains the daily-use path.
+**U-09 decision: GO.** Ed confirmed that the sentence-chunked Chatterbox voice is
+materially better for narrator text. U-09 integrates it as a server-side primary
+provider while retaining browser Web Speech as the immediate fallback.
