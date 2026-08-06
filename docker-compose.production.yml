@@ -1,0 +1,58 @@
+services:
+  voice-channel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: voice-channel-production:latest
+    container_name: voice-channel-production
+    restart: unless-stopped
+    expose:
+      - "6891"
+    environment:
+      - RC_URL=${ACLI_RC_URL:?ACLI_RC_URL is required}
+      - RC_USER=${ACLI_RC_USER:?ACLI_RC_USER is required}
+      - RC_USER_ID=${ACLI_RC_USER_ID:?ACLI_RC_USER_ID is required}
+      - RC_AUTH_TOKEN=${ACLI_RC_AUTH_TOKEN:?ACLI_RC_AUTH_TOKEN is required}
+      - RC_ROOM_ID=${RC_ROOM_ID:-6a32407ea294f44649684786}
+      - GATEWAY_RC_USER_ID=${GATEWAY_RC_USER_ID:?GATEWAY_RC_USER_ID is required}
+      - GATEWAY_RC_AUTH_TOKEN=${GATEWAY_RC_AUTH_TOKEN:?GATEWAY_RC_AUTH_TOKEN is required}
+      - GATEWAY_RC_INGRESS_SECRET=${GATEWAY_RC_INGRESS_SECRET:?GATEWAY_RC_INGRESS_SECRET is required}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - VC_WORKER=${VC_WORKER:-codex}
+      - VC_RESPONSE_ASSISTANT_WORKER=${VC_RESPONSE_ASSISTANT_WORKER:-codex}
+      - VC_RESPONSE_ASSISTANT_MODEL=${VC_RESPONSE_ASSISTANT_MODEL:-gpt-5.6-luna}
+      - VC_TTS_PROVIDER=${VC_TTS_PROVIDER:-chatterbox}
+      - VC_TTS_FALLBACK_PROVIDER=${VC_TTS_FALLBACK_PROVIDER:-browser}
+      - VC_TTS_FALLBACK_VOICE=${VC_TTS_FALLBACK_VOICE:-Ava (Premium)}
+      - VC_CHATTERBOX_URL=${VC_CHATTERBOX_URL:-http://host.docker.internal:8765}
+      - VC_CHATTERBOX_MODEL=${VC_CHATTERBOX_MODEL:-mlx-community/chatterbox-turbo-8bit}
+      - VC_UVICORN_RELOAD=0
+      - GATEWAY_TASK_STATE_PATH=/app/acli/gateway_state/tasks.json
+      - AUTOMATIC_SYSTEM_DIR=/automatic_system
+      - ACLI_MATTERS_REGISTRY=/approved_projects/clawd_2/development_channel/acli_matters.json
+      - VOICE_GATEWAY_PROJECTS_ROOT=/approved_projects
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Production state is deliberately separate from the live development state.
+      - voice_channel_production_state:/app/acli
+      - ./acli/matter.json:/app/acli/matter.json:ro
+      - voice_channel_production_tmp:/app/tmp
+      - ${HOME}/.codex:/codex-host-auth:ro
+    networks:
+      - rocket_chat_tunnel
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:6891/api/status"]
+      interval: 30s
+      timeout: 15s
+      retries: 4
+      start_period: 30s
+
+volumes:
+  voice_channel_production_state:
+  voice_channel_production_tmp:
+
+networks:
+  rocket_chat_tunnel:
+    external: true
+    name: rc_default

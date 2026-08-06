@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 import app.main as main_module
 from app.main import ResponseAssistantRequest, app
 from app.supervision_strategy import (
+    fallback_quick_suggestions,
     fallback_suggestion,
     normalize_attention_items,
     normalize_narrator_summary,
@@ -33,6 +34,16 @@ CODING_PROFILE = {
         "moderator": "agy",
     },
     "notes": "Voice gateway",
+    "registered": True,
+    "strategy_source": "test",
+}
+
+NONCODING_PROFILE = {
+    "channel_name": "content_assistant",
+    "channel_type": "acli_noncoding",
+    "default_worker": "codex",
+    "roles": None,
+    "notes": "Content creation",
     "registered": True,
     "strategy_source": "test",
 }
@@ -179,6 +190,28 @@ class TestSupervisionStrategy(unittest.TestCase):
         }
         agent, _message, phase = fallback_suggestion(CODING_PROFILE, codex_fix)
         self.assertEqual((agent, phase), ("grok", "review"))
+
+    def test_noncoding_fallback_requests_viewpoint_not_formal_review(self):
+        latest_codex = {
+            **LATEST_AGY,
+            "event": {"kind": "agent_response", "agent": "codex"},
+            "text": "Here is a possible content direction.",
+        }
+        agent, message, phase = fallback_suggestion(NONCODING_PROFILE, latest_codex)
+        self.assertEqual((agent, phase), ("claude", "noncoding"))
+        self.assertIn("perspective", message.lower())
+        self.assertNotIn("review", message.lower())
+        self.assertNotIn("verify", message.lower())
+
+        quick = fallback_quick_suggestions(
+            NONCODING_PROFILE,
+            latest_codex,
+            phase,
+        )
+        self.assertEqual([item["label"] for item in quick], ["Go deeper", "Another view"])
+        self.assertTrue(quick[0]["command"].startswith("@codex "))
+        self.assertTrue(quick[1]["command"].startswith("@claude "))
+        self.assertTrue(all("review" not in item["command"].lower() for item in quick))
 
 
 class TestResponseAssistantEndpoint(unittest.TestCase):

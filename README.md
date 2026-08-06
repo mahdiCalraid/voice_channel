@@ -91,6 +91,19 @@ The existing service can be built and started with:
 
 It listens on port `6891`.
 
+## Isolated Production
+
+The public deployment is a separate Compose project and does not restart or replace the
+local development service. See `PRODUCTION_DEPLOYMENT.md` and deploy it with:
+
+```bash
+./deploy-production.sh
+```
+
+Production has no host port and is reachable only from the existing Rocket.Chat
+Cloudflare Tunnel network. `vice.peyvastegi.uk` must be protected by Cloudflare Access
+before its tunnel hostname is enabled.
+
 `restart.sh` also provisions the Mac-local Chatterbox environment on first use
 and starts its MLX-Audio server on loopback port `8765` before the Gateway. The
 first narration downloads the configured model into the user's Hugging Face

@@ -298,6 +298,54 @@ test("composer divider clamps, persists, and restores both pane boundaries", () 
     );
 });
 
+test("conversation message headers are the native sticky sender labels", () => {
+    const app = loadFrontend();
+    const feed = app.sandbox.document.getElementById("transcript-feed");
+    app.sandbox.renderTranscript([{
+        id: "sticky-agent-message",
+        lane: "agent",
+        name: "AGY",
+        text: "This is a long message that remains readable while its sender label stays at the top of the scroll viewport.",
+        timestamp: 2000
+    }]);
+
+    assert.match(feed.innerHTML, /class="chat-msg agent"/);
+    assert.match(feed.innerHTML, /class="chat-header"/);
+    assert.match(feed.innerHTML, /class="chat-author">AGY<\/span>/);
+
+    const css = fs.readFileSync(path.join(__dirname, "..", "frontend", "index.css"), "utf8");
+    assert.match(css, /\.chat-header\s*\{[\s\S]*?position:\s*sticky/);
+    assert.match(css, /\.chat-header\s*\{[\s\S]*?top:\s*0/);
+    assert.doesNotMatch(css, /transcript-current-sender/);
+    assert.doesNotMatch(fs.readFileSync(path.join(__dirname, "..", "frontend", "index.js"), "utf8"), /CurrentSenderIndicator/);
+});
+
+test("jump-to-latest control scrolls to the beginning of the final conversation message", () => {
+    const app = loadFrontend();
+    const feed = app.sandbox.document.getElementById("transcript-feed");
+    const button = app.sandbox.document.getElementById("btn-jump-to-latest");
+    const latestMessage = { offsetTop: 640 };
+    feed.scrollTop = 120;
+    feed.querySelectorAll = selector => selector === ".chat-msg" ? [latestMessage] : [];
+    feed.scrollTo = options => { feed.lastScrollTo = options; };
+
+    app.sandbox.bindJumpToLatestMessageControl();
+    app.sandbox.updateJumpToLatestButton();
+    assert.equal(button.hidden, false);
+
+    button.listeners.click();
+    assert.equal(feed.lastScrollTo.top, 640);
+    assert.equal(feed.lastScrollTo.behavior, "smooth");
+
+    feed.scrollTop = 640;
+    app.sandbox.updateJumpToLatestButton();
+    assert.equal(button.hidden, true);
+
+    const html = fs.readFileSync(path.join(__dirname, "..", "frontend", "index.html"), "utf8");
+    assert.match(html, /id="btn-jump-to-latest"/);
+    assert.match(html, /Jump to the beginning of the latest message/);
+});
+
 test("narrator divider clamps, persists, and keeps the conversation pane visible", () => {
     const app = loadFrontend();
     vm.runInContext(`
@@ -487,6 +535,103 @@ test("nice voice switch is opt-in and persists the selected voice mode", () => {
     toggle.listeners.change();
     assert.equal(vm.runInContext('getSettings().voiceMode', app.sandbox), "fast");
     assert.equal(JSON.parse(app.storage.vc_settings).voiceMode, "fast");
+});
+
+test("automatic follow of new conversation messages is off by default and persists when enabled", () => {
+    const app = loadFrontend();
+    app.sandbox.initSettingsModal();
+    const open = app.sandbox.document.getElementById("btn-open-settings");
+    const save = app.sandbox.document.getElementById("btn-save-settings");
+    const autoScroll = app.sandbox.document.getElementById("setting-auto-scroll-new-messages");
+
+    assert.equal(vm.runInContext("getSettings().autoScrollNewMessages", app.sandbox), false);
+    open.listeners.click();
+    assert.equal(autoScroll.checked, false);
+
+    autoScroll.checked = true;
+    save.listeners.click();
+    assert.equal(JSON.parse(app.storage.vc_settings).autoScrollNewMessages, true);
+    assert.equal(vm.runInContext("getSettings().autoScrollNewMessages", app.sandbox), true);
+});
+
+test("new messages do not move a reader unless automatic follow is enabled", () => {
+    const app = loadFrontend();
+    const feed = app.sandbox.document.getElementById("transcript-feed");
+    feed.clientHeight = 300;
+    feed.scrollHeight = 1000;
+    feed.scrollTop = 650;
+    const first = [{ id: "one", lane: "agent", name: "Codex", text: "First", timestamp: 1 }];
+    const second = [...first, { id: "two", lane: "agent", name: "Codex", text: "Second", timestamp: 2 }];
+
+    app.sandbox.renderTranscript(first);
+    feed.scrollTop = 650;
+    app.sandbox.renderTranscript(second);
+    assert.equal(feed.scrollTop, 650);
+
+    vm.runInContext("saveSettings({ ...getSettings(), autoScrollNewMessages: true })", app.sandbox);
+    feed.scrollHeight = 1200;
+    feed.scrollTop = 850;
+    app.sandbox.renderTranscript([...second, { id: "three", lane: "agent", name: "Codex", text: "Third", timestamp: 3 }]);
+    assert.equal(feed.scrollTop, 1200);
+});
+
+test("history poll re-renders keep the reading position and never auto-jump to latest", () => {
+    const app = loadFrontend();
+    const feed = app.sandbox.document.getElementById("transcript-feed");
+    const button = app.sandbox.document.getElementById("btn-jump-to-latest");
+    feed.clientHeight = 300;
+    feed.scrollHeight = 2000;
+    const messages = [
+        { id: "m1", lane: "agent", name: "Grok", text: "Paragraph one of a long answer.", timestamp: 10 },
+        { id: "m2", lane: "agent", name: "Grok", text: "Paragraph two that the reader is still on.", timestamp: 20 },
+        { id: "m3", lane: "agent", name: "Codex", text: "Latest message below the viewport.", timestamp: 30 },
+    ];
+
+    app.sandbox.renderTranscript(messages);
+    feed.scrollTop = 420;
+    const htmlAfterFirst = feed.innerHTML;
+
+    // Simulate the 5s history poll returning the same page: no jump, no DOM churn.
+    app.sandbox.renderTranscript(messages);
+    assert.equal(feed.scrollTop, 420);
+    assert.equal(feed.innerHTML, htmlAfterFirst);
+
+    // A later poll that only appends a system chip still restores the same reading offset.
+    const withChip = [
+        ...messages,
+        { id: "sys1", lane: "system", name: "system", text: "Heartbeat", timestamp: 31, event: { kind: "heartbeat" } },
+    ];
+    feed.scrollTop = 420;
+    const mid = {
+        offsetTop: 400,
+        offsetHeight: 200,
+        getAttribute: name => (name === "data-id" ? "m2" : null),
+    };
+    const latest = {
+        offsetTop: 900,
+        offsetHeight: 120,
+        getAttribute: name => (name === "data-id" ? "m3" : null),
+    };
+    feed.querySelectorAll = selector => {
+        if (selector.includes("chat-msg") || selector.includes("system-event")) {
+            return [mid, latest];
+        }
+        return [];
+    };
+    feed.querySelector = selector => {
+        if (selector.includes("m2")) return mid;
+        if (selector.includes("m3")) return latest;
+        return null;
+    };
+
+    app.sandbox.renderTranscript(withChip);
+    assert.equal(feed.scrollTop, 420);
+
+    // Jump-to-latest remains an explicit control, not a poll side-effect.
+    app.sandbox.bindJumpToLatestMessageControl();
+    app.sandbox.updateJumpToLatestButton();
+    assert.equal(button.hidden, false);
+    assert.equal(feed.scrollTop, 420);
 });
 
 test("legacy interface font preference migrates to the split typography settings", () => {
@@ -1846,4 +1991,25 @@ test("Apply dispatches the native model command without a confirmation dialog or
     assert.equal(sendFeedback.style.display, "none");
     assert.equal(sendFeedback.textContent, "");
     assert.equal(sendFeedback.className, "send-feedback hidden");
+});
+
+test("renderTranscript includes copy button with escaped raw text and copy helper works cleanly", () => {
+    const app = loadFrontend();
+    const messages = [
+        {
+            id: "msg-copy-test-1",
+            name: "Codex",
+            username: "codex",
+            text: "Hello, this is a test message to copy & paste!",
+            timestamp: "2026-08-05T18:00:00.000Z",
+            lane: "agent",
+            event: { kind: "agent_response", agent: "codex" }
+        }
+    ];
+
+    app.sandbox.renderTranscript(messages);
+    const feed = app.sandbox.document.getElementById("transcript-feed");
+    assert.ok(feed.innerHTML.includes('class="btn-copy-msg"'));
+    assert.ok(feed.innerHTML.includes('data-raw-text="Hello, this is a test message to copy &amp; paste!"'));
+    assert.ok(feed.innerHTML.includes('content_copy'));
 });

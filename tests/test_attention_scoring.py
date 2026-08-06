@@ -101,16 +101,72 @@ class TestAttentionScoring(unittest.TestCase):
         self.assertEqual(cat, "unconfigured")
         self.assertIsNone(score)
 
+    def test_unread_real_reply_scoring_and_eligibility(self):
+        now = 1000000.0
+        entry = ChannelAttentionEntry(base_importance=3, urgency=UrgencyLevel.NORMAL)  # 60 + 10 = 70 pts
+
+        # Unread channel with idle attention state -> still rankable!
+        unread_info = {
+            "has_unread": True,
+            "unread_count": 1,
+            "last_agent_reply_ts": now - 900.0,  # 15 min ago -> freshness = 15 / (1 + 1) = 7.5
+        }
+        attention_summary = {"is_busy": False, "attention_state": AttentionState.NONE}
+
+        cat, score, factors = calculate_channel_attention_score(
+            entry, {"status": "active"}, attention_summary, now=now, unread_info=unread_info
+        )
+
+        self.assertEqual(cat, "ranked")
+        self.assertTrue(factors["has_unread"])
+        self.assertEqual(factors["unread_base_points"], 20.0)
+        self.assertEqual(factors["unread_freshness_points"], 7.5)
+        self.assertEqual(factors["unread_points"], 27.5)
+        self.assertEqual(score, 97.5)
+
+    def test_ranking_priority_hierarchy_ordering(self):
+        now = 1000000.0
+
+        # Overdue item
+        entry_overdue = ChannelAttentionEntry(base_importance=3, deadline="1970-01-01T00:00:00Z")
+        _, score_overdue, _ = calculate_channel_attention_score(
+            entry_overdue, {"status": "active"}, {"attention_state": AttentionState.NEEDS_REVIEW}, now=now
+        )
+
+        # High importance (5) + High urgency
+        entry_high_imp = ChannelAttentionEntry(base_importance=5, urgency=UrgencyLevel.HIGH)
+        _, score_high_imp, _ = calculate_channel_attention_score(
+            entry_high_imp, {"status": "active"}, {"attention_state": AttentionState.NEEDS_REVIEW}, now=now
+        )
+
+        # Fresh unread (brand new reply, 0 min ago) on default importance 3 / normal urgency
+        entry_unread = ChannelAttentionEntry(base_importance=3, urgency=UrgencyLevel.NORMAL)
+        unread_info = {"has_unread": True, "unread_count": 1, "last_agent_reply_ts": now}
+        _, score_fresh_unread, _ = calculate_channel_attention_score(
+            entry_unread, {"status": "active"}, {"attention_state": AttentionState.NONE}, now=now, unread_info=unread_info
+        )
+
+        # Idle normal item
+        entry_idle = ChannelAttentionEntry(base_importance=3, urgency=UrgencyLevel.NORMAL)
+        _, score_idle_ranked, _ = calculate_channel_attention_score(
+            entry_idle, {"status": "active"}, {"attention_state": AttentionState.NEEDS_REVIEW}, now=now
+        )
+
+        # Assert hierarchy: Overdue (210) > High Imp (125) > Fresh Unread (105) > Idle Ranked (70)
+        self.assertGreater(score_overdue, score_high_imp)
+        self.assertGreater(score_high_imp, score_fresh_unread)
+        self.assertGreater(score_fresh_unread, score_idle_ranked)
+
         # 4. Unwatched / unknown room -> category 'unknown', score None
         cat, score, factors = calculate_channel_attention_score(
-            entry, {"status": "active"}, {"is_busy": False, "attention_state": AttentionState.UNKNOWN}, now=now
+            entry_unread, {"status": "active"}, {"is_busy": False, "attention_state": AttentionState.UNKNOWN}, now=now
         )
         self.assertEqual(cat, "unknown")
         self.assertIsNone(score)
 
         # 5. Idle channel (no actionable task) -> category 'idle', score None
         cat, score, factors = calculate_channel_attention_score(
-            entry, {"status": "active"}, {"is_busy": False, "attention_state": AttentionState.NONE}, now=now
+            entry_unread, {"status": "active"}, {"is_busy": False, "attention_state": AttentionState.NONE}, now=now
         )
         self.assertEqual(cat, "idle")
         self.assertIsNone(score)

@@ -16,6 +16,14 @@ AUTOMATIC_SYSTEM_CANDIDATES = (
     Path("/Users/ed/King/automatic_system"),
     Path("/automatic_system"),
 )
+ACLI_MATTERS_REGISTRY_CANDIDATES = (
+    Path(os.environ.get("ACLI_MATTERS_REGISTRY", "")),
+    Path("/approved_projects/clawd_2/development_channel/acli_matters.json"),
+    Path("/Users/ed/King/clawd_2/development_channel/acli_matters.json"),
+)
+# NemoClaw is a separate nc2 system, not an ACLI matter that the Gateway should
+# expose as a selectable/supervised channel.
+EXCLUDED_ACLI_MATTER_FOLDERS = {"nemoclaw_nc"}
 MAX_CONTEXT_FILE_CHARS = 8_000
 MAX_PROJECT_CONTEXT_CHARS = 24_000
 
@@ -56,10 +64,20 @@ Ed's current coding-channel strategy (takes precedence over older generic role l
 
 NONCODING_SEQUENCE = """
 Ed's non-coding-channel strategy:
-- Do not apply the coding plan/review rotation.
-- Summarize what changed, then propose one light, practical next message using the
-  channel's default worker unless the conversation clearly requires another assigned
-  worker.
+- Do not apply the coding implementation/review/supervision rotation. A response in a
+  business, content, planning, research, outreach, or personal channel does not normally
+  need verification, approval, or a formal review from another agent.
+- Continue the conversation with the most useful question. Good next moves include asking
+  the responding agent to explain its reasoning, develop an idea, compare options, expose
+  assumptions, or clarify an important uncertainty.
+- When a genuinely different perspective would add value, ask another suitable worker for
+  its viewpoint, alternative framing, concern, or question. Phrase this as exploration,
+  not as a reviewer checking another agent's work. Do not create a mandatory agent rotation.
+- Make the suggested message specific to the subject being discussed. Avoid generic asks
+  such as "review this," "verify this," "give a green light," or "what is the next step?"
+  when a sharper question can advance the thinking.
+- Prefer staying with the current or default worker when the conversation mainly needs
+  elaboration. Switch workers only to gain a meaningfully different perspective or skill.
 - Leave consequential decisions to Ed. Do not draft an instruction that submits,
   publishes, contacts someone, spends money, or makes an irreversible change.
 """
@@ -86,18 +104,97 @@ def _automatic_system_file(filename: str) -> Optional[Path]:
     return None
 
 
+def _matter_file_candidates(folder_path: str) -> List[Path]:
+    """Return host and container paths for one ACLI-registered matter."""
+    configured = Path(folder_path)
+    candidates = [configured]
+    projects_root = os.environ.get("VOICE_GATEWAY_PROJECTS_ROOT", "").strip()
+    if projects_root:
+        try:
+            candidates.append(
+                Path(projects_root) / configured.relative_to("/Users/ed/King")
+            )
+        except ValueError:
+            pass
+    return [candidate / "acli" / "matter.json" for candidate in candidates]
+
+
 def load_channel_registry() -> Tuple[List[dict], str]:
-    """Load the live registry when available, otherwise the bundled daily-use snapshot."""
+    """Load configured channels and merge ACLI-registered matters.
+
+    ``automatic_system/channels.json`` is a useful strategy registry, but it is
+    intentionally not rewritten every time ACLI onboards a matter.  The ACLI
+    matter registry is therefore the durable discovery source for newly added
+    rooms.  Merging it here keeps the Gateway's model controls and room
+    supervision usable immediately after a matter is registered.
+    """
     live_path = _automatic_system_file("channels.json")
     source = live_path or BUNDLED_CHANNELS_PATH
+    channels: List[dict] = []
     try:
         data = json.loads(source.read_text(encoding="utf-8"))
-        channels = data.get("channels", [])
-        if isinstance(channels, list):
-            return channels, str(source)
+        configured_channels = data.get("channels", [])
+        if isinstance(configured_channels, list):
+            channels = [item for item in configured_channels if isinstance(item, dict)]
     except (OSError, ValueError, TypeError):
-        pass
-    return [], str(source)
+        channels = []
+
+    channel_keys = {
+        str(item.get("channel_name") or "").strip().casefold()
+        for item in channels
+    }
+    discovered = []
+    for candidate in ACLI_MATTERS_REGISTRY_CANDIDATES:
+        if not str(candidate) or not candidate.is_file():
+            continue
+        try:
+            registry = json.loads(candidate.read_text(encoding="utf-8"))
+            matter_paths = registry.get("matters", [])
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(matter_paths, list):
+            continue
+
+        for raw_path in matter_paths:
+            folder_path = str(raw_path or "").strip()
+            if not folder_path:
+                continue
+            if Path(folder_path).name.casefold() in EXCLUDED_ACLI_MATTER_FOLDERS:
+                continue
+            matter_file = next(
+                (candidate for candidate in _matter_file_candidates(folder_path) if candidate.is_file()),
+                None,
+            )
+            if matter_file is None:
+                continue
+            try:
+                matter_data = json.loads(matter_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                # The registry can contain a host path that is not mounted in
+                # this process.  Do not fabricate a channel without its ACLI
+                # contract; the restart mount synchronizer handles that case.
+                continue
+            channel = matter_data.get("channel") if isinstance(matter_data, dict) else None
+            channel_name = str((channel or {}).get("name") or "").strip()
+            if not channel_name or channel_name.casefold() in channel_keys:
+                continue
+            discovered.append({
+                "channel_name": channel_name,
+                "folder_path": folder_path,
+                "channel_type": "acli_noncoding",
+                "active": True,
+                "roles": None,
+                "default_worker": str(
+                    (matter_data.get("default_agent") if isinstance(matter_data, dict) else None)
+                    or "codex"
+                ).strip().lower(),
+                "notes": "Discovered from ACLI's registered matter registry.",
+                "strategy_source": str(candidate),
+            })
+            channel_keys.add(channel_name.casefold())
+        break
+
+    return channels + discovered, f"{source}; ACLI matters"
 
 
 def resolve_channel_profile(room_name: Optional[str]) -> dict:
@@ -190,7 +287,7 @@ def read_project_context(profile: dict) -> Tuple[str, List[str]]:
 
 def allowed_suggestion_agents(profile: dict) -> List[str]:
     default = str(profile.get("default_worker") or "codex").lower()
-    if profile.get("channel_type") != "acli_coding":
+    if profile.get("channel_type") != "acli_coding" and not profile.get("registered"):
         return [default]
     agents = ["codex", "claude", "grok", "agy"]
     roles = profile.get("roles") or {}
@@ -295,8 +392,20 @@ def fallback_suggestion(profile: dict, latest_message: dict) -> Tuple[str, str, 
     channel_type = profile.get("channel_type")
 
     if channel_type != "acli_coding":
-        agent = str(profile.get("default_worker") or "codex").lower()
-        return agent, f"@{agent} Please review the latest update and propose the most useful low-risk next step for Ed.", "noncoding"
+        default = str(profile.get("default_worker") or "codex").lower()
+        if profile.get("registered"):
+            # Prefer a second perspective when the default worker just responded;
+            # otherwise continue with the channel specialist.
+            alternatives = [default, "claude", "codex", "grok", "agy"]
+            agent = next((name for name in alternatives if name != latest_agent), default)
+        else:
+            agent = default
+        return (
+            agent,
+            f"@{agent} What is your perspective on the central idea in the latest response, "
+            "and what important question or alternative viewpoint should Ed consider?",
+            "noncoding",
+        )
 
     if latest_agent == "agy":
         return "grok", "@grok Please independently review AGY's reported implementation against the agreed task, inspect the code and tests, and list any concrete gaps before we advance.", "review"
@@ -356,16 +465,22 @@ def fallback_quick_suggestions(profile: dict, latest_message: dict, phase: str) 
     default_worker = str(profile.get("default_worker") or "codex").lower()
 
     if channel_type != "acli_coding":
+        allowed = allowed_suggestion_agents(profile)
+        perspective_worker = next(
+            (agent for agent in allowed if agent != latest_agent),
+            default_worker,
+        )
+        followup_worker = latest_agent if latest_agent in allowed else default_worker
         return [
             {
                 "id": "smart-0",
-                "label": "Next step",
-                "command": f"@{default_worker} What is the most useful low-risk next step from the latest update?",
+                "label": "Go deeper",
+                "command": f"@{followup_worker} Which assumption or part of your latest response deserves a deeper explanation?",
             },
             {
                 "id": "smart-1",
-                "label": "Your take",
-                "command": f"@{default_worker} What is your opinion on the latest recommendation?",
+                "label": "Another view",
+                "command": f"@{perspective_worker} What different viewpoint or important question would you add to the latest response?",
             },
         ]
 

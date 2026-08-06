@@ -43,6 +43,7 @@ def calculate_channel_attention_score(
     status_info: Dict[str, Any],
     attention_summary: Dict[str, Any],
     now: Optional[float] = None,
+    unread_info: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[float], Optional[Dict[str, Any]]]:
     """Calculates eligibility and dynamic attention score for a channel.
     
@@ -70,14 +71,34 @@ def calculate_channel_attention_score(
     if attention_summary.get("is_busy"):
         return "busy", None, None
 
-    # 5. Attention state checks
+    # 5. Unread real agent reply scoring
+    has_unread = False
+    unread_base_points = 0.0
+    unread_freshness_points = 0.0
+    unread_points = 0.0
+
+    if unread_info and unread_info.get("has_unread"):
+        has_unread = True
+        unread_base_points = 20.0
+        last_reply_ts = unread_info.get("last_agent_reply_ts")
+        if last_reply_ts is not None and float(last_reply_ts) <= now_ts:
+            age_seconds = max(0.0, now_ts - float(last_reply_ts))
+            age_minutes = age_seconds / 60.0
+            unread_freshness_points = 15.0 / (1.0 + (age_minutes / 15.0))
+        else:
+            unread_freshness_points = 15.0
+        unread_points = unread_base_points + unread_freshness_points
+
+    # 6. Attention state & ranking eligibility checks
     attn_state = attention_summary.get("attention_state")
-    if attn_state is None or attn_state == AttentionState.UNKNOWN:
-        return "unknown", None, None
-    if attn_state not in ACTIONABLE_ATTENTION_STATES:
+    is_actionable_state = (attn_state in ACTIONABLE_ATTENTION_STATES)
+
+    if not is_actionable_state and not has_unread:
+        if attn_state is None or attn_state == AttentionState.UNKNOWN:
+            return "unknown", None, None
         return "idle", None, None
 
-    # 6. Eligible for ranking: calculate score
+    # 7. Eligible for ranking: calculate score
     # Base importance points (20 points per importance level 1..5)
     importance = entry.base_importance
     base_importance_points = float(importance) * 20.0
@@ -129,7 +150,8 @@ def calculate_channel_attention_score(
         + waiting_age_points
         + deadline_points
         + blocking_points
-        + boost_points,
+        + boost_points
+        + unread_points,
         2,
     )
 
@@ -141,6 +163,10 @@ def calculate_channel_attention_score(
         "deadline_points": round(deadline_points, 2),
         "blocking_points": round(blocking_points, 2),
         "boost_points": round(boost_points, 2),
+        "unread_base_points": round(unread_base_points, 2),
+        "unread_freshness_points": round(unread_freshness_points, 2),
+        "unread_points": round(unread_points, 2),
+        "has_unread": has_unread,
         "snoozed": False,
         "total_score": total_score,
     }
@@ -154,6 +180,7 @@ def build_attention_queue(
     room_summaries: Dict[str, Dict[str, Any]],
     room_activity_map: Dict[str, Optional[float]],
     now: Optional[float] = None,
+    room_unread_map: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Builds sorted attention queue for all registered & configured channels.
     
@@ -179,12 +206,14 @@ def build_attention_queue(
         }
 
         last_activity_at = room_activity_map.get(cname)
+        unread_info = (room_unread_map.get(cname) or room_unread_map.get(room_id or "")) if room_unread_map else None
 
         category, score, factors = calculate_channel_attention_score(
             entry=entry,
             status_info=status_info,
             attention_summary=attn_summary,
             now=now_ts,
+            unread_info=unread_info,
         )
 
         working_since = attn_summary.get("working_since")
@@ -207,6 +236,9 @@ def build_attention_queue(
             else str(attn_summary.get("attention_state") or "unknown")
         )
 
+        has_unread = bool(unread_info and unread_info.get("has_unread"))
+        unread_count = int(unread_info.get("unread_count", 0)) if unread_info else 0
+
         queue_items.append({
             "channel_name": cname,
             "room_id": room_id,
@@ -216,6 +248,8 @@ def build_attention_queue(
             "score": score,
             "attention_state": attn_state_val,
             "is_busy": bool(attn_summary.get("is_busy")),
+            "has_unread": has_unread,
+            "unread_count": unread_count,
             "working_since": working_since,
             "working_elapsed_seconds": working_elapsed,
             "ready_since": ready_since,

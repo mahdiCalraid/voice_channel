@@ -59,6 +59,16 @@ from app.attention_config import (
     save_channel_attention_config,
 )
 from app.attention_scoring import build_attention_queue
+from app.read_cursor import (
+    _extract_msg_timestamp,
+    evaluate_room_unread_status,
+    get_all_read_cursors,
+    get_read_cursor,
+    is_real_agent_reply,
+    update_read_cursor,
+)
+
+ROOM_MESSAGES_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -825,17 +835,23 @@ async def get_rooms():
                 
             raw_rooms = data.get("update", [])
             
-            # Format and filter rooms with recency timestamps (U-01)
+            # Format and filter rooms with recency timestamps & unread evaluation
             rooms = []
             for room in raw_rooms:
                 room_type = room.get("t")
                 if room_type in ("c", "p"):
+                    rid = room.get("_id")
+                    cname = room.get("name") or room.get("fname", "Unnamed")
+                    cached_msgs = ROOM_MESSAGES_CACHE.get(rid, [])
+                    unread_eval = evaluate_room_unread_status(rid, cached_msgs)
                     rooms.append({
-                        "id": room.get("_id"),
-                        "name": room.get("name") or room.get("fname", "Unnamed"),
+                        "id": rid,
+                        "name": cname,
                         "type": room_type,
                         "lm": room.get("lm"),
-                        "_updatedAt": room.get("_updatedAt") or room.get("lm")
+                        "_updatedAt": room.get("_updatedAt") or room.get("lm"),
+                        "has_unread": unread_eval["has_unread"],
+                        "unread_count": unread_eval["unread_count"],
                     })
             
             # Sort rooms recency-first by timestamp descending (fallback to name)
@@ -855,6 +871,17 @@ async def get_rooms():
     except Exception as e:
         logger.exception("Error fetching rooms")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/read_cursor")
+async def post_read_cursor(payload: Dict[str, Any] = Body(...)):
+    """POST /api/read_cursor: Update read cursor for a room when viewed by Ed."""
+    room_id = payload.get("room_id")
+    if not room_id:
+        raise HTTPException(status_code=400, detail="room_id is required")
+    msg_id = payload.get("message_id")
+    ts = payload.get("timestamp")
+    cursor = update_read_cursor(room_id, msg_id=msg_id, ts=ts, actor="ed")
+    return {"success": True, "read_cursor": cursor}
 
 @app.get("/api/attention/queue")
 async def get_attention_queue(now: Optional[float] = None):
@@ -924,8 +951,9 @@ async def get_attention_queue(now: Optional[float] = None):
         except Exception as err:
             logger.debug("Could not refresh background task rooms for attention: %s", err)
 
-    # Collect task supervisor summaries per channel
+    # Collect task supervisor summaries per channel & compute unread status
     room_summaries: Dict[str, Dict[str, Any]] = {}
+    room_unread_map: Dict[str, Dict[str, Any]] = {}
     for citem in channel_registry:
         cname = citem.get("channel_name")
         if not cname:
@@ -936,6 +964,8 @@ async def get_attention_queue(now: Optional[float] = None):
 
         if room_id:
             summary = task_supervisor.get_channel_attention_summary(room_id)
+            cached_msgs = ROOM_MESSAGES_CACHE.get(room_id, [])
+            unread_eval = evaluate_room_unread_status(room_id, cached_msgs)
         else:
             summary = {
                 "room_id": None,
@@ -945,7 +975,12 @@ async def get_attention_queue(now: Optional[float] = None):
                 "ready_since": None,
                 "active_task_count": 0,
             }
+            unread_eval = {"has_unread": False, "unread_count": 0, "last_agent_reply_ts": None}
+
         room_summaries[cname] = summary
+        room_unread_map[cname] = unread_eval
+        if room_id:
+            room_unread_map[room_id] = unread_eval
 
     # Build attention queue items
     queue = build_attention_queue(
@@ -954,6 +989,7 @@ async def get_attention_queue(now: Optional[float] = None):
         room_summaries=room_summaries,
         room_activity_map={cname: activity_map.get(cname.lower()) for cname in room_summaries},
         now=now,
+        room_unread_map=room_unread_map,
     )
 
     now_ts = now if now is not None else time.time()
@@ -1053,6 +1089,7 @@ async def _refresh_active_task_room(client: httpx.AsyncClient, room_id: str) -> 
             deduped_raw.append(message)
     cleaned_messages, _ = process_history_messages(deduped_raw)
     _ingest_supervised_history(room_id, deduped_raw, cleaned_messages)
+    ROOM_MESSAGES_CACHE[room_id] = cleaned_messages
 
 
 @app.get("/api/history")
@@ -1135,6 +1172,15 @@ async def get_history(
 
     cleaned_messages, rolling_stats = process_history_messages(raw_messages)
     supervised_interaction_ids = _ingest_supervised_history(room_id, raw_messages, cleaned_messages)
+    ROOM_MESSAGES_CACHE[room_id] = cleaned_messages
+
+    # Update read cursor for Ed when viewing room history
+    real_replies = [m for m in cleaned_messages if is_real_agent_reply(m)]
+    if real_replies:
+        latest_m = real_replies[-1]
+        m_id = str(latest_m.get("id") or latest_m.get("_id") or "")
+        m_ts = _extract_msg_timestamp(latest_m)
+        update_read_cursor(room_id, msg_id=m_id, ts=m_ts, actor="ed")
     
     return {
         "success": True,
@@ -1142,7 +1188,6 @@ async def get_history(
         "count": len(cleaned_messages),
         "offset": offset,
         "has_more": has_more,
-        # The client uses this opaque cursor instead of offset math in a live room.
         "next_before": raw_messages[0].get("ts") if raw_messages else None,
         "messages": cleaned_messages,
         "stats": rolling_stats,
@@ -1474,8 +1519,11 @@ async def _generate_response_assistant_once(req: ResponseAssistantRequest):
           "@worker when another agent should act next. These chips are not the long "
           "suggested_message draft; they are alternate one-click asks. Match the situation: "
           "coding phases (verify, next action, plan location, checkpoint, remediation) vs "
-          "non-coding (priority, opinion, clarify, next step). After one agent replies, often "
-          "suggest getting another worker's opinion (e.g. after Grok, ask Codex 'Your take')."
+          "non-coding (go deeper, assumptions, alternatives, clarify, another viewpoint). "
+          "In coding channels, suggestions may implement, review, remediate, or supervise. "
+          "In non-coding channels, do not imitate that workflow: ask useful questions, deepen "
+          "the discussion, or invite a genuinely different perspective without framing another "
+          "agent as a formal reviewer or requiring an agent rotation."
     )
     worker_name = os.environ.get("VC_RESPONSE_ASSISTANT_WORKER", "codex")
     assistant_model = os.environ.get("VC_RESPONSE_ASSISTANT_MODEL")

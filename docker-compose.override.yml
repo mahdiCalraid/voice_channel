@@ -2,6 +2,7 @@ services:
   voice-channel:
     environment:
       - AUTOMATIC_SYSTEM_DIR=/automatic_system
+      - ACLI_MATTERS_REGISTRY=/approved_projects/clawd_2/development_channel/acli_matters.json
       - VOICE_GATEWAY_PROJECTS_ROOT=/approved_projects
       - VC_RESPONSE_ASSISTANT_WORKER=${VC_RESPONSE_ASSISTANT_WORKER:-codex}
       - VC_RESPONSE_ASSISTANT_MODEL=${VC_RESPONSE_ASSISTANT_MODEL:-gpt-5.6-luna}

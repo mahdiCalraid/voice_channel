@@ -44,7 +44,7 @@ class TestUrgentFeatures(unittest.TestCase):
 
         stylesheet = self.client.get("/index.css")
         self.assertIn(".digest-editor", stylesheet.text)
-        self.assertIn("min-height: 36px;", stylesheet.text)
+        self.assertIn("min-height: 38px;", stylesheet.text)
         self.assertIn(".composer-input-row .input-wrapper", stylesheet.text)
         self.assertIn("flex: 1 1 0;", stylesheet.text)
         self.assertIn("min-height: 250px;", stylesheet.text)

@@ -6,6 +6,12 @@ echo "=============================================="
 echo "🔄 Restarting Voice Channel Console Service"
 echo "=============================================="
 
+# Keep the Gateway's read-only project mounts synchronized with ACLI's durable
+# matter registry.  This makes newly registered channels available to model
+# controls without requiring a hand-edited compose override for every channel.
+GATEWAY_MATTER_OVERRIDE="$(python3 scripts/sync_gateway_matter_mounts.py)"
+COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.override.yml -f "$GATEWAY_MATTER_OVERRIDE")
+
 # Check if docker is running
 if ! docker ps > /dev/null 2>&1; then
   echo "❌ Error: Docker is not running or accessible. Please start Docker first."
@@ -22,11 +28,11 @@ fi
 
 # Stop and remove existing container
 echo "Stopping container..."
-docker-compose down --remove-orphans
+docker-compose "${COMPOSE_FILES[@]}" down --remove-orphans
 
 # Build and start container in the background
 echo "Building and starting container in background..."
-docker-compose up --build -d
+docker-compose "${COMPOSE_FILES[@]}" up --build -d
 
 echo ""
 echo "✅ Restart complete!"

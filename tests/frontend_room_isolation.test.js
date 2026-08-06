@@ -141,6 +141,12 @@ test("response assistance finishing after a room switch updates only its origina
             });
         }
         if (url === "/api/response-assistant") return assistantPromise;
+        if (url === "/api/read_cursor") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({ success: true })
+            });
+        }
         if (url.startsWith("/api/agent-models")) {
             return Promise.resolve({
                 ok: true,

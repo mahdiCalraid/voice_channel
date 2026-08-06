@@ -38,6 +38,7 @@ const speedVal = document.getElementById("speed-val");
 const niceVoiceToggle = document.getElementById("toggle-nice-voice");
 const voiceModeStatus = document.getElementById("voice-mode-status");
 const transcriptFeed = document.getElementById("transcript-feed");
+const btnJumpToLatest = document.getElementById("btn-jump-to-latest");
 const commandInput = document.getElementById("command-input");
 const btnMic = document.getElementById("btn-mic");
 const btnSend = document.getElementById("btn-send");
@@ -491,6 +492,7 @@ const DEFAULT_SETTINGS = {
     historyLimit: 20,
     defaultAgent: "codex",
     autoNarrate: true,
+    autoScrollNewMessages: false,
     voiceMode: "fast"
 };
 
@@ -811,6 +813,7 @@ function initSettingsModal() {
     const selHistoryLimit = document.getElementById("setting-history-limit");
     const selDefaultAgent = document.getElementById("setting-default-agent");
     const chkAutoNarrate = document.getElementById("setting-auto-narrate");
+    const chkAutoScrollNewMessages = document.getElementById("setting-auto-scroll-new-messages");
     const typographyControls = [
         selSystemFontSize,
         selChatFontFamily,
@@ -854,7 +857,8 @@ function initSettingsModal() {
             : DEFAULT_SETTINGS.chatLetterSpacing,
         historyLimit: selHistoryLimit ? parseInt(selHistoryLimit.value, 10) : 20,
         defaultAgent: selDefaultAgent ? selDefaultAgent.value : "codex",
-        autoNarrate: chkAutoNarrate ? chkAutoNarrate.checked : false
+        autoNarrate: chkAutoNarrate ? chkAutoNarrate.checked : false,
+        autoScrollNewMessages: chkAutoScrollNewMessages ? chkAutoScrollNewMessages.checked : false
     });
 
     const populateSettingsForm = settings => {
@@ -871,6 +875,7 @@ function initSettingsModal() {
         if (selHistoryLimit) selHistoryLimit.value = String(settings.historyLimit || 20);
         if (selDefaultAgent) selDefaultAgent.value = settings.defaultAgent || "codex";
         if (chkAutoNarrate) chkAutoNarrate.checked = !!settings.autoNarrate;
+        if (chkAutoScrollNewMessages) chkAutoScrollNewMessages.checked = !!settings.autoScrollNewMessages;
         updateTypographyOutputs();
     };
 
@@ -1408,6 +1413,180 @@ function init() {
     }
 
     bindQuickSuggestionControls();
+    bindCopyMessageControls();
+    bindJumpToLatestMessageControl();
+}
+
+function getLatestConversationMessage() {
+    if (!transcriptFeed) return null;
+    const messages = transcriptFeed.querySelectorAll(".chat-msg");
+    return messages.length ? messages[messages.length - 1] : null;
+}
+
+function captureTranscriptReadingAnchor() {
+    if (!transcriptFeed) return null;
+    const scrollTop = Number(transcriptFeed.scrollTop) || 0;
+    const nodes = transcriptFeed.querySelectorAll(".chat-msg[data-id], .system-event-chip[data-id]");
+    for (const node of nodes) {
+        const top = Number(node.offsetTop) || 0;
+        const height = Number(node.offsetHeight) || 0;
+        if (top + height > scrollTop + 1) {
+            return {
+                scrollTop,
+                anchorId: node.getAttribute("data-id") || "",
+                offsetWithin: scrollTop - top,
+            };
+        }
+    }
+    return { scrollTop, anchorId: "", offsetWithin: 0 };
+}
+
+function restoreTranscriptReadingAnchor(anchor) {
+    if (!transcriptFeed || !anchor) return;
+    if (anchor.anchorId) {
+        const safeId = (window.CSS && typeof window.CSS.escape === "function")
+            ? window.CSS.escape(anchor.anchorId)
+            : String(anchor.anchorId).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        const node = transcriptFeed.querySelector(`[data-id="${safeId}"]`);
+        if (node) {
+            transcriptFeed.scrollTop = Math.max(0, (Number(node.offsetTop) || 0) + (Number(anchor.offsetWithin) || 0));
+            return;
+        }
+    }
+    transcriptFeed.scrollTop = Math.max(0, Number(anchor.scrollTop) || 0);
+}
+
+function transcriptRenderSignature(messages, state) {
+    const loadFlag = state
+        ? `${Boolean(state.hasMoreOlder)}:${Boolean(state.loadingOlder)}`
+        : "none";
+    const parts = (messages || []).map((msg) => {
+        const event = msg && msg.event && typeof msg.event === "object" ? msg.event : {};
+        return [
+            msg.id || "",
+            msg.timestamp || "",
+            msg.lane || "",
+            msg.name || msg.username || "",
+            (msg.text || "").length,
+            event.kind || "",
+            event.response_time_seconds ?? "",
+            event.agent || "",
+        ].join("|");
+    });
+    return `${loadFlag}::${parts.join(";")}`;
+}
+
+function updateJumpToLatestButton() {
+    if (!btnJumpToLatest || !transcriptFeed) return;
+
+    const latestMessage = getLatestConversationMessage();
+    if (!latestMessage) {
+        btnJumpToLatest.hidden = true;
+        return;
+    }
+
+    // The control is useful only while the latest message begins below the
+    // visible conversation viewport; avoid covering content once Ed reaches it.
+    // Compare against the feed's own scroll metrics only — never auto-scroll.
+    const latestMessageTop = Number(latestMessage.offsetTop) || 0;
+    const scrollTop = Number(transcriptFeed.scrollTop) || 0;
+    btnJumpToLatest.hidden = latestMessageTop <= scrollTop + 8;
+}
+
+function jumpToLatestMessage() {
+    // Explicit user action only. Polling must never call this.
+    const latestMessage = getLatestConversationMessage();
+    if (!latestMessage || !transcriptFeed) return;
+
+    const top = Math.max(0, Number(latestMessage.offsetTop) || 0);
+    const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (typeof transcriptFeed.scrollTo === "function") {
+        transcriptFeed.scrollTo({ top, behavior: reduceMotion ? "auto" : "smooth" });
+    } else {
+        transcriptFeed.scrollTop = top;
+    }
+    updateJumpToLatestButton();
+}
+
+function bindJumpToLatestMessageControl() {
+    if (!transcriptFeed || transcriptFeed.dataset.jumpToLatestBound === "true") return;
+    transcriptFeed.dataset.jumpToLatestBound = "true";
+    transcriptFeed.addEventListener("scroll", updateJumpToLatestButton, { passive: true });
+
+    if (btnJumpToLatest) {
+        btnJumpToLatest.addEventListener("click", jumpToLatestMessage);
+    }
+}
+
+function copyTextToClipboard(text, btnElement) {
+    if (!text) return;
+    let copied = false;
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                showCopySuccess(btnElement);
+            }).catch(() => {
+                fallbackCopyText(text, btnElement);
+            });
+            return;
+        }
+    } catch (e) {
+        console.warn("navigator.clipboard.writeText failed, fallback used:", e);
+    }
+    fallbackCopyText(text, btnElement);
+}
+
+function fallbackCopyText(text, btnElement) {
+    let copied = false;
+    try {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        textarea.style.top = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+    } catch (err) {
+        console.error("Fallback copy failed:", err);
+    }
+    if (copied) {
+        showCopySuccess(btnElement);
+    }
+}
+
+function showCopySuccess(btnElement) {
+    if (!btnElement) return;
+    const iconEl = btnElement.querySelector(".material-symbols-rounded");
+    const originalIcon = iconEl ? iconEl.textContent : "content_copy";
+    const originalTitle = btnElement.getAttribute("title") || "Copy message text";
+
+    if (iconEl) iconEl.textContent = "check";
+    btnElement.setAttribute("title", "Copied!");
+    btnElement.classList.add("copied");
+
+    setTimeout(() => {
+        if (iconEl) iconEl.textContent = originalIcon;
+        btnElement.setAttribute("title", originalTitle);
+        btnElement.classList.remove("copied");
+    }, 2000);
+}
+
+function bindCopyMessageControls() {
+    if (transcriptFeed && transcriptFeed.dataset.copyListenerBound !== "true") {
+        transcriptFeed.dataset.copyListenerBound = "true";
+        transcriptFeed.addEventListener("click", event => {
+            const copyBtn = event.target.closest(".btn-copy-msg");
+            if (copyBtn) {
+                event.preventDefault();
+                event.stopPropagation();
+                const textToCopy = copyBtn.getAttribute("data-raw-text") || "";
+                copyTextToClipboard(textToCopy, copyBtn);
+            }
+        });
+    }
 }
 
 function initNarratorSidebarState() {
@@ -1647,6 +1826,18 @@ function selectRoom(roomId) {
     activeRoomId = roomId;
     if (roomSelect) roomSelect.value = roomId;
     localStorage.setItem("activeRoomId", activeRoomId);
+
+    const targetRoom = roomsList.find(r => r.id === roomId);
+    if (targetRoom) {
+        targetRoom.has_unread = false;
+        targetRoom.unread_count = 0;
+    }
+    fetch("/api/read_cursor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ room_id: roomId })
+    }).catch(err => console.debug("Read cursor update error:", err));
+
     renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
     updateHeaderRoomInfo();
     handleRoomChange();
@@ -2043,6 +2234,9 @@ function renderChannelsList(filterText = "") {
         const isActive = room.id === activeRoomId;
         const activeClass = isActive ? "active" : "";
         const qitem = queueMap.get((room.name || "").toLowerCase());
+        const hasUnread = Boolean((qitem && qitem.has_unread) || room.has_unread);
+        const unreadClass = hasUnread ? "has-unread" : "";
+        const unreadBadgeHTML = hasUnread ? `<span class="unread-badge" title="Unseen real agent reply in this channel">New</span>` : "";
 
         let badgeHTML = "";
 
@@ -2080,12 +2274,13 @@ function renderChannelsList(filterText = "") {
         }
 
         return `
-            <div class="channel-item ${activeClass}" data-room-id="${room.id}" data-channel-name="${escapeHTML(room.name)}" role="button" tabindex="0">
+            <div class="channel-item ${activeClass} ${unreadClass}" data-room-id="${room.id}" data-channel-name="${escapeHTML(room.name)}" role="button" tabindex="0">
                 <span class="material-symbols-rounded channel-icon">tag</span>
                 <div class="channel-info">
                     <span class="channel-name">${escapeHTML(room.name)}</span>
                 </div>
                 <div class="channel-badges">
+                    ${unreadBadgeHTML}
                     ${badgeHTML}
                     <button class="btn-tune-channel" data-channel-name="${escapeHTML(room.name)}" title="Edit Channel Attention Settings">
                         <span class="material-symbols-rounded" style="font-size:16px;">tune</span>
@@ -2802,14 +2997,21 @@ function renderTranscript(messages, state = null) {
                 <p>No messages in this channel yet.</p>
             </div>
         `;
+        transcriptFeed.dataset.renderSignature = "empty";
+        updateJumpToLatestButton();
         return;
     }
 
-    // Check if user is scrolled near bottom before update (within 120px)
+    // History polls every few seconds. Rewriting the conversation DOM without
+    // restoring the reading position is what made mid-message text jump toward
+    // the end. Keep Ed anchored unless a room open or explicit follow applies.
+    const renderSignature = transcriptRenderSignature(messages, state);
+    const hasSavedScroll = Boolean(
+        state && state.savedScrollTop !== undefined && state.savedScrollTop !== null
+    );
     const isNearBottom = (transcriptFeed.scrollHeight - transcriptFeed.scrollTop - transcriptFeed.clientHeight) < 120;
     const isInitialLoad = (lastMessageTimestamp === null);
 
-    // Check if we have new messages since last render
     let shouldScroll = false;
     if (messages.length > 0) {
         const latestMsg = messages[messages.length - 1];
@@ -2818,6 +3020,24 @@ function renderTranscript(messages, state = null) {
             shouldScroll = true;
         }
     }
+
+    const followNewMessages = Boolean(getSettings().autoScrollNewMessages && isNearBottom);
+    const shouldJumpToEnd = shouldScroll && (isInitialLoad || followNewMessages);
+
+    if (
+        !hasSavedScroll
+        && !shouldJumpToEnd
+        && transcriptFeed.dataset.renderSignature === renderSignature
+        && transcriptFeed.querySelector(".chat-msg, .system-event-chip")
+    ) {
+        // Nothing visible changed; leave the DOM and scroll position alone.
+        updateJumpToLatestButton();
+        return;
+    }
+
+    const readingAnchor = (!hasSavedScroll && !shouldJumpToEnd)
+        ? captureTranscriptReadingAnchor()
+        : null;
 
     // Generate HTML for Load Older button/loader at the top
     let loadOlderBtnHtml = '';
@@ -2875,12 +3095,18 @@ function renderTranscript(messages, state = null) {
             respTimeBadge = `<span class="response-time-badge">${formatted} response</span>`;
         }
 
+        const escapedRawText = escapeHTML(msg.text || "");
         return `
             <div class="${cardClass}" data-id="${msg.id}">
                 <div class="chat-header">
                     <span class="chat-author">${escapeHTML(displayName)}</span>
-                    ${respTimeBadge}
-                    <span class="chat-time">${timeStr}</span>
+                    <div class="chat-header-meta">
+                        ${respTimeBadge}
+                        <span class="chat-time">${timeStr}</span>
+                        <button class="btn-copy-msg" type="button" data-raw-text="${escapedRawText}" title="Copy message text" aria-label="Copy message text">
+                            <span class="material-symbols-rounded">content_copy</span>
+                        </button>
+                    </div>
                 </div>
                 <div class="chat-body">${renderMarkdown(msg.text)}</div>
             </div>
@@ -2888,14 +3114,20 @@ function renderTranscript(messages, state = null) {
     }).join("");
 
     transcriptFeed.innerHTML = loadOlderBtnHtml + msgsHtml;
+    transcriptFeed.dataset.renderSignature = renderSignature;
 
-    // Auto-scroll ONLY if it's the initial room load OR user was already near the bottom
-    if (state && state.savedScrollTop !== undefined && state.savedScrollTop !== null) {
+    // Opening a room still restores its saved position (or starts at the newest
+    // message); following future messages is an explicit, default-off preference.
+    // Poll re-renders always restore the pre-render reading anchor.
+    if (hasSavedScroll) {
         transcriptFeed.scrollTop = state.savedScrollTop;
         state.savedScrollTop = null;
-    } else if (shouldScroll && (isNearBottom || isInitialLoad)) {
+    } else if (shouldJumpToEnd) {
         transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
+    } else if (readingAnchor) {
+        restoreTranscriptReadingAnchor(readingAnchor);
     }
+    updateJumpToLatestButton();
 }
 
 function renderStats(stats) {

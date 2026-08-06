@@ -6,6 +6,7 @@ __pycache__/
 .env
 .venv/
 .venv-chatterbox/
+.voice_gateway_matter_mounts.override.yml
 env/
 tmp/
 acli/gateway_state/

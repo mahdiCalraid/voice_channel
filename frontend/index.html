@@ -115,6 +115,16 @@
                         <p>Loading recent updates...</p>
                     </div>
                 </div>
+                <button
+                    class="btn-jump-to-latest"
+                    id="btn-jump-to-latest"
+                    type="button"
+                    title="Jump to the beginning of the latest message"
+                    aria-label="Jump to the beginning of the latest message"
+                    hidden
+                >
+                    <span class="material-symbols-rounded" aria-hidden="true">keyboard_double_arrow_down</span>
+                </button>
             </div>
 
             <div
@@ -318,44 +328,48 @@
                         </div>
                     </div>
 
-                    <div class="playback-controls">
-                        <button class="btn btn-secondary btn-full" id="btn-generate-digest" title="Generate a new digest and draft">
-                            <span class="material-symbols-rounded">autorenew</span>
-                            <span>Generate Digest</span>
-                        </button>
-
-                        <div class="playback-buttons-group">
-                            <button class="btn btn-primary btn-narration-play" id="btn-play-pause" title="Nothing to play yet" aria-label="Play or pause summary narration" disabled>
-                                <span class="material-symbols-rounded" id="play-icon">play_arrow</span>
-                                <span>Play</span>
+                    <div class="narrator-footer-controls">
+                        <div class="playback-controls">
+                            <button class="btn btn-secondary btn-generate-digest" id="btn-generate-digest" title="Generate a new digest and draft">
+                                <span class="material-symbols-rounded">autorenew</span>
+                                <span>Generate Digest</span>
                             </button>
-                            <button class="btn btn-secondary btn-round" id="btn-stop" title="Stop Playback">
-                                <span class="material-symbols-rounded">stop</span>
-                            </button>
-                        </div>
-                    </div>
 
-                    <div class="speed-control">
-                        <div class="control-row">
-                            <span class="material-symbols-rounded">speed</span>
-                            <label for="speed-range">Speech Rate: <span id="speed-val">1.0x</span></label>
-                        </div>
-                        <input type="range" id="speed-range" min="0.5" max="2.0" step="0.1" value="1.0">
-                    </div>
-
-                    <div class="voice-mode-control">
-                        <div class="voice-mode-heading">
-                            <span class="material-symbols-rounded">record_voice_over</span>
-                            <div>
-                                <label class="voice-mode-label" for="toggle-nice-voice">Nice voice</label>
-                                <p id="voice-mode-status">Fast browser voice — starts immediately</p>
+                            <div class="playback-buttons-group">
+                                <button class="btn btn-primary btn-narration-play" id="btn-play-pause" title="Nothing to play yet" aria-label="Play or pause summary narration" disabled>
+                                    <span class="material-symbols-rounded" id="play-icon">play_arrow</span>
+                                    <span>Play</span>
+                                </button>
+                                <button class="btn btn-secondary btn-stop-narration" id="btn-stop" title="Stop Playback">
+                                    <span class="material-symbols-rounded">stop</span>
+                                </button>
                             </div>
-                            <label class="switch-control" title="Use the server-side Chatterbox voice">
-                                <input type="checkbox" id="toggle-nice-voice" aria-label="Use nice voice">
-                                <span class="switch-slider" aria-hidden="true"></span>
-                            </label>
                         </div>
-                        <p class="voice-mode-help">Off is fastest. On uses the better server voice when Chatterbox is ready, with fast voice fallback.</p>
+
+                        <div class="speed-control">
+                            <div class="control-row">
+                                <div class="control-label-wrap">
+                                    <span class="material-symbols-rounded control-icon">speed</span>
+                                    <label for="speed-range">Speech Rate</label>
+                                </div>
+                                <span class="speed-val-badge" id="speed-val">1.0x</span>
+                            </div>
+                            <input type="range" id="speed-range" class="custom-range-slider" min="0.5" max="2.0" step="0.1" value="1.0">
+                        </div>
+
+                        <div class="voice-mode-control">
+                            <div class="voice-mode-heading">
+                                <span class="material-symbols-rounded voice-icon">record_voice_over</span>
+                                <div class="voice-mode-text">
+                                    <label class="voice-mode-label" for="toggle-nice-voice">Nice Voice</label>
+                                    <p id="voice-mode-status">Fast browser voice — starts immediately</p>
+                                </div>
+                                <label class="switch-control" title="Use the server-side Chatterbox voice">
+                                    <input type="checkbox" id="toggle-nice-voice" aria-label="Use nice voice">
+                                    <span class="switch-slider" aria-hidden="true"></span>
+                                </label>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -504,6 +518,10 @@
                     <div class="setting-group toggle-group">
                         <label for="setting-auto-narrate">Automatically prepare a digest and draft after real agent responses</label>
                         <input type="checkbox" id="setting-auto-narrate" class="setting-checkbox" checked>
+                    </div>
+                    <div class="setting-group toggle-group">
+                        <label for="setting-auto-scroll-new-messages">Automatically follow new messages while I am at the bottom of a conversation</label>
+                        <input type="checkbox" id="setting-auto-scroll-new-messages" class="setting-checkbox">
                     </div>
                 </section>
 
