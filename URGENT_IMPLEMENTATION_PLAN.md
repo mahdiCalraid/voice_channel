@@ -1,7 +1,7 @@
 # Urgent Daily-Use Implementation Plan
 
 Status established: 2026-07-30  
-Last updated: 2026-08-03
+Last updated: 2026-08-07
 Branch: `urgent/daily-use-console`  
 Parent (return-to): `codex/adaptive-voice-gateway`  
 Historical UI foundation: `feature/full-screen-voice-console` / `IMPLEMENTATION_PLAN.md`  
@@ -266,7 +266,7 @@ working digest, suggestion, or confirmation flows.
 
 ### U-09. Chatterbox provider integration
 
-Status: `IMPLEMENTED — local playback verified; Fast/Nice voice selection added`
+Status: `VERIFIED` (2026-08-05)
 
 **Do:**
 
@@ -321,7 +321,7 @@ Status: `IMPLEMENTED — local playback verified; Fast/Nice voice selection adde
 
 ### U-09A. Narrator latency and pause reduction
 
-Status: `PLANNED`
+Status: `NOT STARTED` (deliberately deferred pending a separately approved voice-cache phase)
 
 **Purpose:** keep Fast voice available for urgent work while making the optional Nice
 voice feel more continuous and responsive on the Mac and on remote clients.
@@ -365,7 +365,7 @@ waiting age since `ready_since`, deadline pressure, blocking-other-work, and
 today's focus flag. The score is **derived at request time**, never stored, so
 the age term cannot go stale.
 
-Status: `PLANNED` — slices below land in order.
+Status: `VERIFIED` (2026-08-01) — all three slices below landed in order.
 
 #### U-10a. Attention state + editable config
 
@@ -416,9 +416,112 @@ Voice commands for the scheduler are explicitly **out of scope** for U-10.
    (do not re-open closed mechanical ingress unless regressions appear).
 3. Omi remains a **later client** on the same gateway contracts — not a rewrite.
 
-## 8. Immediate next task
+### U-11. Per-channel text preparation and Gateway-owned event delivery
 
-**U-09A** (Narrator latency and pause reduction) is the next active task. **U-07**, **U-08**, **U-09**, **U-10** (U-10a state overlay, U-10b scoring, U-10c rail integration and UI fixes), and **U-06** (Gateway membership checklist) are complete or verified. Do not start Omi, mobile, cloud exposure, or voice cloning under this urgent plan.
+Status: `PARTIAL` (2026-08-07 — polling prototype implemented; event transport is the
+required completion path)
+
+This is the follow-on to the closed U-00 through U-10 daily-use track. It makes
+preparation a per-channel operator choice rather than a function of browser presence,
+rail ranking, or active task state.
+
+- Each channel has `visible`, `narration_active`, and `voice_active` settings.
+  `voice_active` implies `narration_active` at server validation time.
+- Narration refresh is independent of the attention **ranking**, sidebar visibility,
+  browser presence, and active task state. It currently also requires the channel's
+  existing `attention_active` switch; that coupling must be made explicit in the UI
+  before U-11 is formally closed. `visible` is stored but is not yet applied to the
+  channel rail.
+- The current working tree proves the room-isolation, real-agent-reply, baseline,
+  background-preparation, cap, and deduplication behavior through a Gateway-owned
+  25-second monitor. It is useful evidence, but it is **not the intended final
+  transport**: continuous room-history polling is superseded by the event-delivery
+  requirements below and must not be committed as the finished U-11 design.
+- Only newly observed real agent replies are eligible. Existing hourly cap,
+  in-flight/result deduplication, room-keyed caches, and confirmation-bound sending
+  remain in force. No raw audio or new Rocket.Chat message transcript is persisted.
+- Automated evidence in the current working tree: focused configured-versus-unconfigured
+  monitor coverage, plus full suites of 152 Python / 61 Node passing on 2026-08-07.
+
+### U-11E. Gateway-owned Rocket.Chat event transport & subscription architecture
+
+Status: `IN PROGRESS` (reconciled with 4 required boundaries; U-11E-a staged as next task)
+
+Replace the 25-second Gateway history polling loop and 5-second browser polling loops with Gateway-owned Rocket.Chat event delivery:
+
+1. **Gateway-owned DDP/Websocket Adapter (Zero New Credentials & Zero Shadow Sources)**:
+   - Build a Gateway-side DDP/websocket adapter directly in `app/main.py` using `websockets` (already present via `uvicorn[standard]`).
+   - Authenticate with the existing `RC_AUTH_TOKEN` and `RC_USER_ID` at `app/main.py:139` over `ws://` / `wss://`.
+   - Delete all references to a non-existent ACLI event source; the Gateway connects natively to Rocket.Chat's DDP socket.
+2. **Explicit Two-Stream Subscription Architecture**:
+   - **Stream 1 (`stream-notify-user/<uid>/rooms-changed`)**: One user-wide subscription for all rooms the Gateway user belongs to. Updates channel recency, `lm` timestamps, and unread badges across the entire sidebar rail without under-subscribing inactive channels.
+   - **Stream 2 (`stream-room-messages/<rid>`)**: Subscribed **only** for channels explicitly configured with `narration_active=True ∧ attention_active=True`. Only incoming messages on Stream 2 can trigger response-assistant prewarming.
+3. **Bounded Gateway-to-Browser Event Push (Server-Sent Events)**:
+   - Expose a simple `/api/events` Server-Sent Events (SSE) push endpoint on the Gateway.
+   - Pushes lightweight room-recency updates and prewarm-ready signals to open browser tabs.
+   - The browser does not receive raw message content via SSE; it re-fetches transcript history for the active room on demand, allowing the 5-second/15-second browser polling timers to be cleanly retired.
+4. **Fallback & Recovery Boundary (Stream-Down Fallback & Watermarks)**:
+   - Retain the existing low-frequency polling loop as an explicit stream-down fallback that engages ONLY when the DDP socket is disconnected or degraded.
+   - Surface stream state (`connected`, `reconnecting`, `degraded_polling`) in `/api/status`.
+   - On reconnect, execute a watermark-directed reconciliation for missed message IDs; never run an all-room history scan and never prewarm historical backlog.
+
+#### Implementation Staging
+
+- **U-11E-a**: Gateway-owned DDP websocket adapter (`app/main.py`). Connects, subscribes to the two streams, normalizes events, applies watermarks + `is_real_agent_reply`, and dispatches to `_schedule_background_narration_prewarm`. Behind `GATEWAY_RC_EVENTS=1` with poller retained as fallback.
+- **U-11E-b**: Gateway-to-browser SSE push endpoint (`/api/events`), frontend timer retirement, and settings UI dependency hint (`narration_active` requires `attention_active`).
+
+Status: `VERIFIED` (2026-08-08)
+
+**Done when:** with the browser closed, a real reply event in an enabled channel starts digest/suggested-message preparation immediately; opening that channel shows the ready result or its in-progress state, without waiting for a refresh interval. An inactive channel receives neither a message subscription nor preparation work.
+
+**Important boundary:** automatic Nice Voice preparation is not part of U-11. The `voice_active` setting records intent and requires narration, but it does not yet pre-synthesize audio. That needs a separate bounded phase with a RAM-only cap/TTL, server-side chunking, stale-reply invalidation, and live-Play priority over background synthesis.
+
+### U-12. Message operations
+
+Status: `NOT STARTED`
+
+This is the next user-facing phase after U-11E. It improves the daily conversation
+surface without changing the confirmation-bound sending contract or creating a second
+communication system.
+
+1. **Open local file references in VS Code.** Recognize approved local file paths in
+   received messages, render a safe Open in VS Code affordance, and use a narrow
+   Gateway endpoint/allowlist to open the exact existing file. Never treat an arbitrary
+   URL, shell fragment, or path outside approved project roots as an editor target.
+2. **Read an incoming message aloud.** Add a Read aloud control beside Copy for each
+   normal received message. It uses the existing Fast/browser voice first, is entirely
+   click-initiated, supports stop, and leaves the optional Nice voice untouched.
+3. **Hide operational noise by default.** Heartbeats, routing trailers, and other
+   classified operational events remain available for audit but are omitted from the
+   normal conversation stream. Add a deliberate Show system activity control; never
+   hide a real agent reply, failure, completion, blocker, or user message.
+4. **Image handoff through the existing inbox contract.** Add an upload affordance that
+   hands images to the established ACLI/Rocket.Chat-approved inbox flow, then inserts
+   the resulting approved filename/path into the editable, confirmation-bound draft
+   for the selected worker. Do not create a parallel attachment store or silently send
+   an image.
+
+**Operator journal decision:** no new full-text input/output log will be added. Rocket.Chat
+remains the durable communication record. A later, separate read-only log viewer may
+help inspect that canonical record, but it is not a U-12 deliverable.
+
+**Acceptance:** each item has a focused test; file opening rejects unsafe targets;
+Read aloud never auto-plays; system-noise filtering preserves substantive events; and
+image upload uses the existing approved inbox flow and still requires explicit send
+confirmation.
+
+## 8. Current planning boundary
+
+**U-00 through U-10 are closed.** U-09A remains intentionally not started; it is the
+historical latency-improvement proposal, not an active task. U-11's polling prototype
+is not a completed design: U-11E replaces it with Rocket.Chat event delivery before
+the task can close. U-12 records the agreed message-operation work that follows.
+
+There is no new journal project: Rocket.Chat remains the durable record until Ed asks
+for a read-only way to inspect it.
+
+Do not start Omi, mobile, cloud exposure, voice cloning, or automatic voice generation
+without that explicit phase decision.
 
 ## 9. Operating rules for agents
 

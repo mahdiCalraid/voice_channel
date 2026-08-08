@@ -8,11 +8,12 @@ import re
 import asyncio
 import shutil
 import subprocess
+from collections import deque
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, Body
-from fastapi.responses import FileResponse, JSONResponse, Response
+from typing import Optional, List, Dict, Any, Set
+from fastapi import FastAPI, HTTPException, Body, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import httpx
@@ -97,6 +98,314 @@ async def startup_cleanup():
             logger.info("Cleaned orphan temporary job directories.")
         except Exception as e:
             logger.warning(f"Could not remove temp job dir: {e}")
+
+    # Start Gateway-owned background channel monitor loop
+    asyncio.create_task(_gateway_channel_monitor_loop())
+
+
+
+class RocketChatDDPAdapter:
+    """Gateway-owned native DDP websocket adapter for Rocket.Chat events.
+    
+    Implements U-11E-a architecture:
+    - Connects directly to Rocket.Chat websocket DDP server.
+    - Authenticates using existing RC_AUTH_TOKEN / RC_USER_ID or GATEWAY_RC_* fallback.
+    - Stream 1 (stream-notify-user/<uid>/rooms-changed): User-wide room recency & unread updates.
+    - Stream 2 (stream-room-messages/<rid>): Subscribed ONLY for narration_active ∧ attention_active channels.
+    - Normalizes real agent reply events and dispatches directly to _schedule_background_narration_prewarm.
+    """
+    def __init__(self):
+        self.state = "disconnected" # "disconnected", "connecting", "connected", "reconnecting", "degraded_polling"
+        self.last_connected_at: Optional[float] = None
+        self.reconnect_count: int = 0
+        self.subscribed_rooms: Set[str] = set()
+        self._task: Optional[asyncio.Task] = None
+
+    def get_status(self) -> Dict[str, Any]:
+        return {
+            "state": self.state,
+            "last_connected_at": self.last_connected_at,
+            "reconnect_count": self.reconnect_count,
+            "subscribed_rooms_count": len(self.subscribed_rooms),
+        }
+
+    async def start(self):
+        enabled = os.environ.get("GATEWAY_RC_EVENTS", "0").strip().lower() in ("1", "true", "yes")
+        if not enabled:
+            logger.info("Gateway Rocket.Chat DDP event transport disabled (GATEWAY_RC_EVENTS!=1). Using poll fallback.")
+            self.state = "degraded_polling"
+            return
+        self._task = asyncio.create_task(self._run_loop())
+
+    async def _run_loop(self):
+        import websockets
+        while True:
+            try:
+                base_url = get_rc_base_url()
+                ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/websocket"
+                auth_token = GATEWAY_RC_AUTH_TOKEN or RC_AUTH_TOKEN
+                user_id = GATEWAY_RC_USER_ID or RC_USER_ID
+
+                self.state = "connecting"
+                logger.info(f"Connecting Gateway DDP websocket to {ws_url}...")
+                async with websockets.connect(ws_url) as ws:
+                    # DDP Handshake
+                    await ws.send(json.dumps({"msg": "connect", "version": "1", "support": ["1"]}))
+                    resp = await ws.recv()
+                    msg = json.loads(resp)
+                    if msg.get("msg") != "connected":
+                        raise RuntimeError(f"DDP connect failed: {msg}")
+
+                    # DDP Auth
+                    auth_id = "auth_1"
+                    await ws.send(json.dumps({
+                        "msg": "method",
+                        "method": "login",
+                        "id": auth_id,
+                        "params": [{"resume": auth_token}]
+                    }))
+
+                    authed = False
+                    while not authed:
+                        resp = await ws.recv()
+                        msg = json.loads(resp)
+                        if msg.get("msg") == "result" and msg.get("id") == auth_id:
+                            if msg.get("error"):
+                                raise RuntimeError(f"DDP authentication failed: {msg['error']}")
+                            authed = True
+
+                    self.state = "connected"
+                    self.last_connected_at = time.time()
+                    logger.info("Gateway DDP websocket authenticated successfully.")
+
+                    # Stream 1: User rooms changed (user-wide recency)
+                    await ws.send(json.dumps({
+                        "msg": "sub",
+                        "id": "sub_rooms_changed",
+                        "name": "stream-notify-user",
+                        "params": [f"{user_id}/rooms-changed", False]
+                    }))
+
+                    # Sync Stream 2 subscriptions based on narration_active channels
+                    await self._sync_subscriptions(ws)
+
+                    # Main Event Receiver Loop
+                    while True:
+                        raw_msg = await ws.recv()
+                        data = json.loads(raw_msg)
+                        if data.get("msg") == "ping":
+                            await ws.send(json.dumps({"msg": "pong"}))
+                        elif data.get("msg") == "changed" and data.get("collection") == "stream-room-messages":
+                            await self._handle_room_message_event(data)
+                        elif data.get("msg") == "changed" and data.get("collection") == "stream-notify-user":
+                            await self._handle_user_notify_event(data)
+
+            except asyncio.CancelledError:
+                self.state = "disconnected"
+                logger.info("Gateway DDP websocket task cancelled.")
+                break
+            except Exception as err:
+                self.reconnect_count += 1
+                self.state = "reconnecting"
+                logger.warning("Gateway DDP websocket disconnected (%s). Retrying in 5s...", err)
+                await asyncio.sleep(5)
+
+    async def _sync_subscriptions(self, ws):
+        attn_cfg = load_channel_attention_config()
+        narration_active_cnames = {
+            cname.lower()
+            for cname, entry in attn_cfg.channels.items()
+            if entry.narration_active and entry.attention_active
+        }
+        # Fetch current RC rooms mapping name -> rid
+        base_url = get_rc_base_url()
+        auth_token = GATEWAY_RC_AUTH_TOKEN or RC_AUTH_TOKEN
+        user_id = GATEWAY_RC_USER_ID or RC_USER_ID
+        headers = {"X-Auth-Token": auth_token, "X-User-Id": user_id}
+        
+        target_rids = set()
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{base_url}/api/v1/rooms.get?count=100", headers=headers)
+                if resp.status_code == 200 and resp.json().get("success"):
+                    for r in resp.json().get("update", []):
+                        rname = (r.get("name") or r.get("fname") or "").lower()
+                        rid = r.get("_id")
+                        if rid and rname in narration_active_cnames:
+                            target_rids.add(rid)
+        except Exception as err:
+            logger.debug("Could not resolve room IDs for DDP stream subscription: %s", err)
+
+        new_subs = target_rids - self.subscribed_rooms
+        for rid in new_subs:
+            sub_id = f"sub_msg_{rid}"
+            await ws.send(json.dumps({
+                "msg": "sub",
+                "id": sub_id,
+                "name": "stream-room-messages",
+                "params": [rid, False]
+            }))
+            self.subscribed_rooms.add(rid)
+            logger.info(f"DDP subscribed to stream-room-messages for narration_active room {rid}")
+
+    async def _handle_room_message_event(self, data: Dict[str, Any]):
+        args = data.get("fields", {}).get("args", [])
+        if not args:
+            return
+        msg_obj = args[0]
+        rid = msg_obj.get("rid")
+        if not rid:
+            return
+
+        # Check if message is a new real agent reply
+        cached_msgs = ROOM_MESSAGES_CACHE.get(rid, [])
+        known_ids = {str(m.get("id") or m.get("_id") or "") for m in cached_msgs}
+        msg_id = str(msg_obj.get("id") or msg_obj.get("_id") or "")
+
+        # Watermark & duplication check
+        if msg_id in known_ids:
+            return
+
+        # Append to ROOM_MESSAGES_CACHE
+        if rid not in ROOM_MESSAGES_CACHE:
+            ROOM_MESSAGES_CACHE[rid] = []
+            
+        lane_info = classify_message(msg_obj)
+        converted_msg = {
+            "id": msg_id,
+            "text": msg_obj.get("msg", ""),
+            "lane": lane_info["lane"],
+            "name": msg_obj.get("u", {}).get("username", "unknown"),
+            "timestamp": _extract_msg_timestamp(msg_obj),
+            "event": lane_info["event"],
+        }
+        ROOM_MESSAGES_CACHE[rid].append(converted_msg)
+
+        # Broadcast SSE event to browser clients for recency update
+        await sse_broadcaster.publish({
+            "type": "message",
+            "room_id": rid,
+            "msg_id": msg_id,
+            "timestamp": time.time(),
+        })
+
+        # Real agent reply filter
+        eval_res = evaluate_room_unread_status(rid, ROOM_MESSAGES_CACHE[rid])
+        if eval_res.get("has_unread"):
+            # Dispatch to prewarm immediately
+            queue = [{
+                "room_id": rid,
+                "channel_name": msg_obj.get("alias") or rid,
+                "queue_category": "ranked",
+                "rank": 1,
+            }]
+            await _schedule_background_narration_prewarm(
+                queue=queue,
+                new_replies_by_room={rid: [converted_msg]},
+                supervised_room_ids={rid},
+            )
+
+    async def _handle_user_notify_event(self, data: Dict[str, Any]):
+        # Stream 1 room-changed event handles room recency updates
+        args = data.get("fields", {}).get("args", [])
+        if args and isinstance(args[0], str) and args[0] == "updated":
+            room_data = args[1] if len(args) > 1 and isinstance(args[1], dict) else {}
+            rid = room_data.get("_id")
+            await sse_broadcaster.publish({
+                "type": "room_changed",
+                "room_id": rid,
+                "timestamp": time.time(),
+            })
+
+ddp_adapter = RocketChatDDPAdapter()
+
+
+class SSEBroadcaster:
+    """Broadcaster for Gateway-to-browser Server-Sent Events (SSE)."""
+    def __init__(self):
+        self.subscribers: Set[asyncio.Queue] = set()
+
+    async def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue()
+        self.subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue):
+        self.subscribers.discard(q)
+
+    async def publish(self, event: Dict[str, Any]):
+        if not self.subscribers:
+            return
+        dead = set()
+        for q in self.subscribers:
+            try:
+                q.put_nowait(event)
+            except Exception:
+                dead.add(q)
+        for q in dead:
+            self.subscribers.discard(q)
+
+sse_broadcaster = SSEBroadcaster()
+
+
+@app.get("/api/events")
+async def sse_events_endpoint(request: Request):
+    """Gateway-to-browser Server-Sent Events (SSE) push endpoint.
+    
+    Pushes lightweight room-recency and prewarm-ready signals to open browser tabs,
+    allowing browser polling intervals to be retired without sending raw message bodies.
+    """
+    queue = await sse_broadcaster.subscribe()
+
+    async def event_generator():
+        try:
+            # Initial ping
+            yield "event: ping\ndata: {}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"event: {event.get('type', 'message')}\ndata: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield "event: ping\ndata: {}\n\n"
+        finally:
+            sse_broadcaster.unsubscribe(queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+async def _gateway_channel_monitor_loop():
+    """Server-side background loop running independently of browser tabs.
+    
+    Periodically polls history for channels configured with narration_active=True
+    (and active task rooms), and schedules text prewarming for newly observed real agent replies.
+    Starts DDP websocket event transport if GATEWAY_RC_EVENTS=1.
+    """
+    logger.info("Starting Gateway-owned background channel monitor loop.")
+    await ddp_adapter.start()
+    while True:
+        try:
+            await asyncio.sleep(25)
+            # If DDP is connected, polling loop acts as fallback or periodic sync
+            attn_cfg = load_channel_attention_config()
+            active_cnames = {
+                cname.lower()
+                for cname, entry in attn_cfg.channels.items()
+                if entry.narration_active and entry.attention_active
+            }
+            active_supervised = {
+                task.room_id
+                for task in task_supervisor.all()
+                if task.state in {TaskState.POSTED, TaskState.ROUTED, TaskState.WORKING}
+            }
+            if active_cnames or active_supervised:
+                await get_attention_queue()
+        except asyncio.CancelledError:
+            logger.info("Gateway channel monitor loop cancelled.")
+            break
+        except Exception as err:
+            logger.debug("Error in Gateway channel monitor loop: %s", err)
 
 # Configuration from environment variables
 RC_URL = os.environ.get("RC_URL", "http://host.docker.internal:3000")
@@ -698,6 +1007,90 @@ response_assistant_idempotency_lock = asyncio.Lock()
 response_assistant_inflight: Dict[tuple, asyncio.Task] = {}
 response_assistant_results: Dict[tuple, tuple] = {}
 
+# Background narration prewarm is intentionally opt-in at the gateway layer
+# and stores configuration only. Generated text remains in the existing bounded
+# in-memory response-assistant cache; no message text or audio is added to a
+# new durable store.
+NARRATION_PREWARM_CONFIG_PATH = os.environ.get(
+    "VC_NARRATION_PREWARM_CONFIG_PATH",
+    "acli/gateway_state/narration_prewarm_settings.json",
+)
+DEFAULT_NARRATION_PREWARM_CONFIG = {
+    "enabled": True,
+    "scope": "top_attention",
+    "top_n": 5,
+    "history_limit": 20,
+    "hourly_generation_cap": 12,
+}
+NARRATION_PREWARM_SCOPES = {"top_attention", "supervised"}
+narration_prewarm_lock = asyncio.Lock()
+narration_prewarm_generation_starts = deque()
+
+
+def _normalized_narration_prewarm_config(value: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return bounded, schema-free operator settings for background text prewarm."""
+    raw = value if isinstance(value, dict) else {}
+    scope = raw.get("scope")
+    if scope not in NARRATION_PREWARM_SCOPES:
+        scope = DEFAULT_NARRATION_PREWARM_CONFIG["scope"]
+
+    def bounded_int(key: str, minimum: int, maximum: int) -> int:
+        try:
+            return max(minimum, min(maximum, int(raw.get(key, DEFAULT_NARRATION_PREWARM_CONFIG[key]))))
+        except (TypeError, ValueError):
+            return DEFAULT_NARRATION_PREWARM_CONFIG[key]
+
+    return {
+        "enabled": bool(raw.get("enabled", DEFAULT_NARRATION_PREWARM_CONFIG["enabled"])),
+        "scope": scope,
+        "top_n": bounded_int("top_n", 1, 20),
+        "history_limit": bounded_int("history_limit", 5, 100),
+        "hourly_generation_cap": bounded_int("hourly_generation_cap", 1, 50),
+    }
+
+
+def load_narration_prewarm_config() -> Dict[str, Any]:
+    try:
+        with open(NARRATION_PREWARM_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return _normalized_narration_prewarm_config(json.load(f))
+    except FileNotFoundError:
+        return dict(DEFAULT_NARRATION_PREWARM_CONFIG)
+    except Exception as err:
+        logger.warning("Could not read narration prewarm settings: %s", err)
+        return dict(DEFAULT_NARRATION_PREWARM_CONFIG)
+
+
+def save_narration_prewarm_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = _normalized_narration_prewarm_config(config)
+    directory = os.path.dirname(NARRATION_PREWARM_CONFIG_PATH)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    temp_path = NARRATION_PREWARM_CONFIG_PATH + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(normalized, f, indent=2)
+    os.replace(temp_path, NARRATION_PREWARM_CONFIG_PATH)
+    return normalized
+
+
+@app.get("/api/narration/prewarm/config")
+async def get_narration_prewarm_config():
+    return {"success": True, "config": load_narration_prewarm_config()}
+
+
+@app.put("/api/narration/prewarm/config")
+async def update_narration_prewarm_config(payload: Dict[str, Any] = Body(...)):
+    try:
+        return {
+            "success": True,
+            "config": save_narration_prewarm_config({
+                **load_narration_prewarm_config(),
+                **payload,
+            }),
+        }
+    except Exception as err:
+        logger.warning("Could not save narration prewarm settings: %s", err)
+        raise HTTPException(status_code=500, detail="Could not save narration prewarm settings")
+
 @app.get("/api/status")
 async def get_status():
     base_url = get_rc_base_url()
@@ -810,7 +1203,8 @@ async def get_status():
             "status": "configured" if all(
                 (GATEWAY_RC_USER_ID, GATEWAY_RC_AUTH_TOKEN, GATEWAY_RC_INGRESS_SECRET)
             ) and GATEWAY_RC_USER_ID != RC_USER_ID else "not_configured"
-        }
+        },
+        "ddp": ddp_adapter.get_status(),
     }
 
 @app.get("/api/rooms")
@@ -932,22 +1326,35 @@ async def get_attention_queue(now: Optional[float] = None):
         for task in task_supervisor.all()
         if task.state in {TaskState.POSTED, TaskState.ROUTED, TaskState.WORKING}
     }
+    narration_active_cnames = {
+        cname.lower()
+        for cname, entry in config.channels.items()
+        if entry.narration_active and entry.attention_active
+    }
     background_room_ids = {
         room.get("_id")
         for room in room_by_cname.values()
-        if room.get("_id") in active_supervised_room_ids
+        if room.get("_id")
+        and (
+            room.get("_id") in active_supervised_room_ids
+            or (room.get("name") or room.get("fname") or "").lower() in narration_active_cnames
+        )
     }
+    refreshed_real_agent_replies: Dict[str, List[dict]] = {}
     if background_room_ids:
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
+                background_room_id_list = sorted(background_room_ids)
                 refreshes = [
                     _refresh_active_task_room(client, room_id)
-                    for room_id in background_room_ids
+                    for room_id in background_room_id_list
                 ]
                 results = await asyncio.gather(*refreshes, return_exceptions=True)
-                for result in results:
+                for room_id, result in zip(background_room_id_list, results):
                     if isinstance(result, Exception):
                         logger.debug("Could not refresh a background task room: %s", result)
+                    elif result:
+                        refreshed_real_agent_replies[room_id] = result
         except Exception as err:
             logger.debug("Could not refresh background task rooms for attention: %s", err)
 
@@ -991,6 +1398,13 @@ async def get_attention_queue(now: Optional[float] = None):
         now=now,
         room_unread_map=room_unread_map,
     )
+
+    if refreshed_real_agent_replies:
+        await _schedule_background_narration_prewarm(
+            queue,
+            refreshed_real_agent_replies,
+            background_room_ids,
+        )
 
     now_ts = now if now is not None else time.time()
     return {
@@ -1051,7 +1465,7 @@ def _ingest_supervised_history(room_id: str, raw_messages: List[dict], cleaned_m
     return supervised_interaction_ids
 
 
-async def _refresh_active_task_room(client: httpx.AsyncClient, room_id: str) -> None:
+async def _refresh_active_task_room(client: httpx.AsyncClient, room_id: str) -> List[dict]:
     """Hydrate supervision for a background room before its attention is scored.
 
     The browser normally hydrates a room through /api/history, but that endpoint
@@ -1073,11 +1487,16 @@ async def _refresh_active_task_room(client: httpx.AsyncClient, room_id: str) -> 
             params=params,
         )
     if response.status_code != 200:
-        return
+        return []
     payload = response.json()
     if not payload.get("success"):
-        return
+        return []
 
+    had_cache_baseline = room_id in ROOM_MESSAGES_CACHE
+    previous_message_ids = {
+        str(message.get("id") or message.get("_id") or "")
+        for message in ROOM_MESSAGES_CACHE.get(room_id, [])
+    }
     raw_messages = list(payload.get("messages", []))
     raw_messages.reverse()
     seen_ids = set()
@@ -1090,6 +1509,15 @@ async def _refresh_active_task_room(client: httpx.AsyncClient, room_id: str) -> 
     cleaned_messages, _ = process_history_messages(deduped_raw)
     _ingest_supervised_history(room_id, deduped_raw, cleaned_messages)
     ROOM_MESSAGES_CACHE[room_id] = cleaned_messages
+    if not had_cache_baseline:
+        # The first refresh establishes a volatile baseline only. Without this,
+        # a Gateway restart could spend the prewarm budget narrating old history.
+        return []
+    return [
+        message for message in cleaned_messages
+        if str(message.get("id") or message.get("_id") or "") not in previous_message_ids
+        and is_real_agent_reply(message)
+    ]
 
 
 @app.get("/api/history")
@@ -1679,12 +2107,141 @@ async def _run_and_cache_response_assistant(key: tuple, req: ResponseAssistantRe
         async with response_assistant_idempotency_lock:
             response_assistant_results[key] = (time.monotonic(), dict(result))
             _prune_response_assistant_results(time.monotonic())
+            
+        room_id, trigger_message_id = key
+        await sse_broadcaster.publish({
+            "type": "prewarm_ready",
+            "room_id": room_id,
+            "msg_id": trigger_message_id,
+            "timestamp": time.time(),
+        })
         return result
     finally:
         async with response_assistant_idempotency_lock:
             current = response_assistant_inflight.get(key)
             if current is asyncio.current_task():
                 response_assistant_inflight.pop(key, None)
+
+
+def _log_background_prewarm_result(task: asyncio.Task) -> None:
+    """Consume a detached background task exception without retrying it."""
+    if task.cancelled():
+        return
+    try:
+        error = task.exception()
+    except asyncio.CancelledError:
+        return
+    if error is not None:
+        logger.warning("Background narration prewarm failed: %s", error)
+
+
+async def _schedule_background_narration_prewarm(
+    queue: List[Dict[str, Any]],
+    new_replies_by_room: Dict[str, List[dict]],
+    supervised_room_ids: set,
+) -> int:
+    """Start bounded text-only prewarm jobs for newly observed real replies.
+
+    This is called by the all-channel attention refresh after it has already
+    classified the room history. It never refetches history, never writes audio,
+    and uses the same idempotency key as a browser request.
+    """
+    config = load_narration_prewarm_config()
+    if not config["enabled"]:
+        return 0
+
+    eligible_rooms = set()
+    if config["scope"] == "supervised":
+        eligible_rooms = set(supervised_room_ids)
+    else:
+        eligible_rooms = {
+            item["room_id"]
+            for item in queue
+            if item.get("room_id")
+            and item.get("queue_category") == "ranked"
+            and item.get("rank") is not None
+            and item["rank"] <= config["top_n"]
+        }
+
+    # Explicitly include any channels configured with narration_active=True
+    attn_cfg = load_channel_attention_config()
+    narration_active_cnames = {
+        cname.lower()
+        for cname, entry in attn_cfg.channels.items()
+        if entry.narration_active and entry.attention_active
+    }
+    for item in queue:
+        rid = item.get("room_id")
+        cname = str(item.get("channel_name") or "").lower()
+        if rid and cname in narration_active_cnames:
+            eligible_rooms.add(rid)
+
+    candidates = []
+    channel_name_by_room = {
+        item["room_id"]: item.get("channel_name")
+        for item in queue
+        if item.get("room_id")
+    }
+    for room_id, replies in new_replies_by_room.items():
+        if room_id not in eligible_rooms or not replies:
+            continue
+        newest_reply = max(replies, key=lambda message: _extract_msg_timestamp(message))
+        trigger_message_id = str(newest_reply.get("id") or newest_reply.get("_id") or "")
+        if trigger_message_id:
+            candidates.append((room_id, trigger_message_id))
+
+    rank_by_room = {
+        item["room_id"]: item.get("rank") if item.get("rank") is not None else 999999
+        for item in queue
+        if item.get("room_id")
+    }
+    candidates.sort(key=lambda pair: rank_by_room.get(pair[0], 999999))
+
+    scheduled = 0
+    for room_id, trigger_message_id in candidates:
+        key = (room_id, trigger_message_id)
+        async with response_assistant_idempotency_lock:
+            now = time.monotonic()
+            _prune_response_assistant_results(now)
+            if key in response_assistant_results or key in response_assistant_inflight:
+                continue
+            async with narration_prewarm_lock:
+                while (
+                    narration_prewarm_generation_starts
+                    and now - narration_prewarm_generation_starts[0] >= 3600
+                ):
+                    narration_prewarm_generation_starts.popleft()
+                if len(narration_prewarm_generation_starts) >= config["hourly_generation_cap"]:
+                    logger.info(
+                        "Background narration prewarm cap reached (%s/hour).",
+                        config["hourly_generation_cap"],
+                    )
+                    break
+                narration_prewarm_generation_starts.append(now)
+                request = ResponseAssistantRequest(
+                    messages=ROOM_MESSAGES_CACHE.get(room_id, []),
+                    roomId=room_id,
+                    room_name=channel_name_by_room.get(room_id),
+                    trigger_message_id=trigger_message_id,
+                    history_limit=config["history_limit"],
+                )
+                task = asyncio.create_task(_run_and_cache_response_assistant(key, request))
+                response_assistant_inflight[key] = task
+                task.add_done_callback(_log_background_prewarm_result)
+                scheduled += 1
+    return scheduled
+
+
+@app.get("/api/response-assistant/cached")
+async def get_cached_response_assistant(room_id: str, trigger_message_id: str):
+    """Return a completed background result without creating a new generation."""
+    key = (room_id, trigger_message_id)
+    async with response_assistant_idempotency_lock:
+        _prune_response_assistant_results(time.monotonic())
+        cached = response_assistant_results.get(key)
+        if cached is None:
+            raise HTTPException(status_code=404, detail="No prepared narration for this reply")
+        return {"success": True, "result": dict(cached[1])}
 
 
 @app.post("/api/response-assistant")

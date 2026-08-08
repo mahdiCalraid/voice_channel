@@ -1,0 +1,31 @@
+[
+  {
+    "variant": "chatterbox_whole",
+    "time_to_first_audio_s": 17.22,
+    "total_synth_s": 17.22,
+    "audio_s": 46.03,
+    "rtf": 0.374
+  },
+  {
+    "variant": "chatterbox_chunked",
+    "time_to_first_audio_s": 1.76,
+    "total_synth_s": 12.83,
+    "audio_s": 45.66,
+    "chunks": 6
+  },
+  {
+    "variant": "macos_say_samantha",
+    "file_render_s": 8.15,
+    "note": "live playback starts in <1s; file render is not the latency"
+  },
+  {
+    "variant": "macos_say_ava",
+    "file_render_s": 1.26,
+    "note": "live playback starts in <1s; file render is not the latency"
+  },
+  {
+    "variant": "macos_say_zoe",
+    "file_render_s": 4.62,
+    "note": "live playback starts in <1s; file render is not the latency"
+  }
+]

@@ -10,6 +10,11 @@ This was the authoritative execution plan for the original Voice Channel UI dire
 It replaced the previous mixed historical plan and reordered the work around four strict
 phases:
 
+**Historical document notice (2026-08-07):** the "Immediate Next Task" below is the
+historical next task at this plan's cutoff, not current work. Current execution status
+is in `URGENT_IMPLEMENTATION_PLAN.md`; long-range gateway phases are in
+`ADAPTIVE_IMPLEMENTATION_PLAN.md`.
+
 1. Mechanical foundation
 2. Reusable AI foundation
 3. Operational UI/UX
@@ -712,7 +717,7 @@ commit it, use it in daily work, and only then select the next capability.
 - No video, avatar room, LiveKit dependency, or conference-room simulation.
 - No phase is declared complete from mocked tests alone when a live integration exists.
 
-## 5. Immediate Next Task
+## 5. Historical Next Task at Plan Cutoff
 
 **Sequence (do not skip):**
 

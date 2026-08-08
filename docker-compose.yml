@@ -39,5 +39,8 @@ services:
       - ./NORTH_STAR.md:/app/NORTH_STAR.md
       - ./OBJECTIVES.md:/app/OBJECTIVES.md
       - ./PROJECT_HANDOFF.md:/app/PROJECT_HANDOFF.md
-      - ${HOME}/.codex:/codex-host-auth:ro
+      # Use the same live Codex home as the host and ACLI. Account switches update
+      # auth.json in place and are visible to narrator subprocesses immediately.
+      # This must be writable because Codex also records sessions and runtime state.
+      - ${HOME}/.codex:/root/.codex
     restart: unless-stopped

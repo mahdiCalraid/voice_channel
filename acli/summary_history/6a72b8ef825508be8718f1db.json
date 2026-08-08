@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-08-07T00:56:58.358595+00:00",
+    "digest": "The archive confirms the app code is recoverable, but the data and cloud services required to run it remain unverified; progress now hinges on confirming ownership and access to the original cloud estate before choosing a recovery path."
+  },
+  {
+    "timestamp": "2026-08-07T01:06:22.520743+00:00",
+    "digest": "The original derived data layer is missing, so the late-stage app cannot run as-is; however, several populated source datasets remain and may support a targeted rebuild. The immediate goal is to establish exactly which missing outputs can be regenerated and what irreducible gaps remain."
+  },
+  {
+    "timestamp": "2026-08-07T01:31:43.525801+00:00",
+    "digest": "The original app code is recoverable, but its late-stage derived data layer is missing; surviving source datasets may still support a targeted rebuild, so the immediate need is to map what can be regenerated and what cannot."
+  }
+]

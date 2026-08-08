@@ -6,17 +6,24 @@
     "room_id": "6a54579eb53b70a1d1b5bb94"
   },
   "default_agent": "codex",
-  "agent_timeout_seconds": 600,
+  "agent_timeout_seconds": 2500,
   "active_agents": [
     "gemini",
     "agy",
     "codex",
     "claude",
+    "fable",
+    "doer",
     "pplx",
     "cursor",
     "grok"
   ],
-  "allowed_read_dirs": ["/Users/ed/King/clawd_2/development_channel"],
-  "allowed_write_dirs": [],
+  "allowed_read_dirs": [
+    "/Users/ed/King/clawd_2/development_channel",
+    "/Users/ed/King/automatic_system"
+  ],
+  "allowed_write_dirs": [
+    "/Users/ed/King/clawd_2/development_channel"
+  ],
   "local_conventions": {}
 }

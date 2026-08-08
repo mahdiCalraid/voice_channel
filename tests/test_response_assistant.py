@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 import app.main as main_module
+from app.attention_config import ChannelAttentionConfig, ChannelAttentionEntry
 from app.main import ResponseAssistantRequest, app
 from app.supervision_strategy import (
     fallback_quick_suggestions,
@@ -218,6 +219,7 @@ class TestResponseAssistantEndpoint(unittest.TestCase):
     def setUp(self):
         main_module.response_assistant_inflight.clear()
         main_module.response_assistant_results.clear()
+        main_module.narration_prewarm_generation_starts.clear()
         self.client = TestClient(app)
         self.payload = {
             "messages": [
@@ -559,6 +561,280 @@ class TestResponseAssistantEndpoint(unittest.TestCase):
         lease_ms = eval(expr)
         max_backend_budget_ms = 60_000
         self.assertGreater(lease_ms, max_backend_budget_ms)
+
+    def test_background_prewarm_uses_top_attention_and_existing_cache_contract(self):
+        async def generated(request):
+            return {
+                "digest": "The background reply is ready for Ed to review.",
+                "suggested_message": "@grok Review the reply.",
+                "trigger_message_id": request.trigger_message_id,
+                "included_message_ids": [request.trigger_message_id],
+            }
+
+        queue = [
+            {
+                "room_id": "room-ready",
+                "channel_name": "voice_channel",
+                "queue_category": "ranked",
+                "rank": 1,
+            },
+            {
+                "room_id": "room-later",
+                "channel_name": "other_channel",
+                "queue_category": "ranked",
+                "rank": 6,
+            },
+        ]
+        main_module.ROOM_MESSAGES_CACHE["room-ready"] = [LATEST_AGY]
+        main_module.ROOM_MESSAGES_CACHE["room-later"] = [{**LATEST_AGY, "id": "agent-later"}]
+        config = {
+            "enabled": True,
+            "scope": "top_attention",
+            "top_n": 5,
+            "history_limit": 20,
+            "hourly_generation_cap": 12,
+        }
+
+        async def scenario():
+            with patch.object(main_module, "load_narration_prewarm_config", return_value=config), patch.object(
+                main_module, "_generate_response_assistant_once", new=generated
+            ):
+                scheduled = await main_module._schedule_background_narration_prewarm(
+                    queue,
+                    {
+                        "room-ready": [LATEST_AGY],
+                        "room-later": [{**LATEST_AGY, "id": "agent-later"}],
+                    },
+                    set(),
+                )
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                replay = await main_module.get_cached_response_assistant("room-ready", "agent-2")
+            return scheduled, replay
+
+        scheduled, replay = asyncio.run(scenario())
+        self.assertEqual(scheduled, 1)
+        self.assertEqual(replay["result"]["digest"], "The background reply is ready for Ed to review.")
+        self.assertNotIn(("room-later", "agent-later"), main_module.response_assistant_results)
+
+    def test_background_prewarm_spends_hourly_cap_on_highest_ranked_rooms(self):
+        async def generated(request):
+            return {
+                "digest": "Ready.",
+                "suggested_message": "@grok Review the reply.",
+                "trigger_message_id": request.trigger_message_id,
+                "included_message_ids": [request.trigger_message_id],
+            }
+
+        # Deliberately list the worst-ranked room first so dict/iteration order
+        # cannot be what makes the assertion pass.
+        ranks = [("room-low", 5), ("room-high", 1), ("room-mid", 3)]
+        queue = [
+            {
+                "room_id": room_id,
+                "channel_name": room_id,
+                "queue_category": "ranked",
+                "rank": rank,
+            }
+            for room_id, rank in ranks
+        ]
+        new_replies = {}
+        for room_id, _rank in ranks:
+            reply = {**LATEST_AGY, "id": f"agent-{room_id}"}
+            main_module.ROOM_MESSAGES_CACHE[room_id] = [reply]
+            new_replies[room_id] = [reply]
+
+        config = {
+            "enabled": True,
+            "scope": "top_attention",
+            "top_n": 5,
+            "history_limit": 20,
+            "hourly_generation_cap": 2,
+        }
+
+        async def scenario():
+            with patch.object(main_module, "load_narration_prewarm_config", return_value=config), patch.object(
+                main_module, "_generate_response_assistant_once", new=generated
+            ):
+                scheduled = await main_module._schedule_background_narration_prewarm(
+                    queue,
+                    new_replies,
+                    set(),
+                )
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+            return scheduled
+
+        scheduled = asyncio.run(scenario())
+        self.assertEqual(scheduled, 2)
+        prewarmed = {room_id for room_id, _trigger in main_module.response_assistant_results}
+        self.assertEqual(prewarmed, {"room-high", "room-mid"})
+        self.assertNotIn("room-low", prewarmed)
+
+    def test_prewarm_settings_store_control_metadata_without_message_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, "narration_prewarm_settings.json")
+            with patch.object(main_module, "NARRATION_PREWARM_CONFIG_PATH", config_path):
+                saved = main_module.save_narration_prewarm_config({
+                    "enabled": True,
+                    "scope": "supervised",
+                    "top_n": 99,
+                    "history_limit": 20,
+                    "hourly_generation_cap": 12,
+                    "message": "This must never be persisted.",
+                })
+                with open(config_path, "r", encoding="utf-8") as f:
+                    on_disk = json.load(f)
+
+        self.assertEqual(saved["scope"], "supervised")
+        self.assertEqual(saved["top_n"], 20)
+        self.assertEqual(
+            set(on_disk),
+            {"enabled", "scope", "top_n", "history_limit", "hourly_generation_cap"},
+        )
+        self.assertNotIn("message", on_disk)
+
+    def test_explicit_channel_narration_active_prewarm_eligibility(self):
+        async def generated(request):
+            return {
+                "digest": "Explicit channel narration active.",
+                "suggested_message": "@codex proceed.",
+                "trigger_message_id": request.trigger_message_id,
+                "included_message_ids": [request.trigger_message_id],
+            }
+
+        queue = [
+            {
+                "room_id": "room-explicit-active",
+                "channel_name": "custom_active_channel",
+                "queue_category": "idle",
+                "rank": 99,
+            },
+            {
+                "room_id": "room-unconfigured",
+                "channel_name": "unconfigured_channel",
+                "queue_category": "idle",
+                "rank": 100,
+            }
+        ]
+        main_module.ROOM_MESSAGES_CACHE["room-explicit-active"] = [LATEST_AGY]
+        main_module.ROOM_MESSAGES_CACHE["room-unconfigured"] = [{**LATEST_AGY, "id": "agent-unconf"}]
+
+        attn_cfg = ChannelAttentionConfig(
+            channels={
+                "custom_active_channel": ChannelAttentionEntry(narration_active=True)
+            }
+        )
+
+        async def scenario():
+            with patch.object(main_module, "load_channel_attention_config", return_value=attn_cfg), patch.object(
+                main_module, "_generate_response_assistant_once", new=generated
+            ):
+                scheduled = await main_module._schedule_background_narration_prewarm(
+                    queue,
+                    {
+                        "room-explicit-active": [LATEST_AGY],
+                        "room-unconfigured": [{**LATEST_AGY, "id": "agent-unconf"}],
+                    },
+                    set(),
+                )
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                replay = await main_module.get_cached_response_assistant("room-explicit-active", "agent-2")
+            return scheduled, replay
+
+        scheduled, replay = asyncio.run(scenario())
+        self.assertEqual(scheduled, 1)
+        self.assertIsNotNone(replay)
+        self.assertEqual(replay["result"]["digest"], "Explicit channel narration active.")
+        self.assertNotIn(("room-unconfigured", "agent-unconf"), main_module.response_assistant_results)
+
+    def test_gateway_monitor_refreshes_and_prewarms_idle_narration_active_channel(self):
+        """End-to-end test for Grok's remediation: get_attention_queue refreshes history for narration_active channels even without active tasks."""
+        async def generated(request):
+            return {
+                "digest": "Auto narration generated via monitor refresh.",
+                "suggested_message": "@codex checked.",
+                "trigger_message_id": request.trigger_message_id,
+                "included_message_ids": [request.trigger_message_id],
+            }
+
+        attn_cfg = ChannelAttentionConfig(
+            channels={
+                "auto_channel": ChannelAttentionEntry(narration_active=True),
+                "unconfig_channel": ChannelAttentionEntry(narration_active=False),
+            }
+        )
+
+        mock_rc_rooms = [
+            {"_id": "room-auto", "name": "auto_channel", "lm": "2026-08-06T23:00:00Z"},
+            {"_id": "room-unconfig", "name": "unconfig_channel", "lm": "2026-08-06T23:00:00Z"},
+        ]
+
+        refreshed_rooms = set()
+
+        async def fake_refresh_active_task_room(client, room_id):
+            refreshed_rooms.add(room_id)
+            if room_id == "room-auto":
+                return [LATEST_AGY]
+            return []
+
+        async def scenario():
+            with patch.object(main_module, "load_channel_attention_config", return_value=attn_cfg), patch.object(
+                main_module, "load_channel_registry", return_value=([
+                    {"channel_name": "auto_channel"},
+                    {"channel_name": "unconfig_channel"},
+                ], None)
+            ), patch.object(
+                main_module, "_generate_response_assistant_once", new=generated
+            ), patch.object(
+                main_module, "_refresh_active_task_room", side_effect=fake_refresh_active_task_room
+            ), patch("httpx.AsyncClient.get") as mock_get:
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {"success": True, "update": mock_rc_rooms}
+                mock_get.return_value = mock_resp
+
+                res = await main_module.get_attention_queue(now=1000000.0)
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                replay = await main_module.get_cached_response_assistant("room-auto", "agent-2")
+                return res, replay
+
+        res, replay = asyncio.run(scenario())
+        # Assert room-auto WAS refreshed because narration_active=True
+        self.assertIn("room-auto", refreshed_rooms)
+        # Assert room-unconfig WAS NOT refreshed because narration_active=False and no active task
+        self.assertNotIn("room-unconfig", refreshed_rooms)
+        # Assert prewarm ran and generated digest for room-auto
+        self.assertIsNotNone(replay)
+        self.assertEqual(replay["result"]["digest"], "Auto narration generated via monitor refresh.")
+
+    def test_ddp_adapter_status_and_disabled_state(self):
+        """U-11E-a test: RocketChatDDPAdapter status reporting and fallback degraded state when GATEWAY_RC_EVENTS!=1."""
+        adapter = main_module.RocketChatDDPAdapter()
+        status = adapter.get_status()
+        self.assertEqual(status["state"], "disconnected")
+        self.assertEqual(status["subscribed_rooms_count"], 0)
+
+        async def run_start():
+            with patch.dict("os.environ", {"GATEWAY_RC_EVENTS": "0"}):
+                await adapter.start()
+
+        asyncio.run(run_start())
+        self.assertEqual(adapter.get_status()["state"], "degraded_polling")
+
+    def test_sse_events_endpoint(self):
+        """U-11E-b test: SSE broadcaster subscriber and /api/events endpoint test."""
+        async def run_sse():
+            q = await main_module.sse_broadcaster.subscribe()
+            await main_module.sse_broadcaster.publish({"type": "room_changed", "room_id": "test-room-123"})
+            evt = await q.get()
+            self.assertEqual(evt["type"], "room_changed")
+            self.assertEqual(evt["room_id"], "test-room-123")
+            main_module.sse_broadcaster.unsubscribe(q)
+
+        asyncio.run(run_sse())
 
 
 if __name__ == "__main__":

@@ -572,6 +572,9 @@ class TestMessageClassification(unittest.TestCase):
         import subprocess
         mock_subprocess.side_effect = subprocess.TimeoutExpired(cmd=["run_worker.py"], timeout=30)
         
+        jobs_dir = os.path.join("tmp", "jobs")
+        initial_jobs = set(os.listdir(jobs_dir)) if os.path.exists(jobs_dir) else set()
+
         req = DigestRequest(
             messages=[{"id": "m1", "lane": "user", "text": "hello", "username": "ed"}],
             roomId="test-timeout-room"
@@ -583,10 +586,10 @@ class TestMessageClassification(unittest.TestCase):
         self.assertIn("Ed, here is the high-level context", res["digest"])
         self.assertNotIn("\n", res["digest"])
         
-        # Verify no orphan job directories remain in tmp/jobs
-        jobs_dir = os.path.join("tmp", "jobs")
-        if os.path.exists(jobs_dir):
-            self.assertEqual(len(os.listdir(jobs_dir)), 0)
+        # Verify no new orphan job directories were left behind by this test run
+        final_jobs = set(os.listdir(jobs_dir)) if os.path.exists(jobs_dir) else set()
+        new_jobs = final_jobs - initial_jobs
+        self.assertEqual(len(new_jobs), 0)
 
     def test_soak_runner_unit(self):
         from tests.soak_test_runner import run_soak

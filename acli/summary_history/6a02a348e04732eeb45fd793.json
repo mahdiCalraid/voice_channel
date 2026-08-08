@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-08-07T06:13:56.291718+00:00",
+    "digest": "The project has moved from repeated planning agreement to a durable, bounded V0 scope, with the private pilot posture and immediate milestone now recorded for implementation. The next step is an independent check that the new scope is complete, consistent, and ready to guide engineering."
+  },
+  {
+    "timestamp": "2026-08-07T06:27:16.143863+00:00",
+    "digest": "The project has moved from planning into a bounded V0 implementation checkpoint, and the next step is to independently verify that the agreed scope is complete, consistent, and ready to guide engineering."
+  },
+  {
+    "timestamp": "2026-08-08T23:15:01.008246+00:00",
+    "digest": "Codex has produced the initial backend-first implementation outline, but it is broader than the already locked private V0 scope. The next useful checkpoint is to reconcile the architecture and acceptance criteria with the bounded pilot before implementation begins."
+  }
+]

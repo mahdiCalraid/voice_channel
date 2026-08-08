@@ -1,0 +1,28 @@
+{
+  "accepted": {
+    "nonce_int_0f089ccc25f6": {
+      "accepted_at": 1786230699,
+      "interaction_id": "int_0f089ccc25f6",
+      "room_id": "6a54579eb53b70a1d1b5bb94",
+      "source_message_id": "a9vKsJdfiigyM28Q8"
+    },
+    "nonce_int_473e7f549884": {
+      "accepted_at": 1786231322,
+      "interaction_id": "int_473e7f549884",
+      "room_id": "6a54579eb53b70a1d1b5bb94",
+      "source_message_id": "PP4QKdRS2vmPmBj6C"
+    },
+    "nonce_int_8cd86fa0895b": {
+      "accepted_at": 1786228467,
+      "interaction_id": "int_8cd86fa0895b",
+      "room_id": "6a54579eb53b70a1d1b5bb94",
+      "source_message_id": "zAppDCFga32s6dfKz"
+    },
+    "nonce_int_a427e1ee72ff": {
+      "accepted_at": 1786232396,
+      "interaction_id": "int_a427e1ee72ff",
+      "room_id": "6a54579eb53b70a1d1b5bb94",
+      "source_message_id": "3dsvawo2yzmcQYKoZ"
+    }
+  }
+}

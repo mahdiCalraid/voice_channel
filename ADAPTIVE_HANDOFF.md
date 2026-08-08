@@ -1,5 +1,11 @@
 # Adaptive Voice Gateway — Complete Project Handoff
 
+> Historical handoff notice (2026-08-07): this document captures the 2026-07-27
+> transition point. Its references to `M1-01` as next work and to the adaptive branch
+> as the checkout are superseded. The current checkout is `urgent/daily-use-console`;
+> use `URGENT_IMPLEMENTATION_PLAN.md` for the current execution ledger and
+> `ADAPTIVE_IMPLEMENTATION_PLAN.md` for the long-range phase map.
+
 Updated: 2026-07-27
 
 This is the single handoff document for the new pathway of the Voice Channel project.
@@ -540,18 +546,15 @@ client of the gateway, alongside the Mac/CLI/mobile options.
 - Omi's hosted defaults and large backend make it possible for a promising demo to fail
   the self-hosted maintenance gate.
 
-## 19. Immediate Next Action
+## 19. Historical Immediate Next Action
 
-Implement `M1-01 Gateway Contract Skeleton` from
-`ADAPTIVE_IMPLEMENTATION_PLAN.md`.
+At the handoff cutoff, the next task was `M1-01 Gateway Contract Skeleton`. It was
+subsequently completed, along with M1-02 through M1-04 and the signed Rocket.Chat
+ingress. Do not execute this historical instruction.
 
-The first implementation should define and validate the interaction, interpretation,
-confirmation, task-event, and result contracts. It should not install Omi, expose the
-gateway through Cloudflare, add ambient recording, or build a mobile app.
+## 20. Historical Handoff Checklist at Plan Cutoff
 
-## 20. Handoff Checklist for the Next Agent
-
-Before making changes:
+Before the historical M1-01 implementation:
 
 1. Read this file.
 2. Read `NORTH_STAR.md`, `OBJECTIVES.md`, and `ADAPTIVE_IMPLEMENTATION_PLAN.md`.

@@ -1,0 +1,6 @@
+[
+  {
+    "timestamp": "2026-07-30T14:59:12.051968+00:00",
+    "digest": "Ed, the project remains focused on the Adaptive Voice Gateway: a Mac-first, client-neutral layer that safely routes natural-language requests through Rocket.Chat and ACLI, with confirmation-bound writes, grounded summaries, and replaceable speech and mobile adapters.\n\nIn this reporting window, Codex marked its work complete, but no supporting task details, test results, commits, or operational statistics were recorded. The current documented next step remains Phase 0 verification followed by M1-01, the Gateway Contract Skeleton; mobile work is still deferred."
+  }
+]

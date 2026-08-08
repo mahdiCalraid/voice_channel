@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field, Extra, validator
+from pydantic import BaseModel, Field, Extra, validator, root_validator
 from app.contracts import BaseContractModel, CURRENT_SCHEMA_VERSION
 
 DEFAULT_CONFIG_PATH = os.path.join("acli", "gateway_state", "channel_attention_config.json")
@@ -55,6 +55,9 @@ class ChannelAttentionEntry(BaseContractModel):
     blocking: bool = False
     temporary_boost_until: Optional[str] = None
     snoozed_until: Optional[str] = None
+    visible: bool = True
+    narration_active: bool = False
+    voice_active: bool = False
 
     class Config:
         extra = Extra.forbid
@@ -70,6 +73,12 @@ class ChannelAttentionEntry(BaseContractModel):
     @validator("deadline", "temporary_boost_until", "snoozed_until", pre=True)
     def check_timestamps(cls, v: Any) -> Optional[str]:
         return _validate_iso_timestamp(v)
+
+    @root_validator(skip_on_failure=True)
+    def normalize_channel_automation(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        if values.get("voice_active"):
+            values["narration_active"] = True
+        return values
 
 
 class ChannelAttentionConfig(BaseContractModel):

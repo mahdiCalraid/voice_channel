@@ -56,7 +56,12 @@
         "gpt55": "gpt-5.5",
         "gpt54mini": "gpt-5.4-mini",
         "gpt53": "gpt-5.3",
-        "gpt52": "gpt-5.2"
+        "gpt52": "gpt-5.2",
+        "tera": "gpt-5.6-terra",
+        "tera 5.6": "gpt-5.6-terra",
+        "5.6 tera": "gpt-5.6-terra",
+        "gpt 5.6 tera": "gpt-5.6-terra",
+        "chatgpt tera 5.6": "gpt-5.6-terra"
       },
       "default_effort": "low",
       "available_efforts": [
@@ -68,13 +73,14 @@
       ]
     },
     "gemini": {
-      "default_model": "gemini-3-flash-preview",
+      "default_model": "gemini-3.6-flash",
       "available_models": [
         "gemini-3-flash-preview",
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
         "gemini-2.5-pro",
-        "gemini-2.5-flash"
+        "gemini-2.5-flash",
+        "gemini-3.6-flash"
       ],
       "aliases": {
         "3": "gemini-3.1-pro-preview",
@@ -93,7 +99,14 @@
         "pro": "gemini-3.1-pro-preview",
         "top": "gemini-3.1-pro-preview",
         "best": "gemini-3.1-pro-preview",
-        "flash": "gemini-3-flash-preview"
+        "flash": "gemini-3.6-flash",
+        "3.6": "gemini-3.6-flash",
+        "36": "gemini-3.6-flash",
+        "3.6 flash": "gemini-3.6-flash",
+        "flash 3.6": "gemini-3.6-flash",
+        "gemini 3.6 flash": "gemini-3.6-flash",
+        "gemini flash 3.6": "gemini-3.6-flash",
+        "latest flash": "gemini-3.6-flash"
       },
       "default_effort": "low",
       "available_efforts": [
@@ -105,45 +118,67 @@
       ]
     },
     "agy": {
-      "default_model": "Gemini 3.5 Flash (High)",
+      "default_model": "gemini-3.6-flash-low",
       "available_models": [
-        "Gemini 3.5 Flash (High)",
-        "Gemini 3.5 Flash (Medium)",
-        "Gemini 3.1 Pro (High)",
-        "Gemini 3.1 Pro (Low)",
-        "Claude Sonnet 4.6 (Thinking)",
-        "Claude Opus 4.6 (Thinking)",
-        "GPT-OSS 120B (Medium)"
+        "gemini-3.5-flash-low",
+        "gemini-3.1-pro-low",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6-thinking",
+        "gpt-oss-120b-medium",
+        "gemini-3.6-flash-low",
+        "gemini-3.5-flash-high",
+        "gemini-3.5-flash-medium",
+        "gemini-3.1-pro-high",
+        "gemini-3.6-flash-medium",
+        "gemini-3.6-flash-high"
       ],
       "aliases": {
-        "default": "Gemini 3.5 Flash (High)",
-        "3.5": "Gemini 3.5 Flash (High)",
-        "35": "Gemini 3.5 Flash (High)",
-        "flash": "Gemini 3.5 Flash (High)",
-        "flash 3.5": "Gemini 3.5 Flash (High)",
-        "3.5 flash": "Gemini 3.5 Flash (High)",
-        "3.5 flash high": "Gemini 3.5 Flash (High)",
-        "flash high": "Gemini 3.5 Flash (High)",
-        "flash medium": "Gemini 3.5 Flash (Medium)",
-        "3.5 flash medium": "Gemini 3.5 Flash (Medium)",
-        "3": "Gemini 3.1 Pro (High)",
-        "3.1": "Gemini 3.1 Pro (High)",
-        "31": "Gemini 3.1 Pro (High)",
-        "3.1 pro": "Gemini 3.1 Pro (High)",
-        "3.1 pro high": "Gemini 3.1 Pro (High)",
-        "3.1 low": "Gemini 3.1 Pro (Low)",
-        "3.1 pro low": "Gemini 3.1 Pro (Low)",
-        "pro": "Gemini 3.1 Pro (High)",
-        "gemini": "Gemini 3.5 Flash (High)",
-        "gemini flash": "Gemini 3.5 Flash (High)",
-        "gemini pro": "Gemini 3.1 Pro (High)",
-        "sonnet": "Claude Sonnet 4.6 (Thinking)",
-        "claude sonnet": "Claude Sonnet 4.6 (Thinking)",
-        "opus": "Claude Opus 4.6 (Thinking)",
-        "claude opus": "Claude Opus 4.6 (Thinking)",
-        "gpt oss": "GPT-OSS 120B (Medium)",
-        "gpt-oss": "GPT-OSS 120B (Medium)",
-        "oss": "GPT-OSS 120B (Medium)"
+        "default": "gemini-3.6-flash",
+        "3.5": "gemini-3.5-flash",
+        "35": "gemini-3.5-flash",
+        "flash": "gemini-3.6-flash",
+        "flash 3.5": "gemini-3.5-flash",
+        "3.5 flash": "gemini-3.5-flash",
+        "3.5 flash high": "gemini-3.5-flash",
+        "flash high": "gemini-3.5-flash-high",
+        "flash medium": "gemini-3.5-flash-medium",
+        "3.5 flash medium": "gemini-3.5-flash",
+        "3": "gemini-3.1-pro",
+        "3.1": "gemini-3.1-pro",
+        "31": "gemini-3.1-pro",
+        "3.1 pro": "gemini-3.1-pro",
+        "3.1 pro high": "gemini-3.1-pro",
+        "3.1 low": "gemini-3.1-pro",
+        "3.1 pro low": "gemini-3.1-pro",
+        "pro": "gemini-3.1-pro",
+        "gemini": "gemini-3.6-flash",
+        "gemini flash": "gemini-3.6-flash",
+        "gemini pro": "gemini-3.1-pro",
+        "sonnet": "claude-sonnet-4-6",
+        "claude sonnet": "claude-sonnet-4-6",
+        "opus": "claude-opus-4-6-thinking",
+        "claude opus": "claude-opus-4-6-thinking",
+        "gpt oss": "gpt-oss-120b-medium",
+        "gpt-oss": "gpt-oss-120b-medium",
+        "oss": "gpt-oss-120b-medium",
+        "3.6": "gemini-3.6-flash",
+        "36": "gemini-3.6-flash",
+        "flash 3.6": "gemini-3.6-flash",
+        "3.6 flash": "gemini-3.6-flash",
+        "gemini 3.6 flash": "gemini-3.6-flash",
+        "gemini flash 3.6": "gemini-3.6-flash-low",
+        "latest flash": "gemini-3.6-flash",
+        "3.6 flash low": "gemini-3.6-flash",
+        "flash 3.6 low": "gemini-3.6-flash",
+        "3.6 flash medium": "gemini-3.6-flash",
+        "flash 3.6 medium": "gemini-3.6-flash",
+        "3.6 flash high": "gemini-3.6-flash",
+        "flash 3.6 high": "gemini-3.6-flash",
+        "3.5 flash low": "gemini-3.5-flash",
+        "flash 3.5 low": "gemini-3.5-flash",
+        "flash 3.5 medium": "gemini-3.5-flash",
+        "flash 3.5 high": "gemini-3.5-flash",
+        "3.1 high": "gemini-3.1-pro"
       },
       "default_effort": "low",
       "available_efforts": [
@@ -158,15 +193,14 @@
       "default_model": "claude-sonnet-5",
       "available_models": [
         "claude-sonnet-5",
-        "claude-fable-5",
         "claude-sonnet-4-6",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-haiku-3-5",
         "sonnet",
-        "fable",
         "opus",
-        "haiku"
+        "haiku",
+        "claude-opus-5"
       ],
       "aliases": {
         "5": "claude-sonnet-5",
@@ -177,11 +211,6 @@
         "claude 5": "claude-sonnet-5",
         "claude sonnet 5": "claude-sonnet-5",
         "claude-sonnet-5": "claude-sonnet-5",
-        "fable": "claude-fable-5",
-        "fable 5": "claude-fable-5",
-        "claude fable": "claude-fable-5",
-        "claude fable 5": "claude-fable-5",
-        "claude-fable-5": "claude-fable-5",
         "4.6": "claude-sonnet-4-6",
         "4.8": "claude-opus-4-8",
         "4.7": "claude-opus-4-7",
@@ -197,12 +226,16 @@
         "47": "claude-opus-4-7",
         "35": "claude-haiku-3-5",
         "sonnet": "claude-sonnet-5",
-        "opus": "claude-opus-4-8",
+        "opus": "claude-opus-5",
         "haiku": "claude-haiku-3-5",
         "4.5": "claude-sonnet-4-6",
         "4.1": "claude-opus-4-7",
         "45": "claude-sonnet-4-6",
-        "41": "claude-opus-4-7"
+        "41": "claude-opus-4-7",
+        "opus 5": "claude-opus-5",
+        "5 opus": "claude-opus-5",
+        "claude opus 5": "claude-opus-5",
+        "claude-opus-5": "claude-opus-5"
       },
       "default_effort": "low",
       "available_efforts": [
@@ -319,6 +352,52 @@
         "composer 2.5 fast": "grok-composer-2.5-fast",
         "2.5": "grok-composer-2.5-fast",
         "fast": "grok-composer-2.5-fast"
+      },
+      "default_effort": "low",
+      "available_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "fable": {
+      "default_model": "claude-fable-5",
+      "available_models": [
+        "claude-fable-5"
+      ],
+      "aliases": {
+        "fable": "claude-fable-5",
+        "fable 5": "claude-fable-5",
+        "claude fable": "claude-fable-5",
+        "claude fable 5": "claude-fable-5",
+        "claude-fable-5": "claude-fable-5",
+        "5": "claude-fable-5",
+        "5.0": "claude-fable-5"
+      },
+      "default_effort": "low",
+      "available_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "doer": {
+      "default_model": "gpt-5.4-mini",
+      "available_models": [
+        "gpt-5.4-mini"
+      ],
+      "aliases": {
+        "doer": "gpt-5.4-mini",
+        "codex doer": "gpt-5.4-mini",
+        "gpt-5.4-mini": "gpt-5.4-mini",
+        "gpt 5.4 mini": "gpt-5.4-mini",
+        "5.4 mini": "gpt-5.4-mini",
+        "54 mini": "gpt-5.4-mini",
+        "mini": "gpt-5.4-mini"
       },
       "default_effort": "low",
       "available_efforts": [

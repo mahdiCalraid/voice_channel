@@ -10,37 +10,37 @@
       "tool": "gemini",
       "rc_username": "gemini",
       "active_session_id": "",
-      "current_model": "",
+      "current_model": "gemini-3-pro-preview",
       "status": "idle",
       "last_routed_at": null,
-      "current_effort": ""
+      "current_effort": "low"
     },
     "agy": {
       "tool": "agy",
       "rc_username": "agy",
       "active_session_id": "55f19f67-f4c9-4a8a-8c57-3df877ab07eb",
-      "current_model": "",
-      "status": "idle",
-      "last_routed_at": "2026-07-18T17:45:07.815362+00:00",
-      "current_effort": ""
+      "current_model": "gemini-3.1-pro-high",
+      "status": "busy",
+      "last_routed_at": "2026-08-08T23:39:57.067769+00:00",
+      "current_effort": "high"
     },
     "codex": {
       "tool": "codex",
       "rc_username": "codex",
-      "active_session_id": "019f75ed-0ee0-7331-9c29-b7faf698be94",
-      "current_model": "gpt-5.6-sol",
-      "status": "busy",
-      "last_routed_at": "2026-07-19T07:36:52.342929+00:00",
+      "active_session_id": "019fdd77-5689-7893-8e33-77ceea3023fd",
+      "current_model": "gpt-5.6-terra",
+      "status": "idle",
+      "last_routed_at": "2026-08-07T18:23:31.707083+00:00",
       "current_effort": "high",
       "queue": []
     },
     "claude": {
       "tool": "claude",
       "rc_username": "claude",
-      "active_session_id": "06c02bb0-c1c9-4503-9b2c-14c968e7931e",
-      "current_model": "claude-fable-5",
+      "active_session_id": "4b7d8154-b5d2-4a94-8851-102e87a34b65",
+      "current_model": "claude-opus-5",
       "status": "idle",
-      "last_routed_at": "2026-07-19T06:08:16.266928+00:00",
+      "last_routed_at": "2026-08-07T19:59:37.650478+00:00",
       "current_effort": "low"
     },
     "pplx": {
@@ -67,8 +67,27 @@
       "active_session_id": "019f6431-3dcb-7111-8d82-6c1368779972",
       "current_model": "grok-4.5",
       "status": "idle",
-      "last_routed_at": "2026-07-19T05:14:44.615890+00:00",
+      "last_routed_at": "2026-08-08T23:22:02.591241+00:00",
       "current_effort": "high"
+    },
+    "fable": {
+      "tool": "fable",
+      "rc_username": "fable",
+      "active_session_id": "b63eb54e-014c-4f6f-8ad6-daa67c390d4d",
+      "current_model": "",
+      "current_effort": "",
+      "status": "idle",
+      "last_routed_at": "2026-07-28T02:37:44.044666+00:00"
+    },
+    "doer": {
+      "tool": "doer",
+      "rc_username": "doer",
+      "active_session_id": "",
+      "current_model": "",
+      "current_effort": "",
+      "status": "idle",
+      "last_routed_at": null,
+      "adapter_backend": "codex-chatgpt-chrome-v1"
     }
   }
 }

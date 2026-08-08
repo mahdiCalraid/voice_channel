@@ -362,5 +362,23 @@ class TestAttentionScoring(unittest.TestCase):
         return req, conf, evt
 
 
+    def test_channel_attention_entry_per_channel_automation_fields(self):
+        # Default configuration: visible=True, narration_active=False, voice_active=False
+        entry_default = ChannelAttentionEntry()
+        self.assertTrue(entry_default.visible)
+        self.assertFalse(entry_default.narration_active)
+        self.assertFalse(entry_default.voice_active)
+
+        # voice_active=True automatically normalizes narration_active=True
+        entry_voice = ChannelAttentionEntry(voice_active=True)
+        self.assertTrue(entry_voice.voice_active)
+        self.assertTrue(entry_voice.narration_active)
+
+        # narration_active=True alone leaves voice_active=False
+        entry_narr = ChannelAttentionEntry(narration_active=True)
+        self.assertTrue(entry_narr.narration_active)
+        self.assertFalse(entry_narr.voice_active)
+
+
 if __name__ == "__main__":
     unittest.main()

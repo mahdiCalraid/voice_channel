@@ -78,6 +78,7 @@ function loadFrontend(options = {}) {
     const storage = options.storage || {};
     const storageWrites = [];
     const spoken = [];
+    const intervals = [];
     const sandbox = {
         console,
         document,
@@ -102,7 +103,11 @@ function loadFrontend(options = {}) {
             },
             removeItem: key => { delete storage[key]; }
         },
-        setInterval: () => 0,
+        setInterval: (callback, delay) => {
+            intervals.push({ callback, delay });
+            return intervals.length;
+        },
+        clearInterval: () => {},
         setTimeout: callback => { callback(); return 0; },
         window: {
             VoiceChannelHistoryState: historyState,
@@ -123,8 +128,18 @@ function loadFrontend(options = {}) {
     vm.createContext(sandbox);
     const source = fs.readFileSync(path.join(__dirname, "..", "frontend", "index.js"), "utf8");
     vm.runInContext(source, sandbox);
-    return { elements, sandbox, spoken, storage, storageWrites, documentListeners };
+    return { elements, sandbox, spoken, storage, storageWrites, documentListeners, intervals };
 }
+
+test("channel discovery refreshes the rail without duplicate polling loops", () => {
+    const app = loadFrontend();
+    app.documentListeners.DOMContentLoaded();
+
+    assert.deepEqual(
+        app.intervals.map(interval => interval.delay),
+        [15000, 15000, 30000]
+    );
+});
 
 test("automatic assistance prepares the digest and draft without starting narration", async () => {
     const app = loadFrontend({ enableSpeech: true });
@@ -173,6 +188,119 @@ test("automatic assistance prepares the digest and draft without starting narrat
     );
     app.sandbox.handlePlayPause();
     assert.deepEqual(app.spoken, ["The requested work is complete."]);
+});
+
+test("opening a room restores a prepared narration without a second generation", async () => {
+    const app = loadFrontend();
+    const requests = [];
+    vm.runInContext(`
+        activeRoomId = "room-prewarmed";
+        roomsList = [{ id: "room-prewarmed", name: "voice_channel" }];
+    `, app.sandbox);
+    app.sandbox.fetch = (url, options = {}) => {
+        requests.push({ url, options });
+        if (url.startsWith("/api/history")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    messages: [{
+                        id: "prepared-agent-reply",
+                        lane: "agent",
+                        name: "Codex",
+                        text: "The work is ready.",
+                        event: { kind: "agent_response", agent: "codex" }
+                    }]
+                })
+            });
+        }
+        if (url.startsWith("/api/response-assistant/cached")) {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    result: {
+                        digest: "Codex completed the requested work and it is ready to review.",
+                        suggested_message: "@grok Review the completed work.",
+                        trigger_message_id: "prepared-agent-reply",
+                        included_message_ids: ["prepared-agent-reply"]
+                    }
+                })
+            });
+        }
+        throw new Error("Unexpected request: " + url);
+    };
+
+    await app.sandbox.recoverPrewarmedNarration("room-prewarmed", [{
+        id: "prepared-agent-reply",
+        lane: "agent",
+        name: "Codex",
+        text: "The work is ready.",
+        event: { kind: "agent_response", agent: "codex" }
+    }]);
+
+    assert.equal(
+        app.sandbox.document.getElementById("digest-content").innerText,
+        "Codex completed the requested work and it is ready to review."
+    );
+    assert.equal(
+        app.sandbox.document.getElementById("command-input").value,
+        "@grok Review the completed work."
+    );
+    assert.equal(requests.some(item => item.url === "/api/response-assistant"), false);
+    assert.equal(
+        requests.some(item => item.url.startsWith("/api/response-assistant/cached")),
+        true
+    );
+});
+
+test("prepared narration recovery retries the completed cache without generating", async () => {
+    const app = loadFrontend();
+    const requests = [];
+    let prepared = false;
+    vm.runInContext(`
+        activeRoomId = "room-prewarm-inflight";
+        roomsList = [{ id: "room-prewarm-inflight", name: "voice_channel" }];
+    `, app.sandbox);
+    app.sandbox.fetch = (url, options = {}) => {
+        requests.push({ url, options });
+        if (url.startsWith("/api/response-assistant/cached")) {
+            if (!prepared) {
+                return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+            }
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    result: {
+                        digest: "The background narration has finished preparing.",
+                        trigger_message_id: "agent-prewarm-inflight",
+                        included_message_ids: ["agent-prewarm-inflight"]
+                    }
+                })
+            });
+        }
+        throw new Error("Unexpected request: " + url);
+    };
+    const messages = [{
+        id: "agent-prewarm-inflight",
+        lane: "agent",
+        name: "Codex",
+        text: "The work is ready.",
+        event: { kind: "agent_response", agent: "codex" }
+    }];
+
+    await app.sandbox.recoverPrewarmedNarration("room-prewarm-inflight", messages);
+    assert.equal(app.sandbox.document.getElementById("digest-content").innerText, "");
+    prepared = true;
+    await app.sandbox.recoverPrewarmedNarration("room-prewarm-inflight", messages);
+
+    assert.equal(
+        app.sandbox.document.getElementById("digest-content").innerText,
+        "The background narration has finished preparing."
+    );
+    assert.equal(requests.filter(item => item.url.startsWith("/api/response-assistant/cached")).length, 2);
+    assert.equal(requests.some(item => item.url === "/api/response-assistant"), false);
 });
 
 test("editable narration is saved per room and Play reads the edited words", async () => {
@@ -552,6 +680,37 @@ test("automatic follow of new conversation messages is off by default and persis
     save.listeners.click();
     assert.equal(JSON.parse(app.storage.vc_settings).autoScrollNewMessages, true);
     assert.equal(vm.runInContext("getSettings().autoScrollNewMessages", app.sandbox), true);
+});
+
+test("background narration prewarm defaults to top attention and saves its gateway setting", async () => {
+    const app = loadFrontend();
+    const requests = [];
+    app.sandbox.fetch = (url, options = {}) => {
+        requests.push({ url, options });
+        return Promise.resolve({ ok: true, json: async () => ({ success: true }) });
+    };
+    app.sandbox.initSettingsModal();
+    const open = app.sandbox.document.getElementById("btn-open-settings");
+    const save = app.sandbox.document.getElementById("btn-save-settings");
+    const prewarm = app.sandbox.document.getElementById("setting-background-narration-prewarm");
+    const scope = app.sandbox.document.getElementById("setting-background-narration-prewarm-scope");
+
+    open.listeners.click();
+    assert.equal(prewarm.checked, true);
+    assert.equal(scope.value, "top_attention");
+
+    prewarm.checked = false;
+    scope.value = "supervised";
+    save.listeners.click();
+    await Promise.resolve();
+
+    const request = requests.find(item => item.url === "/api/narration/prewarm/config");
+    assert.ok(request);
+    assert.equal(request.options.method, "PUT");
+    const body = JSON.parse(request.options.body);
+    assert.equal(body.enabled, false);
+    assert.equal(body.scope, "supervised");
+    assert.equal(JSON.parse(app.storage.vc_settings).backgroundNarrationPrewarm, false);
 });
 
 test("new messages do not move a reader unless automatic follow is enabled", () => {
@@ -2013,3 +2172,113 @@ test("renderTranscript includes copy button with escaped raw text and copy helpe
     assert.ok(feed.innerHTML.includes('data-raw-text="Hello, this is a test message to copy &amp; paste!"'));
     assert.ok(feed.innerHTML.includes('content_copy'));
 });
+
+test("push-to-talk speech recognition appends transcript, updates draft state, and requires explicit send", async () => {
+    const app = loadFrontend();
+    const commandInput = app.sandbox.document.getElementById("command-input");
+    const btnMic = app.sandbox.document.getElementById("command-input") ? app.sandbox.document.getElementById("btn-mic") : null;
+
+    vm.runInContext(`
+        activeRoomId = "room-stt-test";
+        roomsList = [{ id: "room-stt-test", name: "voice_channel" }];
+    `, app.sandbox);
+
+    // Initial state
+    commandInput.value = "@codex initial prompt";
+    app.sandbox.syncCommandDraftState(commandInput.value);
+
+    let recognitionStarted = false;
+    let recognitionStopped = false;
+
+    // Mock Web Speech API SpeechRecognition
+    class MockSpeechRecognition {
+        constructor() {
+            this.continuous = false;
+            this.interimResults = false;
+            this.lang = "en-US";
+        }
+        start() {
+            recognitionStarted = true;
+            if (this.onstart) this.onstart();
+        }
+        stop() {
+            recognitionStopped = true;
+            if (this.onend) this.onend();
+        }
+    }
+
+    app.sandbox.window.SpeechRecognition = MockSpeechRecognition;
+    app.sandbox.initSpeechRecognition();
+
+    // Toggle speech input on
+    app.sandbox.toggleSpeechInput();
+    assert.equal(recognitionStarted, true);
+    assert.equal(vm.runInContext("isListening", app.sandbox), true);
+    assert.ok(btnMic.classList.contains("btn-danger"));
+
+    // Simulate STT result event
+    const recognition = vm.runInContext("recognition", app.sandbox);
+    recognition.onresult({
+        results: [[{ transcript: "check task status and report back" }]]
+    });
+
+    // Verify text appended, focused, and draft synced
+    assert.equal(commandInput.value, "@codex initial prompt check task status and report back");
+    assert.equal(app.sandbox.getRoomState("room-stt-test").draftText, "@codex initial prompt check task status and report back");
+    assert.equal(app.storage["vc_draft_room-stt-test"], "@codex initial prompt check task status and report back");
+
+    // Speech input stops
+    app.sandbox.toggleSpeechInput();
+    assert.equal(recognitionStopped, true);
+    assert.equal(vm.runInContext("isListening", app.sandbox), false);
+    assert.ok(btnMic.classList.contains("btn-secondary"));
+
+    // Crucial safety check: STT transcription does NOT automatically send the message!
+    assert.equal(app.sandbox.getRoomState("room-stt-test").draftText, "@codex initial prompt check task status and report back");
+
+    // Ed can edit text before sending
+    commandInput.value = "@codex check task status";
+    app.sandbox.syncCommandDraftState(commandInput.value);
+
+    // Explicit send confirmation
+    let interactPayload = null;
+    let confirmPayload = null;
+    app.sandbox.fetch = async (url, opts) => {
+        if (url === "/api/gateway/interact") {
+            interactPayload = JSON.parse(opts.body);
+            return {
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    confirmation_snapshot: {
+                        immutable_interaction_id: "int_stt_001",
+                        room_id: "room-stt-test",
+                        agent: "codex",
+                        exact_message: "@codex check task status",
+                        nonce: "nonce_stt_1"
+                    }
+                })
+            };
+        }
+        if (url === "/api/gateway/confirm") {
+            confirmPayload = JSON.parse(opts.body);
+            return {
+                ok: true,
+                json: async () => ({
+                    status: "posted",
+                    rocket_chat_msg_ids: ["msg_stt_posted_1001"]
+                })
+            };
+        }
+        if (url.startsWith("/api/history")) {
+            return { ok: true, json: async () => ({ success: true, messages: [] }) };
+        }
+        return { ok: true, json: async () => ({ success: true }) };
+    };
+
+    await app.sandbox.sendMessage();
+    assert.equal(interactPayload.raw_input, "@codex check task status");
+    assert.equal(confirmPayload.exact_message, "@codex check task status");
+    assert.equal(commandInput.value, "");
+});
+

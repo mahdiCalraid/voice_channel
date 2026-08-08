@@ -520,6 +520,17 @@
                         <input type="checkbox" id="setting-auto-narrate" class="setting-checkbox" checked>
                     </div>
                     <div class="setting-group toggle-group">
+                        <label for="setting-background-narration-prewarm">Pre-generate narration for background channels</label>
+                        <input type="checkbox" id="setting-background-narration-prewarm" class="setting-checkbox" checked>
+                    </div>
+                    <div class="setting-group">
+                        <label for="setting-background-narration-prewarm-scope">Background narration scope</label>
+                        <select id="setting-background-narration-prewarm-scope" class="setting-select">
+                            <option value="top_attention" selected>Top 5 channels by attention</option>
+                            <option value="supervised">Supervised channels only</option>
+                        </select>
+                    </div>
+                    <div class="setting-group toggle-group">
                         <label for="setting-auto-scroll-new-messages">Automatically follow new messages while I am at the bottom of a conversation</label>
                         <input type="checkbox" id="setting-auto-scroll-new-messages" class="setting-checkbox">
                     </div>
@@ -564,6 +575,22 @@
                     <div class="setting-group toggle-group">
                         <label for="attn-active">Include in active attention portfolio</label>
                         <input type="checkbox" id="attn-active" class="setting-checkbox" checked>
+                    </div>
+
+                    <div class="setting-group toggle-group">
+                        <label for="attn-visible">Visible in sidebar channel rail</label>
+                        <input type="checkbox" id="attn-visible" class="setting-checkbox" checked>
+                    </div>
+
+                    <div class="setting-group toggle-group">
+                        <label for="attn-narration-active">Automatic Narration (Pre-generate summary & draft on real replies)</label>
+                        <input type="checkbox" id="attn-narration-active" class="setting-checkbox">
+                        <span class="setting-hint" style="display: block; font-size: 0.75rem; color: #a5b4fc; margin-top: 0.25rem;">Requires channel to be included in active attention portfolio</span>
+                    </div>
+
+                    <div class="setting-group toggle-group">
+                        <label for="attn-voice-active">Automatic Voice Preparation (Pre-synthesize Nice Voice audio)</label>
+                        <input type="checkbox" id="attn-voice-active" class="setting-checkbox">
                     </div>
 
                     <div class="settings-grid">

@@ -1,10 +1,14 @@
 [
   {
-    "timestamp": "2026-07-18T15:13:05.263271+00:00",
-    "digest": "Here is a quick summary of the recent updates: grok worked on 1 updates. Ed worked on 3 updates. claude worked on 1 updates. codex worked on 1 updates. The last update was from Ed, saying: @grok please finish the remaining taks regarding the M5."
+    "timestamp": "2026-08-08T23:26:19.344126+00:00",
+    "digest": "S3.2 now has a real seeded-data pilot framework, but Grok found bounded safety and product-claim gaps that should be corrected before treating commercial pilots as ready; paid execution remains off."
   },
   {
-    "timestamp": "2026-07-18T18:30:07.960487+00:00",
-    "digest": "Ed, M6 engineering is complete: the local stack is healthy, tests and automated smoke checks pass, the runbook is corrected, and the system reports M6.\n\nBut M6 is not full product acceptance yet. The two required human rehearsals are still unsigned. You and one new user need to follow the runbook, including Rocket.Chat login, upload, chat, and timing the first useful result.\n\nMore importantly, this clarified the bigger picture: you now have a local trial-platform foundation. It can generate credentials, create isolated Rocket.Chat rooms, provide sample files, accept uploads, and return limited file-aware responses.\n\nWhat is still missing for your real prospect experience is cloud hosting and a real AI model connection. Today it only works locally, and the chat \u201cdesks\u201d are deterministic rather than open-ended AI.\n\nThe next practical step is one local end-to-end test by you. Then deploy this same stack to a secure cloud VM for remote testing, and add one simple model adapter afterward."
+    "timestamp": "2026-08-08T23:26:32.232578+00:00",
+    "digest": "Grok found the S3.2 pilot framework substantially real and usable, but not ready for an unqualified commercial-pilot claim because several safety and product assertions need bounded correction. Paid execution remains off."
+  },
+  {
+    "timestamp": "2026-08-08T23:27:17.525322+00:00",
+    "digest": "Codex completed the bounded S3.2 safety and evidence fixes, with tests passing and paid execution still disabled. The pilot framework is ready for independent review, but no prospect session should be approved yet."
   }
 ]

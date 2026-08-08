@@ -38,7 +38,8 @@ services:
       - voice_channel_production_state:/app/acli
       - ./acli/matter.json:/app/acli/matter.json:ro
       - voice_channel_production_tmp:/app/tmp
-      - ${HOME}/.codex:/codex-host-auth:ro
+      # Share the live host Codex login instead of taking a startup-time copy.
+      - ${HOME}/.codex:/root/.codex
     networks:
       - rocket_chat_tunnel
     healthcheck:

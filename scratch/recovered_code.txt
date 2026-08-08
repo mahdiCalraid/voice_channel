@@ -1,0 +1,306 @@
+function getRoomState(roomId) {
+    if (!roomHistoryStates[roomId]) {
+        roomHistoryStates[roomId] = {
+            messageMap: {},
+            orderedIds: [],
+            oldestCursor: null,
+            newestTimestamp: null,
+            hasMoreOlder: true,
+            loadingOlder: false
+        };
+    }
+    return roomHistoryStates[roomId];
+}
+
+async function handleLoadOlder() {
+    if (!activeRoomId || activeRoomId === "loading" || activeRoomId === "error") return;
+    
+    const state = getRoomState(activeRoomId);
+    if (state.loadingOlder || !state.hasMoreOlder) return;
+    
+    state.loadingOlder = true;
+    renderTranscriptFromState(activeRoomId);
+    
+    const targetRoomId = activeRoomId;
+    const currentSeq = ++loadOlderRequestSeq;
+    
+    // Record scroll metrics before rendering prepended items
+    const oldScrollHeight = transcriptFeed.scrollHeight;
+    const oldScrollTop = transcriptFeed.scrollTop;
+    
+    try {
+        const url = `/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=30&before=${encodeURIComponent(state.oldestCursor)}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("HTTP error " + response.status);
+        const data = await response.json();
+        
+        if (targetRoomId !== activeRoomId || currentSeq !== loadOlderRequestSeq) {
+            return;
+        }
+        
+        state.loadingOlder = false;
+        
+        if (data.success && data.messages) {
+            const rawMessages = data.messages;
+            let newMessagesAdded = 0;
+            
+            rawMessages.forEach(msg => {
+                if (!state.messageMap[msg.id]) {
+                    state.messageMap[msg.id] = msg;
+                    state.orderedIds.push(msg.id);
+                    newMessagesAdded++;
+                }
+            });
+            
+            if (rawMessages.length < 30 || newMessagesAdded === 0) {
+                state.hasMoreOlder = false;
+            }
+            
+            if (state.orderedIds.length > 0) {
+                state.orderedIds.sort((a, b) => new Date(state.messageMap[a].timestamp) - new Date(state.messageMap[b].timestamp));
+                state.oldestCursor = state.messageMap[state.orderedIds[0]].timestamp;
+                state.newestTimestamp = state.messageMap[state.orderedIds[state.orderedIds.length - 1]].timestamp;
+            }
+            
+            renderTranscriptFromState(targetRoomId);
+            
+            // Restore scroll position
+            const newScrollHeight = transcriptFeed.scrollHeight;
+            const heightDiff = newScrollHeight - oldScrollHeight;
+            transcriptFeed.scrollTop = oldScrollTop + heightDiff;
+        } else {
+            console.error("Failed to load older history:", data.detail);
+        }
+    } catch (err) {
+        if (targetRoomId === activeRoomId && currentSeq === loadOlderRequestSeq) {
+            state.loadingOlder = false;
+            renderTranscriptFromState(targetRoomId);
+            console.error("Failed to load older history:", err);
+        }
+    }
+}
+
+// Bind to window so it is accessible from inline onclick attribute
+window.handleLoadOlder = handleLoadOlder;
+
+function showTranscriptError(message) {
+    transcriptFeed.innerHTML = `
+        <div class="empty-state">
+            <span class="material-symbols-rounded">signal_wifi_off</span>
+            <p>${escapeHTML(message)}</p>
+            <button class="btn btn-secondary retry-btn" onclick="loadHistory()">
+                <span class="material-symbols-rounded">refresh</span> Retry Connection
+            </button>
+        </div>
+    `;
+}
+
+async function loadHistory() {
+    if (!activeRoomId || activeRoomId === "loading" || activeRoomId === "error") return;
+    
+    const currentSeq = ++liveRequestSeq;
+    const targetRoomId = activeRoomId;
+    
+    try {
+        const response = await fetch(`/api/history?roomId=${encodeURIComponent(targetRoomId)}&count=30`);
+        if (!response.ok) throw new Error("HTTP error " + response.status);
+        const data = await response.json();
+        
+        if (currentSeq !== liveRequestSeq || targetRoomId !== activeRoomId) {
+            return;
+        }
+        
+        if (data.success && data.messages) {
+            const state = getRoomState(targetRoomId);
+            const rawMessages = data.messages;
+            
+            rawMessages.forEach(msg => {
+                if (!state.messageMap[msg.id]) {
+                    state.messageMap[msg.id] = msg;
+                    state.orderedIds.push(msg.id);
+                }
+            });
+            
+            if (state.orderedIds.length > 0) {
+                state.orderedIds.sort((a, b) => new Date(state.messageMap[a].timestamp) - new Date(state.messageMap[b].timestamp));
+                state.oldestCursor = state.messageMap[state.orderedIds[0]].timestamp;
+                state.newestTimestamp = state.messageMap[state.orderedIds[state.orderedIds.length - 1]].timestamp;
+            }
+            
+            // On first load of room, if total messages retrieved < 30, no older history exists.
+            if (state.orderedIds.length === rawMessages.length && rawMessages.length < 30) {
+                state.hasMoreOlder = false;
+            }
+            
+            renderTranscriptFromState(targetRoomId);
+            
+            if (data.stats) {
+                renderStats(data.stats);
+            } else {
+                statsBar.style.display = "none";
+            }
+        } else {
+            showTranscriptError(data.detail || "Failed to load channel history.");
+        }
+    } catch (err) {
+        if (currentSeq === liveRequestSeq && targetRoomId === activeRoomId) {
+            console.error("Failed to load transcript history:", err);
+            showTranscriptError("Failed to load transcript: " + err.message);
+        }
+    }
+}
+
+function renderTranscriptFromState(roomId) {
+    if (roomId !== activeRoomId) return;
+    const state = getRoomState(roomId);
+    const messages = state.orderedIds.map(id => state.messageMap[id]);
+    renderTranscript(messages, state);
+}
+
+function renderTranscript(messages, state = null) {
+    if (messages.length === 0) {
+        transcriptFeed.innerHTML = `
+            <div class="empty-state">
+                <span class="material-symbols-rounded">forum</span>
+                <p>No messages in this channel yet.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    // Check if user is scrolled near bottom before update (within 120px)
+    const isNearBottom = (transcriptFeed.scrollHeight - transcriptFeed.scrollTop - transcriptFeed.clientHeight) < 120;
+    const isInitialLoad = (lastMessageTimestamp === null);
+    
+    // Check if we have new messages since last render
+    let shouldScroll = false;
+    if (messages.length > 0) {
+        const latestMsg = messages[messages.length - 1];
+        if (lastMessageTimestamp !== latestMsg.timestamp) {
+            lastMessageTimestamp = latestMsg.timestamp;
+            shouldScroll = true;
+        }
+    }
+    
+    // Generate HTML for Load Older button/loader at the top
+    let loadOlderBtnHtml = '';
+    if (state && state.hasMoreOlder) {
+        if (state.loadingOlder) {
+            loadOlderBtnHtml = `
+                <div class="load-older-container" style="text-align: center; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 16px;">
+                    <span class="material-symbols-rounded spinning" style="font-size: 1.1rem; vertical-align: middle; display: inline-block;">progress_activity</span>
+                    <span style="font-size: 0.85rem; opacity: 0.8; vertical-align: middle; margin-left: 4px;">Loading older messages...</span>
+                </div>
+            `;
+        } else {
+            loadOlderBtnHtml = `
+                <div class="load-older-container" style="text-align: center; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 16px;">
+                    <button id="btn-load-older" class="btn btn-secondary btn-sm" onclick="handleLoadOlder()" style="padding: 6px 14px; font-size: 0.8rem; height: auto;">
+                        <span class="material-symbols-rounded" style="font-size: 1.1rem; vertical-align: middle; margin-right: 4px;">history</span>Load Older Messages
+                    </button>
+                </div>
+            `;
+        }
+    }
+    
+    // Generate HTML for messages
+    const msgsHtml = messages.map(msg => {
+        const date = new Date(msg.timestamp);
+        const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        
+        // Handle Lane A: System Events
+        if (msg.lane === 'system') {
+            const kind = msg.event?.kind || 'other';
+            return `
+                <div class="system-event-chip ${kind}" data-id="${msg.id}">
+                    <span class="material-symbols-rounded system-icon">${getSystemIcon(kind)}</span>
+                    <span class="system-text">${getSystemText(msg)}</span>
+                    <span class="system-time">${timeStr}</span>
+                </div>
+            `;
+        }
+        
+        // Handle Lane B/C: Agent and User Messages
+        const laneClass = msg.lane === 'user' ? 'user' : 'agent';
+        const cardClass = `chat-msg ${laneClass}`;
+        
+        // Relayed agent name resolution
+        let displayName = msg.name || msg.username;
+        if (msg.event?.kind === 'agent_response' && msg.event?.agent) {
+            const agentName = msg.event.agent;
+            displayName = agentName.charAt(0).toUpperCase() + agentName.slice(1);
+        }
+        
+        // Response time badge
+        let respTimeBadge = '';
+        if (msg.event?.response_time_seconds !== undefined && msg.event?.response_time_seconds !== null) {
+            const formatted = formatDuration(msg.event.response_time_seconds);
+            respTimeBadge = `<span class="response-time-badge">${formatted} response</span>`;
+        }
+        
+        return `
+            <div class="${cardClass}" data-id="${msg.id}">
+                <div class="chat-header">
+                    <span class="chat-author">${escapeHTML(displayName)}</span>
+                    ${respTimeBadge}
+                    <span class="chat-time">${timeStr}</span>
+                </div>
+                <div class="chat-body">${renderMarkdown(msg.text)}</div>
+            </div>
+        `;
+    }).join("");
+    
+    transcriptFeed.innerHTML = loadOlderBtnHtml + msgsHtml;
+    
+    // Auto-scroll ONLY if it's the initial room load OR user was already near the bottom
+    if (shouldScroll && (isNearBottom || isInitialLoad)) {
+        transcriptFeed.scrollTop = transcriptFeed.scrollHeight;
+    }
+}
+
+function renderStats(stats) {
+    if (!stats || Object.keys(stats).length === 0) {
+        statsBar.style.display = "none";
+        return;
+    }
+    
+    const items = Object.entries(stats).map(([agent, data]) => {
+        const displayName = agent.charAt(0).toUpperCase() + agent.slice(1);
+        let details = [];
+        
+        if (data.runs > 0) {
+            details.push(`${data.runs} run${data.runs > 1 ? 's' : ''}`);
+            details.push(`avg ${formatDuration(data.avg_response_time)}`);
+        }
+        if (data.msg_count > 0) {
+            details.push(`${data.msg_count} msg${data.msg_count > 1 ? 's' : ''}`);
+        }
+        
+        const detailsStr = details.length > 0 ? ` (${details.join(" · ")})` : "";
+        
+        if (data.status === "working") {
+            const elapsedStr = data.current_elapsed > 0 ? ` for ${formatDuration(data.current_elapsed)}` : "";
+            return `
+                <div class="stats-item working">
+                    <span class="material-symbols-rounded spinning" style="font-size: 0.8rem; display: inline-block;">sync</span>
+                    <span class="agent-name">@${displayName}</span>
+                    <span class="stats-val">working${elapsedStr}</span>
+                </div>
+            `;
+        } else {
+            return `
+                <div class="stats-item">
+                    <span class="agent-name">@${displayName}</span>
+                    <span class="stats-val">${detailsStr || 'idle'}</span>
+                </div>
+            `;
+        }
+    }).join("<span class='stats-divider'>|</span>");
+    
+    if (items.trim() === "") {
+        statsBar.style.display = "none";
+    } else {
+        statsBar.innerHTML = `<span class="stats-label" style="font-weight: 600; opacity: 0.7; font-size: 0.8rem; margin-right: 12px; display: inline-flex; align-items: center; gap: 4px;"><span class="material-symbols-rounded" style="font-size: 0.95rem;">history</span> Recent Window Stats:</span>` + items;
+        statsBar.style.display = "flex";
+    }
+}

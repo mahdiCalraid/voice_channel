@@ -28,6 +28,19 @@ class TestWorkerRunner(unittest.TestCase):
         self.assertEqual(registry["agy"]["adapter"], "agy")
         self.assertEqual(registry["codex"]["adapter"], "codex")
 
+    def test_gateway_uses_live_shared_codex_home(self):
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        for compose_name in ("docker-compose.yml", "docker-compose.production.yml"):
+            with open(os.path.join(project_root, compose_name), "r", encoding="utf-8") as f:
+                compose = f.read()
+            self.assertIn("${HOME}/.codex:/root/.codex", compose)
+            self.assertNotIn("/codex-host-auth", compose)
+
+        with open(os.path.join(project_root, "docker/start.sh"), "r", encoding="utf-8") as f:
+            startup = f.read()
+        self.assertNotIn("codex-host-auth", startup)
+        self.assertNotIn("cp -R", startup)
+
     @patch("workers.providers.openai_provider.OpenAIProvider.execute")
     def test_run_worker_digest_openai(self, mock_openai_execute):
         mock_openai_execute.return_value = "This is a mock OpenAI summary."

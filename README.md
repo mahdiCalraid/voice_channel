@@ -101,7 +101,7 @@ local development service. See `PRODUCTION_DEPLOYMENT.md` and deploy it with:
 ```
 
 Production has no host port and is reachable only from the existing Rocket.Chat
-Cloudflare Tunnel network. `vice.peyvastegi.uk` must be protected by Cloudflare Access
+Cloudflare Tunnel network. `voice.peyvastegi.uk` must be protected by Cloudflare Access
 before its tunnel hostname is enabled.
 
 `restart.sh` also provisions the Mac-local Chatterbox environment on first use
@@ -151,8 +151,19 @@ instead of posting an ACLI-undeliverable message. See
 
 ## Current Milestone
 
-Phase 0 establishes the adaptive direction and documentation. The next implementation
-task is `M1-01 Gateway Contract Skeleton`.
+The daily-use console checkpoint is complete on `urgent/daily-use-console`. Its current
+execution ledger is `URGENT_IMPLEMENTATION_PLAN.md`; the long-range architecture and
+phase gates are in `ADAPTIVE_IMPLEMENTATION_PLAN.md`. `M1-01` through `M1-04` are
+complete and are not the next task.
+
+Per-channel text preparation has a tested polling prototype in the current working tree,
+but its closing design is Gateway-owned Rocket.Chat event delivery: new messages trigger
+only their room's preparation and recency update, rather than periodic all-room refresh.
+The active ledger also records the next message-operation phase (safe VS Code file links,
+per-message Fast-voice read aloud, system-noise filtering, and existing-inbox image
+handoff). Rocket.Chat remains the durable log; no parallel full-text journal is planned.
+Automatic Nice Voice preparation is not yet implemented; it requires an explicitly
+selected bounded phase.
 
 Mobile development, Cloudflare exposure, continuous audio, and Omi integration are
 deliberately deferred until the local Mac gate passes.

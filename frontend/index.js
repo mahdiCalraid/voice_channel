@@ -492,6 +492,8 @@ const DEFAULT_SETTINGS = {
     historyLimit: 20,
     defaultAgent: "codex",
     autoNarrate: true,
+    backgroundNarrationPrewarm: true,
+    backgroundNarrationPrewarmScope: "top_attention",
     autoScrollNewMessages: false,
     voiceMode: "fast"
 };
@@ -638,6 +640,9 @@ function normalizeSettings(settings = {}) {
         ? settings.chatFontFamily
         : DEFAULT_SETTINGS.chatFontFamily;
     const voiceMode = settings.voiceMode === "nice" ? "nice" : "fast";
+    const backgroundNarrationPrewarmScope = settings.backgroundNarrationPrewarmScope === "supervised"
+        ? "supervised"
+        : "top_attention";
     return {
         ...DEFAULT_SETTINGS,
         ...settings,
@@ -646,6 +651,8 @@ function normalizeSettings(settings = {}) {
         systemFontSize,
         chatFontFamily,
         voiceMode,
+        backgroundNarrationPrewarm: settings.backgroundNarrationPrewarm !== false,
+        backgroundNarrationPrewarmScope,
         chatFontSize: clampSettingNumber(settings.chatFontSize, DEFAULT_SETTINGS.chatFontSize, 12, 36),
         chatLineHeight: clampSettingNumber(settings.chatLineHeight, DEFAULT_SETTINGS.chatLineHeight, 1, 2.4),
         chatParagraphSpacing: clampSettingNumber(
@@ -672,6 +679,27 @@ function saveSettings(settings) {
     } catch (e) {
         console.error("Failed to save settings:", e);
     }
+}
+
+function saveNarrationPrewarmSettings(settings) {
+    // This setting must reach the Gateway because background work continues
+    // while this browser is looking at a different room. It stores only
+    // control metadata; the generated digest remains memory-only server-side.
+    const scope = settings.backgroundNarrationPrewarmScope === "supervised"
+        ? "supervised"
+        : "top_attention";
+    fetch("/api/narration/prewarm/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            enabled: Boolean(settings.autoNarrate && settings.backgroundNarrationPrewarm),
+            scope,
+            top_n: 5,
+            history_limit: settings.historyLimit || 20
+        })
+    }).catch(error => {
+        console.warn("Could not save background narration prewarm setting:", error);
+    });
 }
 
 function applySettings(settings = getSettings()) {
@@ -813,6 +841,8 @@ function initSettingsModal() {
     const selHistoryLimit = document.getElementById("setting-history-limit");
     const selDefaultAgent = document.getElementById("setting-default-agent");
     const chkAutoNarrate = document.getElementById("setting-auto-narrate");
+    const chkBackgroundNarrationPrewarm = document.getElementById("setting-background-narration-prewarm");
+    const selBackgroundNarrationPrewarmScope = document.getElementById("setting-background-narration-prewarm-scope");
     const chkAutoScrollNewMessages = document.getElementById("setting-auto-scroll-new-messages");
     const typographyControls = [
         selSystemFontSize,
@@ -858,6 +888,12 @@ function initSettingsModal() {
         historyLimit: selHistoryLimit ? parseInt(selHistoryLimit.value, 10) : 20,
         defaultAgent: selDefaultAgent ? selDefaultAgent.value : "codex",
         autoNarrate: chkAutoNarrate ? chkAutoNarrate.checked : false,
+        backgroundNarrationPrewarm: chkBackgroundNarrationPrewarm
+            ? chkBackgroundNarrationPrewarm.checked
+            : DEFAULT_SETTINGS.backgroundNarrationPrewarm,
+        backgroundNarrationPrewarmScope: selBackgroundNarrationPrewarmScope
+            ? selBackgroundNarrationPrewarmScope.value
+            : DEFAULT_SETTINGS.backgroundNarrationPrewarmScope,
         autoScrollNewMessages: chkAutoScrollNewMessages ? chkAutoScrollNewMessages.checked : false
     });
 
@@ -875,6 +911,14 @@ function initSettingsModal() {
         if (selHistoryLimit) selHistoryLimit.value = String(settings.historyLimit || 20);
         if (selDefaultAgent) selDefaultAgent.value = settings.defaultAgent || "codex";
         if (chkAutoNarrate) chkAutoNarrate.checked = !!settings.autoNarrate;
+        if (chkBackgroundNarrationPrewarm) {
+            chkBackgroundNarrationPrewarm.checked = !!settings.backgroundNarrationPrewarm;
+        }
+        if (selBackgroundNarrationPrewarmScope) {
+            selBackgroundNarrationPrewarmScope.value = settings.backgroundNarrationPrewarmScope === "supervised"
+                ? "supervised"
+                : "top_attention";
+        }
         if (chkAutoScrollNewMessages) chkAutoScrollNewMessages.checked = !!settings.autoScrollNewMessages;
         updateTypographyOutputs();
     };
@@ -909,6 +953,7 @@ function initSettingsModal() {
         btnSave.addEventListener("click", () => {
             const updated = settingsFromForm(settingsBeforePreview || getSettings());
             saveSettings(updated);
+            saveNarrationPrewarmSettings(updated);
             settingsBeforePreview = null;
             closeModal(false);
         });
@@ -1331,6 +1376,47 @@ function initChannelsSidebar() {
     }
 }
 
+function initSSEEventSource() {
+    if (typeof EventSource === "undefined") return;
+    try {
+        const es = new EventSource("/api/events");
+        es.onopen = () => {
+            window.sseConnected = true;
+        };
+        es.onerror = () => {
+            window.sseConnected = false;
+        };
+        es.addEventListener("message", (evt) => {
+            try {
+                const data = JSON.parse(evt.data);
+                if (data && data.room_id) {
+                    loadRooms();
+                    if (data.room_id === activeRoomId) {
+                        loadHistory();
+                    }
+                }
+            } catch (e) {}
+        });
+        es.addEventListener("room_changed", () => {
+            loadRooms();
+            fetchAttentionQueue();
+        });
+        es.addEventListener("prewarm_ready", (evt) => {
+            try {
+                const data = JSON.parse(evt.data);
+                if (data && data.room_id) {
+                    fetchAttentionQueue();
+                    if (data.room_id === activeRoomId) {
+                        handleGenerateDigest();
+                    }
+                }
+            } catch (e) {}
+        });
+    } catch (e) {
+        window.sseConnected = false;
+    }
+}
+
 // Initialize application
 function init() {
     applySettings();
@@ -1353,10 +1439,21 @@ function init() {
 
     initSpeechSynthesis();
     initSpeechRecognition();
+    initSSEEventSource();
 
-    // Set up polling for status and transcript history every 5 seconds
-    setInterval(checkStatus, 5000);
-    setInterval(loadHistory, 5000);
+    // Keep the console live with fallback intervals (long intervals if SSE connected)
+    setInterval(checkStatus, 15000);
+    setInterval(() => {
+        if (!window.sseConnected || !window.ddpConnected) {
+            loadHistory();
+        }
+    }, 15000);
+    setInterval(() => {
+        if (!window.sseConnected || !window.ddpConnected) {
+            fetchAttentionQueue();
+            loadRooms();
+        }
+    }, 30000);
 
     // Bind Event Listeners
     btnGenerateDigest.addEventListener("click", handleGenerateDigest);
@@ -1630,6 +1727,7 @@ async function checkStatus() {
         const response = await fetch("/api/status");
         if (!response.ok) throw new Error("HTTP error " + response.status);
         const data = await response.json();
+        window.ddpConnected = data.ddp && data.ddp.state === "connected";
 
         // Update Rocket.Chat status chip
         const rc = data.rocket_chat;
@@ -1855,11 +1953,6 @@ function getRoomName(roomId) {
     return room ? room.name : null;
 }
 
-// Set up polling for status and transcript history every 5 seconds, attention queue every 15 seconds
-setInterval(checkStatus, 5000);
-setInterval(loadHistory, 5000);
-setInterval(fetchAttentionQueue, 15000);
-
 // Bind Event Listeners
 btnGenerateDigest.addEventListener("click", handleGenerateDigest);
 btnPlayPause.addEventListener("click", handlePlayPause);
@@ -1880,6 +1973,16 @@ const btnSaveAttn = document.getElementById("btn-save-attention-modal");
 if (btnCloseAttn) btnCloseAttn.addEventListener("click", closeAttentionSettingsModal);
 if (btnCancelAttn) btnCancelAttn.addEventListener("click", closeAttentionSettingsModal);
 if (btnSaveAttn) btnSaveAttn.addEventListener("click", saveAttentionSettings);
+
+const voiceCbElem = document.getElementById("attn-voice-active");
+const narrationCbElem = document.getElementById("attn-narration-active");
+if (voiceCbElem && narrationCbElem) {
+    voiceCbElem.addEventListener("change", () => {
+        if (voiceCbElem.checked) {
+            narrationCbElem.checked = true;
+        }
+    });
+}
 
 initAgentTargeting();
 
@@ -2020,6 +2123,10 @@ async function openAttentionSettingsModal(channelName) {
     const statusText = document.getElementById("attn-snooze-status-text");
     const deadlineInput = document.getElementById("attn-deadline");
 
+    const visibleCb = document.getElementById("attn-visible");
+    const narrationCb = document.getElementById("attn-narration-active");
+    const voiceCb = document.getElementById("attn-voice-active");
+
     if (!modal) return;
     if (titleEl) titleEl.innerText = `Channel Attention Settings: #${channelName}`;
     if (channelInput) {
@@ -2030,6 +2137,9 @@ async function openAttentionSettingsModal(channelName) {
 
     // Reset default form state
     if (activeCb) activeCb.checked = true;
+    if (visibleCb) visibleCb.checked = true;
+    if (narrationCb) narrationCb.checked = false;
+    if (voiceCb) voiceCb.checked = false;
     if (impSelect) impSelect.value = "3";
     if (urgSelect) urgSelect.value = "normal";
     if (blockCb) blockCb.checked = false;
@@ -2051,6 +2161,9 @@ async function openAttentionSettingsModal(channelName) {
                 const entry = channels[matchedKey];
                 if (channelInput) channelInput.dataset.canonicalName = matchedKey;
                 if (activeCb) activeCb.checked = entry.attention_active !== false;
+                if (visibleCb) visibleCb.checked = entry.visible !== false;
+                if (narrationCb) narrationCb.checked = !!entry.narration_active;
+                if (voiceCb) voiceCb.checked = !!entry.voice_active;
                 if (impSelect) impSelect.value = String(entry.base_importance || 3);
                 if (urgSelect) urgSelect.value = entry.urgency || "normal";
                 if (blockCb) blockCb.checked = !!entry.blocking;
@@ -2103,6 +2216,9 @@ async function saveAttentionSettings() {
     if (!channelName) return;
 
     const activeCb = document.getElementById("attn-active");
+    const visibleCb = document.getElementById("attn-visible");
+    const narrationCb = document.getElementById("attn-narration-active");
+    const voiceCb = document.getElementById("attn-voice-active");
     const impSelect = document.getElementById("attn-base-importance");
     const urgSelect = document.getElementById("attn-urgency");
     const blockCb = document.getElementById("attn-blocking");
@@ -2138,6 +2254,9 @@ async function saveAttentionSettings() {
         channel_name: channelName,
         entry: {
             attention_active: activeCb ? activeCb.checked : true,
+            visible: visibleCb ? visibleCb.checked : true,
+            narration_active: narrationCb ? narrationCb.checked : false,
+            voice_active: voiceCb ? voiceCb.checked : false,
             base_importance: impSelect ? parseInt(impSelect.value, 10) : 3,
             urgency: urgSelect ? urgSelect.value : "normal",
             blocking: blockCb ? blockCb.checked : false,
@@ -2908,6 +3027,66 @@ function checkForAutoNarrate(targetRoomId, newRealResponses) {
     handleGenerateDigest({ autoPlay: true, triggerMessageId: newestMsg.id });
 }
 
+async function recoverPrewarmedNarration(targetRoomId, messages) {
+    const settings = getSettings();
+    if (!settings.autoNarrate || !settings.backgroundNarrationPrewarm) return;
+    const state = getRoomState(targetRoomId);
+    if (state.responseAssistantLoading) return;
+    const realReplies = (messages || []).filter(isRealAgentResponse);
+    const newestReply = realReplies[realReplies.length - 1];
+    if (!newestReply || newestReply.id === state.lastAssistedId) return;
+
+    try {
+        const response = await fetch(
+            `/api/response-assistant/cached?room_id=${encodeURIComponent(targetRoomId)}&trigger_message_id=${encodeURIComponent(newestReply.id)}`
+        );
+        if (!response.ok) return;
+        const payload = await response.json();
+        const digestData = payload && payload.result;
+        if (!digestData || !digestData.digest) return;
+
+        state.digestText = digestData.digest;
+        state.lastAssistedId = digestData.trigger_message_id || newestReply.id;
+        state.failedAssistantId = null;
+        state.assistantRetryAt = 0;
+        state.pendingAssistantTriggerId = null;
+        applySuggestedDraft(targetRoomId, digestData.suggested_message);
+        state.suggestionPhase = digestData.phase || "";
+        state.suggestionRationale = digestData.rationale || "";
+        applySmartQuickSuggestions(targetRoomId, digestData.quick_suggestions);
+
+        const sourceIds = digestData.included_message_ids || [];
+        const sourceMessages = messages.filter(message => sourceIds.includes(message.id));
+        state.sourcesToggleText = `Show Sources (${sourceMessages.length})`;
+        state.digestSourcesHtml = sourceMessages.map(message => {
+            const author = message.name || message.username;
+            let snippet = message.text || "";
+            if (snippet.length > 85) snippet = snippet.substring(0, 85) + "...";
+            return `
+                <div class="source-item" data-source-id="${message.id}">
+                    <span class="source-author">@${escapeHTML(author)}:</span>
+                    <span class="source-snippet">${escapeHTML(snippet)}</span>
+                </div>
+            `;
+        }).join("");
+        state.digestSourcesVisible = sourceMessages.length > 0;
+
+        if (targetRoomId === activeRoomId) {
+            currentDigestText = state.digestText;
+            digestContent.innerText = currentDigestText;
+            updateNarrationPlayState();
+            setAssistantStatus("Narration ready; press Play for audio", "ready");
+            sourcesToggleText.innerText = state.sourcesToggleText;
+            sourcesList.innerHTML = state.digestSourcesHtml;
+            bindSourceItemHandlers();
+            digestSourcesContainer.style.display = sourceMessages.length > 0 ? "block" : "none";
+        }
+    } catch (_error) {
+        // Cache recovery is an acceleration only. The active-room automatic
+        // path continues to work normally when nothing was pre-generated.
+    }
+}
+
 async function loadHistory() {
     if (!activeRoomId || activeRoomId === "loading" || activeRoomId === "error") return;
 
@@ -2970,6 +3149,10 @@ async function loadHistory() {
             renderTranscriptFromState(targetRoomId);
 
             renderRecentStats(data.stats);
+            // The background job may still be running when the room opens.
+            // Keep checking the completed-cache on later polls until it is
+            // ready; this is read-only and never starts a second generation.
+            void recoverPrewarmedNarration(targetRoomId, data.messages);
             checkForAutoNarrate(targetRoomId, newRealResponses);
         } else {
             handleTranscriptError(targetRoomId, data.detail || "Failed to load channel history.");
@@ -3883,6 +4066,7 @@ function initSpeechRecognition() {
         } else {
             commandInput.value = transcript;
         }
+        syncCommandDraftState(commandInput.value);
         commandInput.focus();
     };
 
@@ -3910,7 +4094,12 @@ function toggleSpeechInput() {
             visualizer.classList.remove("playing");
             playIcon.textContent = "play_arrow";
         }
-        recognition.start();
+        try {
+            recognition.start();
+        } catch (err) {
+            console.error("Failed to start speech recognition:", err);
+            stopListening();
+        }
     }
 }
 

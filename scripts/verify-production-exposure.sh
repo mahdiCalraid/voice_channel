@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PUBLIC_URL="${1:-https://vice.peyvastegi.uk}"
+PUBLIC_URL="${1:-https://voice.peyvastegi.uk}"
 
 STATUS="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 "$PUBLIC_URL/")"
 

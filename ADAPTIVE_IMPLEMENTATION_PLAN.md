@@ -1,10 +1,17 @@
 # Adaptive Voice Gateway Implementation Plan
 
 Status established: 2026-07-27
+Reconciled with the daily-use branch: 2026-08-07
 
-This is the authoritative plan for the adaptive fork on
-`codex/adaptive-voice-gateway`. The previous `IMPLEMENTATION_PLAN.md` remains the
-historical plan and evidence for the custom Voice Channel UI foundation.
+This is the authoritative long-range architecture and phase plan for the adaptive
+gateway. The previous `IMPLEMENTATION_PLAN.md` remains the historical plan and
+evidence for the custom Voice Channel UI foundation.
+
+The current checkout is `urgent/daily-use-console`, a descendant of
+`codex/adaptive-voice-gateway`. Its completed daily-use work is recorded in
+`URGENT_IMPLEMENTATION_PLAN.md`. That plan is the current execution ledger; this
+document remains the source of truth for the eventual gateway phases and gates.
+Do not treat an old "Immediate Next Task" in a historical document as active work.
 
 ## 1. Direction
 
@@ -45,6 +52,9 @@ Status vocabulary:
   passed.
 - `NOT STARTED`: production implementation does not exist.
 - `BLOCKED`: a named external dependency or decision prevents further progress.
+- `IMPLEMENTED (UNCOMMITTED)`: code and automated checks are present in the working
+  tree, but the task cannot be `VERIFIED` until its product files are committed and
+  any required live check is recorded.
 - `EXPERIMENT REJECTED`: a candidate failed its gate and the documented pivot is active.
 
 No provider, client, or integration is promoted because its demo looks promising. It
@@ -585,23 +595,33 @@ Acceptance:
 
 ### M1-05. Mac STT Adapter
 
-Status: `NOT STARTED`
+Status: `IMPLEMENTED (UNCOMMITTED)` (2026-08-07)
 
-- Put the simplest reliable Mac transcription path behind the provider contract.
-- Start with push-to-talk, not wake word or continuous ambient capture.
+- The browser client now uses the Web Speech API for opt-in push-to-talk capture.
+- Recognized text is appended to the editable composer and persisted through the
+  existing room draft state. Recognition completion never sends a message; the typed
+  confirmation-bound gateway flow remains the only send path.
+- Current automated evidence: the focused Node harness verifies transcript append,
+  draft sync, and no automatic send; the full suites passed 152 Python / 61 Node on
+  2026-08-07.
 
-Acceptance:
+Remaining closure:
 
-- technical test phrases are measured;
-- transcript is editable before submission;
-- STT failure cannot send a partial command.
+- record one supported-browser Mac microphone check, including a cancellation/error
+  path;
+- commit the already-present product changes. No wake word or ambient capture is in
+  scope.
 
 ### M1-06. Local Recovery
 
-Status: `NOT STARTED`
+Status: `PARTIAL`
 
-- Gateway restart, browser refresh, provider failure, and Rocket.Chat interruption.
-- Persist drafts and recover active task metadata.
+- Existing verified pieces cover draft persistence and restoration, file-backed task
+  state across Gateway restart, startup orphan cleanup, response-assistant recovery,
+  and deterministic provider fallbacks.
+- A single formal Mac recovery scenario has not yet exercised browser refresh,
+  Gateway restart, provider failure, and Rocket.Chat interruption together. This is
+  a closure test, not a reason to rebuild the completed recovery mechanisms.
 
 ### Phase 1 Gate
 
@@ -620,10 +640,14 @@ Goal: add bounded intelligence without weakening deterministic mechanics.
 
 ### A2-01. Room and Agent Catalog
 
+Status: `PARTIAL`
+
 - Explicit room aliases, agent aliases, pronunciations, permission scopes, and recent-use
   hints.
 
 ### A2-02. Structured Router
+
+Status: `NOT STARTED`
 
 - Produce action, room, agent, draft, confidence, and alternatives.
 - Configurable confidence threshold.
@@ -638,10 +662,18 @@ Acceptance:
 
 ### A2-03. Draft Refiner
 
+Status: `NOT STARTED`
+
 - Improve clarity while displaying original and refined text.
 - Preserve constraints, negation, file paths, and requested worker.
 
 ### A2-04. Grounded Summarizer
+
+Status: `PARTIAL`
+
+- The daily-use response assistant already produces a bounded two-paragraph digest
+  from room-local context, with deterministic fallback. The formal source-inspection
+  and outcome/blocker/decision contract remains to be closed.
 
 - Use message/task IDs and bounded context.
 - Separate “what happened,” “result,” “blockers,” and “next decision.”
@@ -649,11 +681,21 @@ Acceptance:
 
 ### A2-05. Follow-Up Suggestions
 
+Status: `PARTIAL`
+
+- The daily-use response assistant prepares one editable suggested message and never
+  posts it automatically. The formal multiple-suggestion contract is not implemented.
+
 - Two or three materially different suggestions.
 - Insert into an editable draft only.
 - Never send automatically.
 
 ### A2-06. Provider and Fallback Layer
+
+Status: `PARTIAL`
+
+- The response assistant has a bounded worker selection and deterministic fallback;
+  the generic provider contract remains incomplete.
 
 - API provider first if selected.
 - local OpenAI-compatible endpoint option.
@@ -802,13 +844,24 @@ The original three-pane Voice Channel UI can later:
 
 No adaptive-fork decision prevents that work.
 
-## 18. Immediate Next Task
+## 18. Current Planning Boundary
 
-Complete the ACLI-side portion of `M1-03A Rocket.Chat Dispatch Ingress`: provision the
-dedicated Rocket.Chat gateway identity, implement signed-envelope validation and replay
-protection in ACLI, then run one live terminal task. The solution must remain
-`gateway -> Rocket.Chat -> ACLI`, not a direct gateway-to-ACLI link. Do not mark M1-03
-complete from mocked events, historical replay, or an undeliverable bot post.
+`M1-01` through `M1-04`, including signed Rocket.Chat ingress, are complete and must
+not be reopened absent a regression. The daily-use console has also completed U-00
+through U-10. The still-open mechanical closure is limited to committing and live-checking
+M1-05 and recording the composite M1-06 recovery scenario.
+
+The per-channel narration work is tracked in `URGENT_IMPLEMENTATION_PLAN.md` as U-11.
+Its polling proof-of-concept is not the final architecture: the closing implementation
+must use Gateway-owned Rocket.Chat event delivery, with only bounded watermark-based
+reconciliation after reconnect. Channel-list recency must likewise update from message
+events rather than a periodic refresh loop. U-12 then covers safe VS Code file links,
+per-message Fast-voice read aloud, system-noise filtering, and image handoff through
+the existing ACLI/Rocket.Chat inbox contract. Rocket.Chat remains the durable log; no
+new full-text journal is planned.
+
+Automatic Nice Voice preparation remains deliberately separate: `voice_active` currently
+enforces the narration dependency but does not yet synthesize or cache audio.
 
 Do not begin Omi installation, Cloudflare exposure, ambient audio, or mobile signing
-before the local Mac Phase 1 gate passes.
+before Ed selects the next bounded phase and the affected work is committed.

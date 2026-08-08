@@ -1,6 +1,6 @@
 # Voice Channel production deployment
 
-The public personal-assistant hostname is `https://vice.peyvastegi.uk`.
+The public personal-assistant hostname is `https://voice.peyvastegi.uk`.
 
 ## Isolation contract
 
@@ -22,10 +22,10 @@ intentionally unreachable from a host or public port, but the tunnel hostname st
 needs an identity gate.
 
 1. Create a Cloudflare Access self-hosted application for
-   `vice.peyvastegi.uk/*`.
+   `voice.peyvastegi.uk/*`.
 2. Add an Allow policy restricted to Ed's identity. Do not add a Bypass policy.
 3. In the existing Rocket.Chat tunnel, add the public hostname
-   `vice.peyvastegi.uk` with service `http://voice-channel-production:6891`.
+   `voice.peyvastegi.uk` with service `http://voice-channel-production:6891`.
 4. Keep WebSockets enabled and disable public caching for this hostname.
 5. Run `scripts/verify-production-exposure.sh`. An unauthenticated request must get an
    Access redirect or rejection, never the Voice Channel page.
