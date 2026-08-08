@@ -199,7 +199,7 @@ def main():
                     '{"digest":"exactly one short high-level summary paragraph",'
                     '"attention_items":[{"type":"decision|issue|clarification|approval",'
                     '"severity":"major|moderate|null","text":"one short plain-language item"}],'
-                    '"phase":"planning|implementation|review|remediation|checkpoint|noncoding",'
+                    '"phase":"planning|implementation|review|remediation|closure|overall_review|checkpoint|noncoding",'
                     '"suggested_agent":"worker name without @",'
                     '"suggested_message":"one complete editable draft beginning with @worker",'
                     '"quick_suggestions":[{"label":"1-2 short words","command":"full clickable message, prefer @worker ..."}],'

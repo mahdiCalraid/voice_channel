@@ -1,14 +1,14 @@
 [
   {
-    "timestamp": "2026-08-08T23:16:12.907083+00:00",
-    "digest": "Mocked Codex summary showing grok worked on 1 updates. The last update was from ed."
-  },
-  {
     "timestamp": "2026-08-08T23:24:01.307726+00:00",
     "digest": "Mocked Codex summary showing grok worked on 1 updates. The last update was from ed."
   },
   {
     "timestamp": "2026-08-08T23:40:59.849941+00:00",
+    "digest": "Mocked Codex summary showing grok worked on 1 updates. The last update was from ed."
+  },
+  {
+    "timestamp": "2026-08-08T23:59:33.289091+00:00",
     "digest": "Mocked Codex summary showing grok worked on 1 updates. The last update was from ed."
   }
 ]

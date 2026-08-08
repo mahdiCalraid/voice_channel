@@ -14,6 +14,7 @@ import app.main as main_module
 from app.attention_config import ChannelAttentionConfig, ChannelAttentionEntry
 from app.main import ResponseAssistantRequest, app
 from app.supervision_strategy import (
+    build_strategy_context,
     fallback_quick_suggestions,
     fallback_suggestion,
     normalize_attention_items,
@@ -82,6 +83,16 @@ class TestSupervisionStrategy(unittest.TestCase):
             self.assertIn("approved", context)
             self.assertNotIn("must-not-load", context)
             self.assertEqual(len(used), 1)
+
+    def test_coding_strategy_encodes_forward_progress_and_effective_roles(self):
+        strategy = build_strategy_context(CODING_PROFILE)
+
+        self.assertIn('"coder": "agy"', strategy)
+        self.assertIn('"one_pass_reviewer": "grok"', strategy)
+        self.assertIn('"post_remediation_reviewer": "codex"', strategy)
+        self.assertIn('"periodic_overall_reviewer": "claude"', strategy)
+        self.assertIn("minor findings create a review-remediation-review loop", strategy)
+        self.assertIn("After two or three successfully delivered small steps", strategy)
 
     def test_output_parser_validates_worker_and_attention_contract(self):
         output = json.dumps(
@@ -184,13 +195,73 @@ class TestSupervisionStrategy(unittest.TestCase):
         agent, _message, phase = fallback_suggestion(CODING_PROFILE, claude_green_light)
         self.assertEqual((agent, phase), ("agy", "implementation"))
 
-        codex_fix = {
+        agy_implementation = {
+            **LATEST_AGY,
+            "event": {"kind": "agent_response", "agent": "agy"},
+            "text": "The next bounded implementation step is complete and tests pass.",
+        }
+        agent, _message, phase = fallback_suggestion(CODING_PROFILE, agy_implementation)
+        self.assertEqual((agent, phase), ("grok", "review"))
+
+    def test_coding_fallback_records_minor_findings_and_moves_forward(self):
+        grok_minor_findings = {
+            **LATEST_AGY,
+            "event": {"kind": "agent_response", "agent": "grok"},
+            "text": "The implementation works. I found two minor naming issues, but there are no blocking issues.",
+        }
+
+        agent, message, phase = fallback_suggestion(CODING_PROFILE, grok_minor_findings)
+
+        self.assertEqual((agent, phase), ("agy", "implementation"))
+        self.assertIn("record", message.lower())
+        self.assertIn("next bounded step", message.lower())
+        self.assertTrue(message.startswith("@agy "))
+        self.assertNotIn("@grok", message.lower())
+        self.assertNotIn("@codex", message.lower())
+
+        quick = fallback_quick_suggestions(CODING_PROFILE, grok_minor_findings, phase)
+        self.assertEqual([item["label"] for item in quick], ["Next step", "Keep moving"])
+        self.assertTrue(all(item["command"].startswith("@agy ") for item in quick))
+
+    def test_coding_fallback_routes_serious_remediation_to_agy_then_codex(self):
+        grok_blocker = {
+            **LATEST_AGY,
+            "event": {"kind": "agent_response", "agent": "grok"},
+            "text": "A material blocker breaks core behavior and must be fixed before we proceed.",
+        }
+        agent, message, phase = fallback_suggestion(CODING_PROFILE, grok_blocker)
+        self.assertEqual((agent, phase), ("agy", "remediation"))
+        self.assertIn("blocking", message.lower())
+
+        agy_remediation = {
+            **LATEST_AGY,
+            "event": {"kind": "agent_response", "agent": "agy"},
+            "text": "The remediation is completed and the blocking issue is resolved.",
+        }
+        agent, message, phase = fallback_suggestion(CODING_PROFILE, agy_remediation)
+        self.assertEqual((agent, phase), ("codex", "closure"))
+        self.assertIn("closure review", message.lower())
+
+        closure_quick = fallback_quick_suggestions(CODING_PROFILE, agy_remediation, phase)
+        self.assertEqual(closure_quick[0]["label"], "Closure check")
+        self.assertTrue(closure_quick[0]["command"].startswith("@codex "))
+
+        codex_closure = {
             **LATEST_AGY,
             "event": {"kind": "agent_response", "agent": "codex"},
-            "text": "I fixed the bounded defect and the tests are passing.",
+            "text": "Closure review complete: the blocker is resolved and the plan is ready to resume.",
         }
-        agent, _message, phase = fallback_suggestion(CODING_PROFILE, codex_fix)
-        self.assertEqual((agent, phase), ("grok", "review"))
+        agent, message, phase = fallback_suggestion(CODING_PROFILE, codex_closure)
+        self.assertEqual((agent, phase), ("agy", "implementation"))
+        self.assertIn("next bounded step", message.lower())
+
+        overall_quick = fallback_quick_suggestions(
+            CODING_PROFILE,
+            codex_closure,
+            "overall_review",
+        )
+        self.assertEqual(overall_quick[0]["label"], "Overall view")
+        self.assertTrue(overall_quick[0]["command"].startswith("@claude "))
 
     def test_noncoding_fallback_requests_viewpoint_not_formal_review(self):
         latest_codex = {

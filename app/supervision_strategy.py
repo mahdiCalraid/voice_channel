@@ -43,21 +43,32 @@ CODING_SEQUENCE = """
 Ed's current coding-channel strategy (takes precedence over older generic role labels):
 - Infer the current phase from the actual conversation; do not advance just because a
   worker replied.
-- Planning: gather distinct views without repeating the same question. A useful
-  sequence is Codex for the initial plan, Claude for broader judgment, then Grok for
-  independent technical criticism.
-- Plan ready: ask AGY to implement one bounded named step.
-- Implementation reported complete: ask Grok for an independent, evidence-based review.
-- Review found small issues: ask Codex to diagnose or make a quick bounded fix.
-- Review found meaningful scope: ask AGY for a clearly named remediation step, then
-  return to Grok for re-review.
-- Clean review or major checkpoint: ask Claude for the overall view and explicit
-  green light before advancing.
-- After a green light: ask AGY for the next already-planned bounded step.
-- In this daily-use workflow, AGY is the usual implementer, Grok the independent
-  reviewer, Claude the overall leader/checkpoint supervisor, and Codex the planner,
-  moderator, and quick-fix worker. Treat an explicit channel-specific assignment or
-  Ed's latest instruction as a higher-priority override.
+- The overriding goal is steady forward progress through the existing plan. Prefer the
+  next useful implementation step whenever no material blocker prevents it. Do not let
+  minor findings create a review-remediation-review loop.
+- Planning: gather only the distinct views still needed to make the plan executable.
+  Once the plan is ready, ask AGY to implement its next bounded, named step.
+- Normal delivery loop: AGY implements one bounded step, then Grok performs one focused,
+  independent review of that step. If Grok finds no blocking problem, immediately ask
+  AGY to implement the next already-planned step.
+- Minor or non-blocking findings: preserve them in the existing task record, plan,
+  implementation notes, or next AGY report as appropriate, then continue to the next
+  planned step. Do not send them to another agent merely for discussion, do not demand
+  immediate cleanup, and do not ask Grok to review the same step again.
+- A finding blocks progress only when it breaks core behavior or an acceptance criterion,
+  creates a material security/data/correctness risk, or requires substantial rework before
+  later steps can safely build on it. For such a serious finding, ask AGY for one clearly
+  named remediation. After AGY reports that remediation complete, ask Codex for the
+  closure review; do not return it to Grok. Once Codex confirms that no blocker remains,
+  resume with AGY on the next planned step.
+- After two or three successfully delivered small steps, or whenever the accumulated code
+  change becomes substantial, ask Claude for a broader integration and direction review
+  across those steps. This is a periodic checkpoint, not a review after every step. If
+  Claude finds no material blocker, resume immediately with AGY on the next planned step.
+- In this daily-use workflow, AGY is the coder, Grok is the one-pass reviewer for ordinary
+  implementation steps, Codex is the planner/moderator and post-remediation closure
+  reviewer, and Claude is the periodic overall reviewer. Treat an explicit channel-specific
+  assignment or Ed's latest instruction as a higher-priority override.
 - Preserve the channel's own task IDs. Never invent completion, a task ID, or a green
   light. The next draft must be concrete and grounded in what the latest response says.
 """
@@ -88,6 +99,8 @@ Rules for every suggestion:
 - The exact draft must begin with one @worker mention and contain the full actionable ask.
 - Do not include greetings, commentary about being an AI, or a confirmation question.
 - Do not merely say "continue"; name the evidence to verify or the bounded outcome wanted.
+- When forward progress is allowed, make the next concrete work step the main ask. Mention
+  non-blocking findings only as items to record or carry forward, never as a reason to stop.
 - Prefer the cheapest existing model/effort for routine work. Do not add a !model
   command unless the current model is known and a switch is genuinely necessary.
 - Do not quote system routing/heartbeat messages as project facts.
@@ -297,18 +310,29 @@ def allowed_suggestion_agents(profile: dict) -> List[str]:
 
 
 def build_strategy_context(profile: dict) -> str:
+    is_coding = profile.get("channel_type") == "acli_coding"
     channel_json = json.dumps(
         {
             "channel_name": profile.get("channel_name"),
             "channel_type": profile.get("channel_type"),
             "default_worker": profile.get("default_worker"),
-            "roles": profile.get("roles"),
+            "registry_roles": profile.get("roles"),
+            "effective_suggestion_roles": (
+                {
+                    "coder": "agy",
+                    "one_pass_reviewer": "grok",
+                    "post_remediation_reviewer": "codex",
+                    "periodic_overall_reviewer": "claude",
+                }
+                if is_coding
+                else None
+            ),
             "notes": profile.get("notes"),
             "registered": profile.get("registered"),
         },
         indent=2,
     )
-    sequence = CODING_SEQUENCE if profile.get("channel_type") == "acli_coding" else NONCODING_SEQUENCE
+    sequence = CODING_SEQUENCE if is_coding else NONCODING_SEQUENCE
     return (
         f"=== CHANNEL PROFILE ===\n{channel_json}\n\n"
         f"=== WORKFLOW ===\n{sequence.strip()}\n\n"
@@ -386,6 +410,66 @@ def _extract_json_object(output: str) -> Dict[str, Any]:
     return {}
 
 
+def _contains_serious_blocker(text: str) -> bool:
+    """Recognize evidence that should actually stop the coding delivery loop."""
+    normalized = re.sub(r"\s+", " ", str(text or "").lower())
+    for negated in (
+        "no blocker",
+        "no blocking issue",
+        "no material blocker",
+        "no serious issue",
+        "no critical issue",
+        "no blockers",
+        "without blockers",
+        "blocker is resolved",
+        "blocker resolved",
+        "blockers are resolved",
+        "blockers resolved",
+    ):
+        normalized = normalized.replace(negated, "")
+    return any(
+        phrase in normalized
+        for phrase in (
+            "cannot proceed",
+            "must be fixed before",
+            "blocking issue",
+            "blocking finding",
+            "material blocker",
+            "serious blocker",
+            "critical issue",
+            "critical defect",
+            "major defect",
+            "security risk",
+            "data loss",
+            "core behavior fails",
+            "core behavior is broken",
+            "failed acceptance criterion",
+            "acceptance criterion fails",
+            "substantial rework",
+            "substantial gap",
+        )
+    ) or bool(re.search(r"\bblockers?\b", normalized))
+
+
+def _looks_like_completed_remediation(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "").lower())
+    explicit = (
+        "remediation complete",
+        "remediation completed",
+        "blocker resolved",
+        "blockers resolved",
+        "blocking issue fixed",
+        "blocking issue resolved",
+        "serious issue fixed",
+        "critical issue fixed",
+    )
+    if any(phrase in normalized for phrase in explicit):
+        return True
+    return "remediation" in normalized and any(
+        word in normalized for word in ("implemented", "fixed", "resolved", "completed", "done")
+    )
+
+
 def fallback_suggestion(profile: dict, latest_message: dict) -> Tuple[str, str, str]:
     latest_agent = str((latest_message.get("event") or {}).get("agent") or latest_message.get("username") or "").lower()
     text = str(latest_message.get("text") or "").lower()
@@ -407,23 +491,41 @@ def fallback_suggestion(profile: dict, latest_message: dict) -> Tuple[str, str, 
             "noncoding",
         )
 
+    serious_blocker = _contains_serious_blocker(text)
+
+    if latest_agent == "agy" and _looks_like_completed_remediation(text):
+        return (
+            "codex",
+            "@codex Please perform the closure review of AGY's completed remediation against the original blocking finding. Confirm whether the blocker is resolved, record any non-blocking follow-ups, and identify the next planned step we can safely resume.",
+            "closure",
+        )
     if latest_agent == "agy":
         return "grok", "@grok Please independently review AGY's reported implementation against the agreed task, inspect the code and tests, and list any concrete gaps before we advance.", "review"
     if latest_agent == "grok":
-        if any(phrase in text for phrase in ("additional scope", "larger remediation", "new task", "substantial gap")):
-            return "agy", "@agy Please turn Grok's larger findings into one bounded remediation step using the channel's existing task naming, implement it, and report the files changed and verification evidence.", "remediation"
-        if any(word in text for word in ("issue", "gap", "fail", "incomplete", "problem", "red flag")):
-            return "codex", "@codex Please assess Grok's findings, fix any small in-scope defects you can verify directly, and clearly separate any larger remediation that should go back to AGY.", "remediation"
-        return "claude", "@claude Please give the overall checkpoint view based on the plan, implementation, and independent review, and state whether there is a clear green light for the next step.", "checkpoint"
+        if serious_blocker:
+            return (
+                "agy",
+                "@agy Please remediate Grok's blocking finding as one bounded step using the existing task naming, then report the files changed and verification evidence. Do not expand into unrelated cleanup.",
+                "remediation",
+            )
+        return (
+            "agy",
+            "@agy Record any minor non-blocking review notes in the existing task record, then implement the next bounded step from the agreed plan and report the verification evidence.",
+            "implementation",
+        )
     if latest_agent == "claude":
-        if any(phrase in text for phrase in ("green light", "approved to proceed", "ready to implement", "proceed with implementation")):
+        if serious_blocker:
+            return "agy", "@agy Please address Claude's material blocker as one bounded remediation step and report the verification evidence before we resume the plan.", "remediation"
+        if any(phrase in text for phrase in ("green light", "approved to proceed", "ready to implement", "proceed with implementation", "overall review", "integration review", "previous steps", "accumulated changes", "checkpoint")):
             return "agy", "@agy Please implement the next bounded step from the agreed plan, preserve the existing task naming, and report the files changed and verification evidence.", "implementation"
         return "grok", "@grok Please independently pressure-test the current plan, identify concrete technical risks or missing acceptance checks, and say what must be resolved before implementation.", "planning"
+    if latest_agent == "codex" and serious_blocker:
+        return "agy", "@agy Please resolve the material blocker Codex confirmed as one bounded remediation step and report verification evidence.", "remediation"
     if latest_agent == "codex" and any(
         phrase in text
-        for phrase in ("implemented", "fixed", "remediation complete", "tests pass", "tests are passing")
+        for phrase in ("closure review", "remediation", "blocker is resolved", "no blocker", "cleared", "ready to resume")
     ):
-        return "grok", "@grok Please independently re-review Codex's reported fix against the flagged findings and run the relevant tests before we treat the issue as closed.", "review"
+        return "agy", "@agy Please implement the next bounded step from the agreed plan and carry any recorded non-blocking follow-ups without delaying forward progress.", "implementation"
     return "claude", "@claude Please review the latest plan or recommendation, add any important strategic concerns, and identify what must be settled before implementation begins.", "planning"
 
 
@@ -484,7 +586,33 @@ def fallback_quick_suggestions(profile: dict, latest_message: dict, phase: str) 
             },
         ]
 
-    if phase == "review" or latest_agent == "agy":
+    if phase == "closure":
+        return [
+            {
+                "id": "smart-0",
+                "label": "Closure check",
+                "command": "@codex Confirm whether the remediated blocker is closed, record non-blocking follow-ups, and name the next step we can resume.",
+            },
+            {
+                "id": "smart-1",
+                "label": "Resume plan",
+                "command": "@agy Implement the next bounded step if the blocking issue is now resolved.",
+            },
+        ]
+    if phase == "overall_review":
+        return [
+            {
+                "id": "smart-0",
+                "label": "Overall view",
+                "command": "@claude Review the last two or three delivered steps together, identify any material integration concern, and advise whether to continue the plan.",
+            },
+            {
+                "id": "smart-1",
+                "label": "Resume plan",
+                "command": "@agy If the accumulated changes have no material blocker, implement the next bounded step from the agreed plan.",
+            },
+        ]
+    if phase == "review":
         return [
             {
                 "id": "smart-0",
@@ -493,47 +621,34 @@ def fallback_quick_suggestions(profile: dict, latest_message: dict, phase: str) 
             },
             {
                 "id": "smart-1",
-                "label": "Your take",
-                "command": "@codex What is your opinion on the latest result before we advance?",
+                "label": "Next step",
+                "command": "@agy If this implementation step already has a clean review, proceed with the next bounded step in the plan.",
             },
         ]
-    if phase == "remediation" or latest_agent == "grok":
+    if phase == "remediation":
         return [
             {
                 "id": "smart-0",
-                "label": "Fix gaps",
-                "command": "@codex Assess the review findings and fix only small in-scope defects you can verify.",
+                "label": "Fix blocker",
+                "command": "@agy Remediate the blocking finding as one bounded step and report verification evidence.",
             },
             {
                 "id": "smart-1",
-                "label": "Next action",
-                "command": "@agy Turn the largest remaining gap into one bounded remediation step and implement it.",
-            },
-        ]
-    if phase == "checkpoint" or latest_agent == "claude":
-        return [
-            {
-                "id": "smart-0",
-                "label": "Green light?",
-                "command": "@claude Is there a clear green light for the next bounded step, and what is still open?",
-            },
-            {
-                "id": "smart-1",
-                "label": "Overall plan",
-                "command": "@claude Summarize the overall plan and where we are relative to it.",
+                "label": "Bounded fix",
+                "command": "@agy Fix only the material blocker, preserve unrelated notes for later, and report verification evidence.",
             },
         ]
     if phase == "implementation":
         return [
             {
                 "id": "smart-0",
-                "label": "Implement",
+                "label": "Next step",
                 "command": "@agy Implement the next bounded step from the agreed plan and report verification evidence.",
             },
             {
                 "id": "smart-1",
-                "label": "Next action",
-                "command": "What is the single next action we should take now?",
+                "label": "Keep moving",
+                "command": "@agy Record any non-blocking review notes, then continue with the next planned implementation step.",
             },
         ]
     if phase == "planning" or latest_agent == "codex":
@@ -635,6 +750,8 @@ def parse_response_assistant_output(output: str, profile: dict, latest_message: 
         "review",
         "remediation",
         "checkpoint",
+        "closure",
+        "overall_review",
         "noncoding",
     }
     if phase not in allowed_phases:
