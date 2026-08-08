@@ -1,14 +1,14 @@
 [
   {
-    "timestamp": "2026-08-08T23:26:19.344126+00:00",
-    "digest": "S3.2 now has a real seeded-data pilot framework, but Grok found bounded safety and product-claim gaps that should be corrected before treating commercial pilots as ready; paid execution remains off."
-  },
-  {
     "timestamp": "2026-08-08T23:26:32.232578+00:00",
     "digest": "Grok found the S3.2 pilot framework substantially real and usable, but not ready for an unqualified commercial-pilot claim because several safety and product assertions need bounded correction. Paid execution remains off."
   },
   {
     "timestamp": "2026-08-08T23:27:17.525322+00:00",
     "digest": "Codex completed the bounded S3.2 safety and evidence fixes, with tests passing and paid execution still disabled. The pilot framework is ready for independent review, but no prospect session should be approved yet."
+  },
+  {
+    "timestamp": "2026-08-08T23:48:12.316969+00:00",
+    "digest": "Grok confirms the S3.2 pilot framework is clean and fail-closed, while the first prospect pilot remains pending the no-spend rehearsal and an explicitly scheduled, approved session; paid execution stays off."
   }
 ]

@@ -836,6 +836,46 @@ class TestResponseAssistantEndpoint(unittest.TestCase):
 
         asyncio.run(run_sse())
 
+    def test_ddp_message_triggers_prewarm_without_cursor(self):
+        """U-11E-b remediation: DDP real agent replies should trigger prewarm even without a read cursor."""
+        adapter = main_module.RocketChatDDPAdapter()
+
+        async def scenario():
+            main_module.ROOM_MESSAGES_CACHE.clear()
+
+            with patch("app.main._schedule_background_narration_prewarm") as mock_prewarm:
+                msg_obj = {
+                    "_id": "agent-msg-1",
+                    "rid": "room-test",
+                    "msg": "Here is the plan.",
+                    "ts": {"$date": int(time.time() * 1000)},
+                    "u": {"username": "codex"},
+                }
+                data = {"fields": {"args": [msg_obj]}}
+
+                await adapter._handle_room_message_event(data)
+
+                self.assertEqual(len(main_module.ROOM_MESSAGES_CACHE["room-test"]), 1)
+                cached_msg = main_module.ROOM_MESSAGES_CACHE["room-test"][0]
+                self.assertEqual(cached_msg["lane"], "agent")
+                self.assertEqual(cached_msg["name"], "codex")
+
+                mock_prewarm.assert_called_once()
+
+                # Assert system message doesn't trigger prewarm
+                mock_prewarm.reset_mock()
+                sys_msg_obj = {
+                    "_id": "sys-msg-2",
+                    "rid": "room-test",
+                    "msg": "🔄 Routing to **codex**",
+                    "ts": {"$date": int(time.time() * 1000)},
+                    "u": {"username": "acli_bot"},
+                }
+                data_sys = {"fields": {"args": [sys_msg_obj]}}
+                await adapter._handle_room_message_event(data_sys)
+                mock_prewarm.assert_not_called()
+
+        asyncio.run(scenario())
 
 if __name__ == "__main__":
     unittest.main()

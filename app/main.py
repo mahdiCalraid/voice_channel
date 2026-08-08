@@ -290,8 +290,7 @@ class RocketChatDDPAdapter:
         })
 
         # Real agent reply filter
-        eval_res = evaluate_room_unread_status(rid, ROOM_MESSAGES_CACHE[rid])
-        if eval_res.get("has_unread"):
+        if is_real_agent_reply(converted_msg):
             # Dispatch to prewarm immediately
             queue = [{
                 "room_id": rid,
