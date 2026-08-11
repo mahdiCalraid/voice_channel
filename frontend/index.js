@@ -1441,19 +1441,16 @@ function init() {
     initSpeechRecognition();
     initSSEEventSource();
 
-    // Keep the console live with fallback intervals (long intervals if SSE connected)
-    setInterval(checkStatus, 15000);
+    // Always keep a snappy baseline refresh, independent of event transport.
+    // SSE / webhooks make updates immediate when available; these timers remain
+    // the honest fallback when DDP/webhooks are off or degraded.
+    // Active conversation ~4s; channel rail / attention ~7s.
+    setInterval(checkStatus, 5000);
+    setInterval(loadHistory, 4000);
     setInterval(() => {
-        if (!window.sseConnected || !window.ddpConnected) {
-            loadHistory();
-        }
-    }, 15000);
-    setInterval(() => {
-        if (!window.sseConnected || !window.ddpConnected) {
-            fetchAttentionQueue();
-            loadRooms();
-        }
-    }, 30000);
+        fetchAttentionQueue();
+        loadRooms();
+    }, 7000);
 
     // Bind Event Listeners
     btnGenerateDigest.addEventListener("click", handleGenerateDigest);

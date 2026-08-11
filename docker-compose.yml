@@ -17,6 +17,7 @@ services:
       - GATEWAY_RC_USER_ID=${GATEWAY_RC_USER_ID:-}
       - GATEWAY_RC_AUTH_TOKEN=${GATEWAY_RC_AUTH_TOKEN:-}
       - GATEWAY_RC_INGRESS_SECRET=${GATEWAY_RC_INGRESS_SECRET:-}
+      - GATEWAY_RC_WEBHOOK_SECRET=${GATEWAY_RC_WEBHOOK_SECRET:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - VC_WORKER=${VC_WORKER:-codex}
       # Chatterbox stays on the Mac/server. The browser never receives this URL

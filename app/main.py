@@ -45,6 +45,12 @@ from app.tts_adapter import (
 )
 from app.task_supervisor import TaskSupervisor
 from app.rc_ingress import IngressConfigurationError, build_ingress_message, extract_interaction_id
+from app.rc_webhook import (
+    WebhookAuthError,
+    WebhookReplayError,
+    authenticate_webhook_request,
+    webhook_configured,
+)
 from app.supervision_strategy import (
     build_strategy_context,
     load_channel_registry,
@@ -70,6 +76,10 @@ from app.read_cursor import (
 )
 
 ROOM_MESSAGES_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+# Serialize webhook wake processing per room. Rocket.Chat can emit a burst of
+# user, routing, heartbeat, and final-reply events for one ACLI interaction;
+# those events must not race the same volatile history baseline.
+ROOM_WEBHOOK_WAKE_LOCKS: Dict[str, asyncio.Lock] = {}
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1204,7 +1214,177 @@ async def get_status():
             ) and GATEWAY_RC_USER_ID != RC_USER_ID else "not_configured"
         },
         "ddp": ddp_adapter.get_status(),
+        "rc_webhook": {
+            "status": "configured" if webhook_configured() else "not_configured",
+            "path": "/api/rc/webhook/message",
+        },
     }
+
+
+async def process_rocket_chat_message_wake(
+    room_id: str,
+    *,
+    channel_name: Optional[str] = None,
+    hint_message_id: Optional[str] = None,
+    source: str = "wake",
+) -> Dict[str, Any]:
+    """Handle a room wake-up without trusting the event body as transcript truth.
+
+    Rocket.Chat remains the source of truth: the Gateway re-fetches that room,
+    classifies messages, prewarms only newly observed real agent replies, and
+    pushes lightweight SSE signals (never raw message text).
+    """
+    rid = str(room_id or "").strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="room_id is required")
+
+    wake_lock = ROOM_WEBHOOK_WAKE_LOCKS.setdefault(rid, asyncio.Lock())
+    async with wake_lock:
+        had_baseline = rid in ROOM_MESSAGES_CACHE
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            refreshed_replies = await _refresh_active_task_room(client, rid)
+
+        new_replies = refreshed_replies
+        if hint_message_id:
+            # An authenticated outgoing webhook identifies one Rocket.Chat
+            # message. A full history refresh may also discover older messages
+            # absent from a browser's short cache; never narrate that wider diff.
+            # Re-fetching still establishes Rocket.Chat as the source of truth,
+            # while this exact-ID selection keeps concurrent ACLI event bursts
+            # bounded to the message that caused each wake-up.
+            hint = str(hint_message_id).strip()
+            candidates = list(refreshed_replies or [])
+            candidates.extend(ROOM_MESSAGES_CACHE.get(rid, []))
+            hinted_reply = next(
+                (
+                    message
+                    for message in candidates
+                    if str(message.get("id") or message.get("_id") or "") == hint
+                    and is_real_agent_reply(message)
+                ),
+                None,
+            )
+            if hinted_reply is not None:
+                msg_ts = _extract_msg_timestamp(hinted_reply)
+                # Explicit wake => treat as fresh unless clearly old backlog (>15 min).
+                if msg_ts > 0 and (time.time() - msg_ts) > 900:
+                    hinted_reply = None
+            new_replies = [hinted_reply] if hinted_reply is not None else []
+
+    await sse_broadcaster.publish({
+        "type": "room_changed",
+        "room_id": rid,
+        "timestamp": time.time(),
+        "source": source,
+    })
+    if hint_message_id:
+        await sse_broadcaster.publish({
+            "type": "message",
+            "room_id": rid,
+            "msg_id": str(hint_message_id),
+            "timestamp": time.time(),
+            "source": source,
+        })
+
+    resolved_name = (channel_name or "").strip()
+    if not resolved_name:
+        for item in (await _channel_name_hints()).get(rid, []):
+            resolved_name = item
+            break
+
+    scheduled = 0
+    if new_replies:
+        queue = [{
+            "room_id": rid,
+            "channel_name": resolved_name or rid,
+            "queue_category": "ranked",
+            "rank": 1,
+        }]
+        scheduled = await _schedule_background_narration_prewarm(
+            queue=queue,
+            new_replies_by_room={rid: new_replies},
+            supervised_room_ids={rid},
+        )
+
+    return {
+        "success": True,
+        "room_id": rid,
+        "channel_name": resolved_name or None,
+        "source": source,
+        "new_real_agent_replies": len(new_replies or []),
+        "prewarm_scheduled": int(scheduled or 0),
+        "had_baseline": had_baseline,
+    }
+
+
+async def _channel_name_hints() -> Dict[str, List[str]]:
+    """Best-effort room_id -> channel name map from the live RC room list."""
+    hints: Dict[str, List[str]] = {}
+    base_url = get_rc_base_url()
+    headers = {
+        "X-Auth-Token": GATEWAY_RC_AUTH_TOKEN or RC_AUTH_TOKEN,
+        "X-User-Id": GATEWAY_RC_USER_ID or RC_USER_ID,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{base_url}/api/v1/rooms.get?count=100", headers=headers)
+            if resp.status_code != 200 or not resp.json().get("success"):
+                return hints
+            for room in resp.json().get("update", []):
+                rid = str(room.get("_id") or "").strip()
+                name = str(room.get("name") or room.get("fname") or "").strip()
+                if rid and name:
+                    hints.setdefault(rid, []).append(name)
+    except Exception as err:
+        logger.debug("Could not build channel name hints for webhook wake: %s", err)
+    return hints
+
+
+@app.post("/api/rc/webhook/message")
+async def rocket_chat_message_webhook(request: Request, payload: Dict[str, Any] = Body(...)):
+    """Rocket.Chat outgoing-integration wake-up for message-sent events.
+
+    Configure RC: Administration → Integrations → Outgoing → Event: Message Sent
+    → URL: http://<gateway-host>:6891/api/rc/webhook/message
+    → Token: same value as GATEWAY_RC_WEBHOOK_SECRET (min 32 chars).
+
+    Live experiment (required before relying on this path):
+    1) Ed user message → webhook received, no prewarm.
+    2) Real ACLI agent reply → webhook received, prewarm scheduled.
+    3) Heartbeat/routing operational message → webhook optional; never prewarm.
+    If (2) never fires because RC skips bot-flagged messages, keep DDP as primary.
+    """
+    if not webhook_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Rocket.Chat webhook is not configured (set GATEWAY_RC_WEBHOOK_SECRET)",
+        )
+
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    try:
+        normalized = authenticate_webhook_request(headers, payload if isinstance(payload, dict) else {})
+    except WebhookReplayError as err:
+        # Idempotent success: RC retries must not re-run work or return 5xx.
+        logger.info("Ignoring replayed Rocket.Chat webhook: %s", err)
+        return {
+            "success": True,
+            "replayed": True,
+            "detail": str(err),
+        }
+    except WebhookAuthError as err:
+        raise HTTPException(status_code=401, detail=str(err))
+
+    result = await process_rocket_chat_message_wake(
+        normalized["room_id"],
+        channel_name=normalized.get("channel_name") or None,
+        hint_message_id=normalized.get("message_id") or None,
+        source="rc_webhook",
+    )
+    result["replayed"] = False
+    result["user_name"] = normalized.get("user_name") or None
+    result["bot_flag"] = normalized.get("bot") == "1"
+    return result
+
 
 @app.get("/api/rooms")
 async def get_rooms():

@@ -467,10 +467,15 @@ Replace the 25-second Gateway history polling loop and 5-second browser polling 
 
 #### Implementation Staging
 
-- **U-11E-a**: Gateway-owned DDP websocket adapter (`app/main.py`). Connects, subscribes to the two streams, normalizes events, applies watermarks + `is_real_agent_reply`, and dispatches to `_schedule_background_narration_prewarm`. Behind `GATEWAY_RC_EVENTS=1` with poller retained as fallback.
-- **U-11E-b**: Gateway-to-browser SSE push endpoint (`/api/events`), frontend timer retirement, and settings UI dependency hint (`narration_active` requires `attention_active`).
+- **U-11E-a**: Gateway-owned DDP websocket adapter (`app/main.py`). Connects, subscribes to the two streams, normalizes events, applies watermarks + `is_real_agent_reply`, and dispatches to `_schedule_background_narration_prewarm`. Behind `GATEWAY_RC_EVENTS=1` with poller retained as fallback. **Not live-verified** until `GATEWAY_RC_EVENTS=1` is set and `ddp.last_connected_at` is non-null.
+- **U-11E-b**: Gateway-to-browser SSE push endpoint (`/api/events`) and settings UI dependency hint.
+- **U-11E-c (primary wake-up path, 2026-08-10)**: Rocket.Chat **outgoing Message Sent webhook** → `POST /api/rc/webhook/message`.
+  - Shared-secret auth (`GATEWAY_RC_WEBHOOK_SECRET`, min 32 chars) + message-id replay protection (`acli/gateway_state/webhook_message_nonces.json`).
+  - Wake-up only: Gateway re-fetches that room from Rocket.Chat (SoT), classifies, scopes preparation to the exact authenticated `message_id`, and SSE-notifies browsers **without** raw message text. Per-room serialization prevents ACLI event bursts from racing the volatile history baseline.
+  - Browser baseline refresh restored to ~4s history / ~7s rail independent of event health (regression fix).
+  - **Live-verified 2026-08-10 on Rocket.Chat 8.5.2, `#TV_and_memory`:** Ed message → `0/0`; ACLI routing notice → `0/0`; real ACLI/Codex reply → `new_real_agent_replies=1`, `prewarm_scheduled=1`; replay → idempotent success. Rocket.Chat does fire this integration for the installed ACLI reply format.
 
-Status: `VERIFIED` (2026-08-08)
+Status: `VERIFIED` for the primary webhook path on `feat/rc-message-webhook`. DDP remains disabled and unverified as a fallback path, not the active transport.
 
 **Done when:** with the browser closed, a real reply event in an enabled channel starts digest/suggested-message preparation immediately; opening that channel shows the ready result or its in-progress state, without waiting for a refresh interval. An inactive channel receives neither a message subscription nor preparation work.
 

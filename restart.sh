@@ -2,6 +2,17 @@
 # Exit on error
 set -e
 
+# The Voice Gateway's local .env is the authoritative service configuration.
+# ACLI launches can export stale Rocket.Chat credentials into the parent shell;
+# load the project values explicitly so those inherited variables cannot silently
+# override a repaired token during Compose interpolation.
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
 echo "=============================================="
 echo "🔄 Restarting Voice Channel Console Service"
 echo "=============================================="

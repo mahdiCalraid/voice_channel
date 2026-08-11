@@ -131,13 +131,14 @@ function loadFrontend(options = {}) {
     return { elements, sandbox, spoken, storage, storageWrites, documentListeners, intervals };
 }
 
-test("channel discovery refreshes the rail without duplicate polling loops", () => {
+test("channel discovery keeps a snappy baseline refresh independent of event transport", () => {
     const app = loadFrontend();
     app.documentListeners.DOMContentLoaded();
 
+    // Status ~5s, active conversation ~4s, rail/attention ~7s.
     assert.deepEqual(
         app.intervals.map(interval => interval.delay),
-        [15000, 15000, 30000]
+        [5000, 4000, 7000]
     );
 });
 
