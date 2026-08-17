@@ -429,6 +429,27 @@ Status: `VERIFIED` (2026-08-01) — all three slices below landed in order.
    61/61; the Python suite passes 176 with one intentional skip; and the live local
    registry load resolves 30 channels despite the inaccessible external path.
 
+#### U-10e. Daily-use ranking correction
+
+**Status**: `VERIFIED` (2026-08-17)
+
+1. Capped the task waiting-age term at 24 points. It still surfaces neglected work but
+   can no longer grow for weeks and overwhelm channel importance, urgency, and real
+   conversation time.
+2. Raised reviewed-conversation recency to a bounded 90-point signal with a 12-hour
+   half-life. An unreviewed real post retains the separate dominant `New` ordering; after
+   the room is opened, today's activity remains meaningful while configured importance
+   and urgency can take over.
+3. Removed the composer-text preemption freeze. Every verified room event now applies the
+   newest attention queue immediately, including while a draft is present.
+4. Serialized event-driven rail refreshes with a trailing refresh and stale-response
+   rejection so webhook bursts cannot let an older request overwrite newer ordering.
+5. Live proof on Rocket.Chat 8.5.2: `discoveryTool` ranked 4th at 147.38 while
+   `Meeting_Confrences` ranked 13th at 55.88; a real message in `SEC_project` moved the
+   visible browser rail from 9th to 1st with `New`, and opening it cleared the boost and
+   returned it to 7th. The two temporary verification messages were deleted afterward.
+   Automated evidence: 194 Python tests and 76 Node tests pass.
+
 Voice commands for the scheduler are explicitly **out of scope** for U-10.
 
 ## 7. After urgent plan (return to adaptive / Omi)

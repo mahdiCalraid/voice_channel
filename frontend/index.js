@@ -18,6 +18,7 @@ let recognition = null;
 let isListening = false;
 let activeRoomId = null;
 let roomsList = [];
+let roomsLoadRequestSeq = 0;
 let liveRequestSeq = 0;
 let loadOlderRequestSeq = 0;
 let roomHistoryStates = {};
@@ -155,7 +156,6 @@ function syncCommandDraftState(value) {
             localStorage.removeItem("vc_draft_" + activeRoomId);
         }
     }
-    applyPendingAttentionQueueIfReady();
 }
 
 function insertAgentMentionIntoComposer(agent) {
@@ -1405,7 +1405,7 @@ function initSSEEventSource() {
             try {
                 const data = JSON.parse(evt.data);
                 if (data && data.room_id) {
-                    loadRooms();
+                    scheduleChannelRailRefresh();
                     if (data.room_id === activeRoomId) {
                         loadHistory();
                     }
@@ -1413,8 +1413,7 @@ function initSSEEventSource() {
             } catch (e) {}
         });
         es.addEventListener("room_changed", () => {
-            loadRooms();
-            fetchAttentionQueue();
+            scheduleChannelRailRefresh();
         });
         es.addEventListener("prewarm_ready", (evt) => {
             try {
@@ -1847,10 +1846,13 @@ function updateWebhookStatusChip(webhook) {
 
 // 1.5. Room Selector Management
 async function loadRooms() {
+    const requestSeq = ++roomsLoadRequestSeq;
     try {
         const response = await fetch("/api/rooms");
+        if (requestSeq !== roomsLoadRequestSeq) return false;
         if (!response.ok) throw new Error("HTTP error " + response.status);
         const data = await response.json();
+        if (requestSeq !== roomsLoadRequestSeq) return false;
 
         if (data.success && data.rooms && data.rooms.length > 0) {
             roomsList = data.rooms;
@@ -1897,11 +1899,13 @@ async function loadRooms() {
             }
 
             const renderedFromQueue = await fetchAttentionQueue(true);
+            if (requestSeq !== roomsLoadRequestSeq) return false;
             if (!renderedFromQueue) {
                 renderChannelsList();
             }
             updateHeaderRoomInfo();
             await fetchAgentModels(activeRoomId, getRoomName(activeRoomId));
+            return true;
         } else {
             if (roomSelect) {
                 roomSelect.dataset.optionsSignature = "";
@@ -1909,8 +1913,10 @@ async function loadRooms() {
             }
             if (channelsListEl) channelsListEl.innerHTML = `<div class="empty-channels">No rooms found</div>`;
             showTranscriptError("No channels available from Rocket.Chat.");
+            return false;
         }
     } catch (err) {
+        if (requestSeq !== roomsLoadRequestSeq) return false;
         console.error("Failed to load rooms:", err);
         if (roomSelect) {
             roomSelect.dataset.optionsSignature = "";
@@ -1925,6 +1931,7 @@ async function loadRooms() {
             `;
         }
         showTranscriptError("Failed to load rooms: " + err.message);
+        return false;
     }
 }
 
@@ -2174,9 +2181,10 @@ if (btnRefreshChannels) {
 }
 
 let attentionQueueData = [];
-let pendingAttentionQueueData = null;
-let queueHasPendingUpdate = false;
 let lastChannelsListSignature = "";
+let attentionQueueRequestSeq = 0;
+let channelRailRefreshInFlight = false;
+let channelRailRefreshQueued = false;
 
 function formatElapsedSeconds(sec) {
     if (sec == null || isNaN(sec)) return "";
@@ -2189,19 +2197,13 @@ function formatElapsedSeconds(sec) {
     return `${hrs}h ${remMins}m`;
 }
 
-function isMidTurnActive() {
-    const rawInput = commandInput ? commandInput.value.trim() : "";
-    return rawInput.length > 0;
-}
-
 async function fetchAttentionQueue(forceRender = false) {
+    const requestSeq = ++attentionQueueRequestSeq;
     try {
         const resp = await fetch("/api/attention/queue");
+        if (requestSeq !== attentionQueueRequestSeq) return false;
         if (!resp.ok) {
             attentionQueueData = [];
-            pendingAttentionQueueData = null;
-            queueHasPendingUpdate = false;
-            hideQueueUpdateNotice();
             if (forceRender) {
                 renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
                 return true;
@@ -2209,26 +2211,18 @@ async function fetchAttentionQueue(forceRender = false) {
             return false;
         }
         const data = await resp.json();
+        if (requestSeq !== attentionQueueRequestSeq) return false;
         if (data && data.success && Array.isArray(data.queue)) {
-            if (!forceRender && isMidTurnActive()) {
-                pendingAttentionQueueData = data.queue;
-                queueHasPendingUpdate = true;
-                showQueueUpdateNotice();
-            } else {
-                attentionQueueData = data.queue;
-                pendingAttentionQueueData = null;
-                queueHasPendingUpdate = false;
-                hideQueueUpdateNotice();
-                renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
-                return true;
-            }
+            // Real room events are authoritative.  Do not freeze or hide a
+            // changed ordering merely because Ed has text in the composer.
+            attentionQueueData = data.queue;
+            renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
+            return true;
         }
     } catch (err) {
+        if (requestSeq !== attentionQueueRequestSeq) return false;
         console.warn("Could not fetch attention queue:", err);
         attentionQueueData = [];
-        pendingAttentionQueueData = null;
-        queueHasPendingUpdate = false;
-        hideQueueUpdateNotice();
         if (forceRender) {
             renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
             return true;
@@ -2237,43 +2231,21 @@ async function fetchAttentionQueue(forceRender = false) {
     return false;
 }
 
-function showQueueUpdateNotice() {
-    let noticeEl = document.getElementById("queue-update-notice");
-    if (!noticeEl && channelsListEl && channelsListEl.parentElement) {
-        noticeEl = document.createElement("div");
-        noticeEl.id = "queue-update-notice";
-        noticeEl.className = "queue-update-notice";
-        noticeEl.innerHTML = `
-            <span>Queue updated</span>
-            <span class="material-symbols-rounded" style="font-size:16px;">refresh</span>
-        `;
-        noticeEl.addEventListener("click", () => {
-            applyPendingAttentionQueueIfReady(true);
-        });
-        channelsListEl.parentElement.insertBefore(noticeEl, channelsListEl);
-    }
-    if (noticeEl) noticeEl.style.display = "flex";
-}
-
-function hideQueueUpdateNotice() {
-    const noticeEl = document.getElementById("queue-update-notice");
-    if (noticeEl) noticeEl.style.display = "none";
-}
-
-function applyPendingAttentionQueueIfReady(force = false) {
-    if (!queueHasPendingUpdate || !Array.isArray(pendingAttentionQueueData)) {
-        return false;
-    }
-    if (!force && isMidTurnActive()) {
-        return false;
+async function scheduleChannelRailRefresh() {
+    if (channelRailRefreshInFlight) {
+        channelRailRefreshQueued = true;
+        return;
     }
 
-    attentionQueueData = pendingAttentionQueueData;
-    pendingAttentionQueueData = null;
-    queueHasPendingUpdate = false;
-    hideQueueUpdateNotice();
-    renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
-    return true;
+    channelRailRefreshInFlight = true;
+    try {
+        do {
+            channelRailRefreshQueued = false;
+            await loadRooms();
+        } while (channelRailRefreshQueued);
+    } finally {
+        channelRailRefreshInFlight = false;
+    }
 }
 
 let currentModalSnoozedUntil = null;
@@ -2760,7 +2732,6 @@ function renderChannelsList(filterText = "") {
 function handleRoomChange() {
     // Restore UI state of the new active room
     restoreRoomUIData(activeRoomId);
-    applyPendingAttentionQueueIfReady();
 
     // Fetch active agent models for the selected room
     fetchAgentModels(activeRoomId, getRoomName(activeRoomId));
@@ -4808,6 +4779,5 @@ async function sendMessage() {
         showSendFeedback("Failed to send message: " + err.message, "error");
     } finally {
         if (btnSend) btnSend.disabled = false;
-        applyPendingAttentionQueueIfReady();
     }
 }

@@ -170,7 +170,8 @@ class TestAttentionScoring(unittest.TestCase):
         )
         self.assertGreater(score_unseen, score_viewed)
         self.assertGreater(unseen_factors["real_activity_points"], 2000)
-        self.assertLess(viewed_factors["real_activity_points"], 30)
+        self.assertGreater(viewed_factors["real_activity_points"], 50)
+        self.assertLess(viewed_factors["real_activity_points"], 100)
 
         # 4. Unwatched / unknown room -> category 'unknown', score None
         cat, score, factors = calculate_channel_attention_score(
@@ -310,6 +311,52 @@ class TestAttentionScoring(unittest.TestCase):
             ["recent_normal", "important_but_older"],
         )
 
+    def test_old_waiting_age_cannot_bury_recent_more_important_channel(self):
+        """Regression for the live Meeting_Confrences/discoveryTool mismatch."""
+        now = 1_000_000.0
+        config = ChannelAttentionConfig(channels={
+            "Meeting_Confrences": ChannelAttentionEntry(
+                base_importance=3,
+                urgency=UrgencyLevel.NORMAL,
+            ),
+            "discoveryTool": ChannelAttentionEntry(
+                base_importance=4,
+                urgency=UrgencyLevel.HIGH,
+            ),
+        })
+        registry = [{"channel_name": name, "active": True} for name in config.channels]
+        summaries = {
+            "Meeting_Confrences": {
+                "room_id": "meeting",
+                "is_busy": False,
+                "attention_state": AttentionState.NEEDS_HELP,
+                "ready_since": now - (356 * 3600),
+            },
+            "discoveryTool": {
+                "room_id": "discovery",
+                "is_busy": False,
+                "attention_state": AttentionState.NEEDS_REVIEW,
+                "ready_since": now - (256 * 3600),
+            },
+        }
+
+        queue = build_attention_queue(
+            config,
+            registry,
+            summaries,
+            {
+                "Meeting_Confrences": now - (11 * 24 * 3600),
+                "discoveryTool": now - (4 * 3600),
+            },
+            now=now,
+        )
+
+        self.assertEqual(queue[0]["channel_name"], "discoveryTool")
+        self.assertEqual(queue[0]["factors"]["waiting_age_points"], 24.0)
+        meeting = next(item for item in queue if item["channel_name"] == "Meeting_Confrences")
+        self.assertEqual(meeting["factors"]["waiting_age_points"], 24.0)
+        self.assertTrue(meeting["factors"]["waiting_age_capped"])
+
     def test_priority_override_beats_real_conversation_recency(self):
         now = 1_000_000.0
         config = ChannelAttentionConfig(channels={
@@ -399,6 +446,7 @@ class TestAttentionScoring(unittest.TestCase):
 
         item = next(entry for entry in result["queue"] if entry["channel_name"] == "Client_zen")
         self.assertEqual(item["room_id"], room_id)
+        self.assertEqual(item["status"], "active")
         self.assertTrue(item["has_unseen_real_activity"])
         self.assertEqual(item["queue_category"], "ranked")
 

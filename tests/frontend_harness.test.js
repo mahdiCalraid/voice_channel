@@ -1694,7 +1694,7 @@ test("attention rail uses position for ranked priority without printing rank or 
     assert.ok(html.includes("attn-badge-unconfigured"));
 });
 
-test("preemption freeze prevents rail re-sorting while mid-turn composer is active", async () => {
+test("real attention updates repaint the rail even while composer text is active", async () => {
     const app = loadFrontend();
     vm.runInContext(`
         roomsList = [{ id: "r1", name: "voice_channel" }];
@@ -1716,13 +1716,11 @@ test("preemption freeze prevents rail re-sorting while mid-turn composer is acti
     };
 
     await app.sandbox.fetchAttentionQueue(false);
-    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), true);
-    const noticeEl = app.sandbox.document.getElementById("queue-update-notice");
-    assert.ok(noticeEl);
-    assert.equal(noticeEl.style.display, "flex");
+    assert.equal(vm.runInContext("attentionQueueData[0].score", app.sandbox), 200);
+    assert.ok(app.sandbox.document.getElementById("channels-list").innerHTML.includes("voice_channel"));
 });
 
-test("pending attention queue applies immediately when the composer clears", async () => {
+test("clearing the composer is not required to apply an attention update", async () => {
     const app = loadFrontend();
     const command = app.sandbox.document.getElementById("command-input");
     vm.runInContext(`
@@ -1745,15 +1743,12 @@ test("pending attention queue applies immediately when the composer clears", asy
     };
 
     await app.sandbox.fetchAttentionQueue(false);
-    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), true);
+    assert.equal(vm.runInContext("attentionQueueData[0].score", app.sandbox), 200);
 
     command.value = "";
     command.listeners.input({ target: command });
 
-    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), false);
-    assert.equal(vm.runInContext("pendingAttentionQueueData", app.sandbox), null);
     assert.equal(vm.runInContext("attentionQueueData[0].score", app.sandbox), 200);
-    assert.equal(app.sandbox.document.getElementById("queue-update-notice").style.display, "none");
     assert.equal(app.sandbox.document.getElementById("channels-list").innerHTML.includes("#1 · 200"), false);
 });
 
@@ -1972,7 +1967,7 @@ test("failed attention fetch preserves newest-first room order", async () => {
     assert.equal(vm.runInContext("attentionQueueData.length", app.sandbox), 0);
 });
 
-test("composer text freezes attention queue updates until the turn ends", async () => {
+test("composer text does not freeze event-driven attention queue updates", async () => {
     const app = loadFrontend();
     vm.runInContext(`
         roomsList = [{ id: "r1", name: "voice_channel" }];
@@ -1993,16 +1988,47 @@ test("composer text freezes attention queue updates until the turn ends", async 
         throw new Error("Unexpected fetch URL: " + url);
     };
 
-    assert.equal(app.sandbox.isMidTurnActive(), true);
     await app.sandbox.fetchAttentionQueue(false);
-    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), true);
-
-    app.sandbox.document.getElementById("command-input").value = "";
-    app.sandbox.syncCommandDraftState("");
-    app.sandbox.applyPendingAttentionQueueIfReady();
-
-    assert.equal(vm.runInContext("queueHasPendingUpdate", app.sandbox), false);
     assert.ok(app.sandbox.document.getElementById("channels-list").innerHTML.includes("Busy 2m"));
+});
+
+test("an older attention response cannot overwrite a newer event-driven queue", async () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        roomsList = [
+            { id: "older", name: "older_channel" },
+            { id: "newer", name: "newer_channel" }
+        ];
+    `, app.sandbox);
+
+    let releaseOlder;
+    const olderResponse = new Promise(resolve => { releaseOlder = resolve; });
+    let callCount = 0;
+    app.sandbox.fetch = (url) => {
+        if (url !== "/api/attention/queue") throw new Error("Unexpected fetch URL: " + url);
+        callCount += 1;
+        if (callCount === 1) return olderResponse;
+        return Promise.resolve({
+            ok: true,
+            json: async () => ({
+                success: true,
+                queue: [{ channel_name: "newer_channel", queue_category: "ranked", score: 200 }]
+            })
+        });
+    };
+
+    const olderRequest = app.sandbox.fetchAttentionQueue(true);
+    await app.sandbox.fetchAttentionQueue(true);
+    releaseOlder({
+        ok: true,
+        json: async () => ({
+            success: true,
+            queue: [{ channel_name: "older_channel", queue_category: "ranked", score: 999 }]
+        })
+    });
+    await olderRequest;
+
+    assert.equal(vm.runInContext("attentionQueueData[0].channel_name", app.sandbox), "newer_channel");
 });
 
 test("gateway dispatch checklist UI elements exist in console settings", async () => {

@@ -1668,6 +1668,26 @@ async def get_attention_queue(now: Optional[float] = None):
             if room_id:
                 room_marker_by_id[room_id] = str(r.get("lm") or r.get("_updatedAt") or "")
 
+    # A configured Rocket.Chat room is live even when its optional ACLI matter
+    # folder is not mounted in this container.  Add only missing live rooms to
+    # the in-memory registry used for this request; explicit inactive registry
+    # entries remain authoritative and no registry file is modified.
+    registered_names = {
+        str(item.get("channel_name") or item.get("name") or "").casefold()
+        for item in channel_registry
+    }
+    configured_names = {str(name).casefold() for name in config.channels}
+    for room in room_by_cname.values():
+        room_name = str(room.get("name") or room.get("fname") or "").strip()
+        room_key = room_name.casefold()
+        if room_name and room_key in configured_names and room_key not in registered_names:
+            channel_registry.append({
+                "channel_name": room_name,
+                "active": True,
+                "source": "rocket_chat",
+            })
+            registered_names.add(room_key)
+
     # /api/history normally hydrates the supervisor, but the browser polls that
     # endpoint only for the focused room. Refresh active tasks here as part of
     # the all-channel attention poll so a background response can clear Busy

@@ -25,6 +25,18 @@ ACTIONABLE_ATTENTION_STATES = {
     AttentionState.READY_FOR_INSTRUCTION,
 }
 
+# Attention age is useful, but it must never grow without bound.  The previous
+# linear +2/hour term let an old task accumulate hundreds of points and bury a
+# recently active, more important channel indefinitely.
+MAX_WAITING_AGE_POINTS = 24.0
+
+# Once a room has been viewed, recency remains a meaningful daily-use signal,
+# but at a much smaller scale than the unreviewed/New boost.  A 12-hour
+# half-life keeps today's work visible while allowing configured importance and
+# urgency to win after Ed has reviewed the update.
+REVIEWED_ACTIVITY_MAX_POINTS = 90.0
+REVIEWED_ACTIVITY_HALF_LIFE_MINUTES = 12.0 * 60.0
+
 
 def _parse_iso_to_utc(iso_str: Optional[str]) -> Optional[datetime]:
     if not iso_str:
@@ -87,7 +99,9 @@ def calculate_channel_attention_score(
                 if has_unseen_real_activity or (unread_info and unread_info.get("has_unread")):
                     real_activity_points = 2500.0 / (1.0 + (real_activity_age_minutes / 20.0))
                 else:
-                    real_activity_points = 25.0 / (1.0 + (real_activity_age_minutes / 180.0))
+                    real_activity_points = REVIEWED_ACTIVITY_MAX_POINTS / (
+                        1.0 + (real_activity_age_minutes / REVIEWED_ACTIVITY_HALF_LIFE_MINUTES)
+                    )
         except (TypeError, ValueError):
             pass
 
@@ -132,12 +146,13 @@ def calculate_channel_attention_score(
     else:
         urgency_points = 0.0
 
-    # Waiting age points (+2.0 points per hour since ready_since)
+    # Waiting age points (+2.0/hour, capped).  Age represents a reminder, not
+    # an ever-growing override of channel settings and real conversation time.
     ready_since = attention_summary.get("ready_since")
     if ready_since is not None and ready_since <= now_ts:
         waiting_age_seconds = max(0.0, now_ts - float(ready_since))
         waiting_age_hours = waiting_age_seconds / 3600.0
-        waiting_age_points = waiting_age_hours * 2.0
+        waiting_age_points = min(waiting_age_hours * 2.0, MAX_WAITING_AGE_POINTS)
     else:
         waiting_age_seconds = 0.0
         waiting_age_hours = 0.0
@@ -182,6 +197,7 @@ def calculate_channel_attention_score(
         "urgency_points": round(urgency_points, 2),
         "waiting_age_hours": round(waiting_age_hours, 2),
         "waiting_age_points": round(waiting_age_points, 2),
+        "waiting_age_capped": waiting_age_hours * 2.0 > MAX_WAITING_AGE_POINTS,
         "deadline_points": round(deadline_points, 2),
         "blocking_points": round(blocking_points, 2),
         "boost_points": round(boost_points, 2),
