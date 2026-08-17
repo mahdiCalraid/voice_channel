@@ -18,11 +18,18 @@ class TestReadCursor(unittest.TestCase):
             {"lane": "system", "text": "Routing to codex", "timestamp": 200.0, "event": {"kind": "routing"}},
             {"lane": "system", "text": "Heartbeat", "timestamp": 300.0, "event": {"kind": "heartbeat"}},
             {"lane": "agent", "text": "Review is complete.", "timestamp": 400.0, "event": {"kind": "agent_response"}},
+            {
+                "lane": "system",
+                "text": "[voice-gateway/v1; signature=test]\\n@codex Fix everything.",
+                "timestamp": 500.0,
+                "event": {"kind": "gateway_dispatch"},
+            },
         ]
         self.assertTrue(is_real_conversation_message(messages[0]))
         self.assertFalse(is_real_conversation_message(messages[1]))
         self.assertFalse(is_real_conversation_message(messages[2]))
-        self.assertEqual(get_last_real_conversation_timestamp(messages), 400.0)
+        self.assertTrue(is_real_conversation_message(messages[4]))
+        self.assertEqual(get_last_real_conversation_timestamp(messages), 500.0)
 
     def test_is_real_agent_reply(self):
         # Real agent replies
@@ -171,6 +178,25 @@ class TestReadCursor(unittest.TestCase):
         self.assertNotIn("text", cursor)
         self.assertNotIn("content", cursor)
         self.assertNotIn("excerpt", cursor)
+
+    def test_recent_unseen_activity_without_cursor_and_after_view(self):
+        room_id = f"test_unseen_{time.time()}"
+        now = time.time()
+        messages = [{
+            "id": "ed-1",
+            "lane": "user",
+            "name": "ed",
+            "text": "Please take a look.",
+            "timestamp": now - 30,
+            "event": {"kind": "user_message"},
+        }]
+        unseen = evaluate_room_unread_status(room_id, messages)
+        self.assertTrue(unseen["has_unseen_real_activity"])
+        self.assertFalse(unseen["has_unread"])
+
+        update_read_cursor(room_id, msg_id="ed-1", ts=now, actor="ed")
+        viewed = evaluate_room_unread_status(room_id, messages)
+        self.assertFalse(viewed["has_unseen_real_activity"])
 
 
 if __name__ == "__main__":

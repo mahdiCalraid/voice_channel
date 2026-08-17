@@ -77,6 +77,7 @@ from app.read_cursor import (
     get_all_read_cursors,
     get_read_cursor,
     is_real_agent_reply,
+    is_real_conversation_message,
     update_read_cursor,
 )
 
@@ -1772,7 +1773,12 @@ async def get_attention_queue(now: Optional[float] = None):
                 "ready_since": None,
                 "active_task_count": 0,
             }
-            unread_eval = {"has_unread": False, "unread_count": 0, "last_agent_reply_ts": None}
+            unread_eval = {
+                "has_unread": False,
+                "unread_count": 0,
+                "last_agent_reply_ts": None,
+                "has_unseen_real_activity": False,
+            }
             real_activity_map[cname] = None
 
         room_summaries[cname] = summary
@@ -2032,10 +2038,16 @@ async def get_history(
     supervised_interaction_ids = _ingest_supervised_history(room_id, raw_messages, cleaned_messages)
     ROOM_MESSAGES_CACHE[room_id] = cleaned_messages
 
-    # Update read cursor for Ed when viewing room history
-    real_replies = [m for m in cleaned_messages if is_real_agent_reply(m)]
-    if real_replies:
-        latest_m = real_replies[-1]
+    # Loading the visible room means Ed has reviewed every substantive message
+    # on the latest page, including Ed's own posts. Marking only agent replies
+    # can leave a room artificially "unseen" when its newest real message came
+    # from Ed (especially for the room restored at startup).
+    if offset == 0 and not effective_latest:
+        real_messages = [m for m in cleaned_messages if is_real_conversation_message(m)]
+        latest_m = max(real_messages, key=_extract_msg_timestamp) if real_messages else None
+    else:
+        latest_m = None
+    if latest_m:
         m_id = str(latest_m.get("id") or latest_m.get("_id") or "")
         m_ts = _extract_msg_timestamp(latest_m)
         update_read_cursor(room_id, msg_id=m_id, ts=m_ts, actor="ed")

@@ -2039,11 +2039,17 @@ function selectRoom(roomId) {
         targetRoom.has_unread = false;
         targetRoom.unread_count = 0;
     }
+    (attentionQueueData || []).forEach((item) => {
+        if (item && (item.room_id === roomId || (targetRoom && item.channel_name === targetRoom.name))) {
+            item.has_unread = false;
+            item.has_unseen_real_activity = false;
+        }
+    });
     fetch("/api/read_cursor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ room_id: roomId })
-    }).catch(err => console.debug("Read cursor update error:", err));
+    }).then(() => fetchAttentionQueue(true)).catch(err => console.debug("Read cursor update error:", err));
 
     renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
     updateHeaderRoomInfo();
@@ -2683,12 +2689,20 @@ function renderChannelsList(filterText = "") {
         const overrideB = Boolean(qb && qb.priority_override);
         if (overrideA !== overrideB) return overrideA ? -1 : 1;
 
+        const needsEyes = (item) => Boolean(
+            item && (
+                item.has_unseen_real_activity
+                || item.has_unread
+                || item.queue_category === "busy"
+            )
+        );
+        const eyesA = needsEyes(qa);
+        const eyesB = needsEyes(qb);
+        if (eyesA !== eyesB) return eyesA ? -1 : 1;
+
         const realTimeA = realConversationTimestamp(qa);
         const realTimeB = realConversationTimestamp(qb);
-        const hasRealA = realTimeA > 0;
-        const hasRealB = realTimeB > 0;
-        if (hasRealA !== hasRealB) return hasRealA ? -1 : 1;
-        if (realTimeA !== realTimeB) return realTimeB - realTimeA;
+        if (eyesA && eyesB && realTimeA !== realTimeB) return realTimeB - realTimeA;
 
         const scoreA = qa && qa.score != null && Number.isFinite(Number(qa.score)) ? Number(qa.score) : null;
         const scoreB = qb && qb.score != null && Number.isFinite(Number(qb.score)) ? Number(qb.score) : null;
@@ -2697,6 +2711,8 @@ function renderChannelsList(filterText = "") {
             if (scoreB === null) return -1;
             if (scoreA !== scoreB) return scoreB - scoreA;
         }
+
+        if (realTimeA !== realTimeB) return realTimeB - realTimeA;
 
         // /api/rooms is already newest-first. Preserve that order whenever
         // attention data is absent, incomplete, or tied instead of silently

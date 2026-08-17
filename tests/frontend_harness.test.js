@@ -1780,13 +1780,38 @@ test("attention rail sorts by real conversation recency except explicit priority
     const html = app.sandbox.document.getElementById("channels-list").innerHTML;
     const order = [
         "configured_critical",
-        "unconfigured_new",
-        "unconfigured_old",
+        "configured_old",
         "configured_new",
-        "configured_old"
+        "unconfigured_new",
+        "unconfigured_old"
     ].map(name => html.indexOf(`data-channel-name="${name}"`));
     assert.ok(order.every(index => index >= 0));
     assert.deepEqual([...order].sort((a, b) => a - b), order);
+});
+
+test("unseen real activity rises above viewed importance until the room is opened", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        roomsList = [
+            { id: "imp", name: "important_reviewed" },
+            { id: "fresh", name: "fresh_update" }
+        ];
+        attentionQueueData = [
+            { channel_name: "important_reviewed", configured: true, queue_category: "ranked", score: 900, last_real_message_at: 50, has_unseen_real_activity: false },
+            { channel_name: "fresh_update", configured: true, queue_category: "ranked", score: 10, last_real_message_at: 500, has_unseen_real_activity: true }
+        ];
+        renderChannelsList();
+    `, app.sandbox);
+    let html = app.sandbox.document.getElementById("channels-list").innerHTML;
+    assert.ok(html.indexOf('data-channel-name="fresh_update"') < html.indexOf('data-channel-name="important_reviewed"'));
+
+    vm.runInContext(`
+        attentionQueueData[1].has_unseen_real_activity = false;
+        lastChannelsListSignature = "";
+        renderChannelsList();
+    `, app.sandbox);
+    html = app.sandbox.document.getElementById("channels-list").innerHTML;
+    assert.ok(html.indexOf('data-channel-name="important_reviewed"') < html.indexOf('data-channel-name="fresh_update"'));
 });
 
 test("channel rail skips a second paint when the payload is unchanged", () => {

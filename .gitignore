@@ -1,11 +1,13 @@
 .pytest_cache/
 __pycache__/
 *.pyc
+*.log
 .DS_Store
 *.db
 .env
 .venv/
 .venv-chatterbox/
+node_modules/
 .voice_gateway_matter_mounts.override.yml
 env/
 tmp/

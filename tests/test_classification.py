@@ -456,6 +456,74 @@ class TestMessageClassification(unittest.TestCase):
         self.assertEqual([message["id"] for message in res["messages"]], ["m2", "m3"])
         self.assertEqual(res["next_before"], "2026-07-20T20:02:00.000Z")
 
+    @patch("httpx.AsyncClient.get")
+    @patch("app.main.update_read_cursor")
+    def test_latest_history_marks_newest_real_message_read(self, mock_update_cursor, mock_get):
+        from app.main import get_history
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "success": True,
+            "messages": [
+                {
+                    "_id": "ed-latest",
+                    "msg": "Please fix everything.",
+                    "u": {"username": "ed"},
+                    "ts": "2026-08-17T15:00:00.000Z",
+                },
+                {
+                    "_id": "agent-older",
+                    "msg": "**@codex**: Earlier response.",
+                    "u": {"username": "acli_bot"},
+                    "ts": "2026-08-17T14:59:00.000Z",
+                },
+            ],
+        }
+        mock_get.return_value = response
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(get_history(roomId="test-room-latest-real", count=30))
+
+        mock_update_cursor.assert_called_once()
+        self.assertEqual(mock_update_cursor.call_args.kwargs["msg_id"], "ed-latest")
+
+    @patch("httpx.AsyncClient.get")
+    @patch("app.main.update_read_cursor")
+    def test_older_history_pages_do_not_advance_read_cursor(self, mock_update_cursor, mock_get):
+        from app.main import get_history
+
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "success": True,
+            "messages": [{
+                "_id": "older-page-message",
+                "msg": "Older substantive message.",
+                "u": {"username": "ed"},
+                "ts": "2026-08-16T12:00:00.000Z",
+            }],
+        }
+        mock_get.return_value = response
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            get_history(
+                roomId="test-room-older-page-read",
+                count=30,
+                before="2026-08-16T12:01:00.000Z",
+            )
+        )
+        loop.run_until_complete(
+            get_history(
+                roomId="test-room-offset-page-read",
+                count=30,
+                offset=30,
+            )
+        )
+
+        mock_update_cursor.assert_not_called()
+
     @patch("httpx.AsyncClient.post")
     def test_send_message_success(self, mock_post):
         from app.main import send_message, MessageSendRequest

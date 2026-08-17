@@ -123,8 +123,8 @@ class TestAttentionScoring(unittest.TestCase):
         self.assertEqual(factors["unread_base_points"], 20.0)
         self.assertEqual(factors["unread_freshness_points"], 7.5)
         self.assertEqual(factors["unread_points"], 27.5)
-        self.assertAlmostEqual(factors["real_activity_points"], 333.33, places=2)
-        self.assertAlmostEqual(score, 388.83, places=2)
+        self.assertAlmostEqual(factors["real_activity_points"], 1428.57, places=2)
+        self.assertAlmostEqual(score, 1484.07, places=2)
 
     def test_ranking_priority_hierarchy_ordering(self):
         now = 1000000.0
@@ -159,6 +159,18 @@ class TestAttentionScoring(unittest.TestCase):
         self.assertGreater(score_fresh_unread, score_high_imp)
         self.assertGreater(score_overdue, score_idle_ranked)
         self.assertGreater(score_fresh_unread, score_idle_ranked)
+
+        viewed_info = {"has_unread": False, "has_unseen_real_activity": False, "last_real_message_at": now}
+        _, score_viewed, viewed_factors = calculate_channel_attention_score(
+            entry_high_imp, {"status": "active"}, {"attention_state": AttentionState.NEEDS_REVIEW}, now=now, unread_info=viewed_info
+        )
+        unseen_info = {"has_unread": False, "has_unseen_real_activity": True, "last_real_message_at": now}
+        _, score_unseen, unseen_factors = calculate_channel_attention_score(
+            entry_idle, {"status": "active"}, {"attention_state": AttentionState.NONE}, now=now, unread_info=unseen_info
+        )
+        self.assertGreater(score_unseen, score_viewed)
+        self.assertGreater(unseen_factors["real_activity_points"], 2000)
+        self.assertLess(viewed_factors["real_activity_points"], 30)
 
         # 4. Unwatched / unknown room -> category 'unknown', score None
         cat, score, factors = calculate_channel_attention_score(
@@ -266,11 +278,37 @@ class TestAttentionScoring(unittest.TestCase):
             name: {"room_id": name, "is_busy": False, "attention_state": AttentionState.NEEDS_REVIEW}
             for name in config.channels
         }
-        queue = build_attention_queue(
+        viewed = build_attention_queue(
             config, registry, summaries,
             {"important_but_older": now - 7200, "recent_normal": now - 30}, now=now,
         )
-        self.assertEqual([item["channel_name"] for item in queue], ["recent_normal", "important_but_older"])
+        self.assertEqual(
+            [item["channel_name"] for item in viewed],
+            ["important_but_older", "recent_normal"],
+        )
+
+        unread_map = {
+            "recent_normal": {
+                "has_unread": False,
+                "has_unseen_real_activity": True,
+                "last_real_message_at": now - 30,
+            },
+            "important_but_older": {
+                "has_unread": False,
+                "has_unseen_real_activity": False,
+                "last_real_message_at": now - 7200,
+            },
+        }
+        unseen = build_attention_queue(
+            config, registry, summaries,
+            {"important_but_older": now - 7200, "recent_normal": now - 30},
+            now=now,
+            room_unread_map=unread_map,
+        )
+        self.assertEqual(
+            [item["channel_name"] for item in unseen],
+            ["recent_normal", "important_but_older"],
+        )
 
     def test_priority_override_beats_real_conversation_recency(self):
         now = 1_000_000.0

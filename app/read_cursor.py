@@ -78,22 +78,29 @@ def is_real_conversation_message(msg: Dict[str, Any]) -> bool:
 
     Channel ordering is intentionally broader than unread-reply detection: a recent
     instruction from Ed and a recent substantive agent response both mean the
-    channel has an active real conversation.  Routing notices, heartbeats, status
-    changes, and all other system-lane messages must never refresh this timestamp.
+    channel has an active real conversation. A signed Gateway dispatch is the
+    transport form of Ed's confirmed instruction, despite using the system lane.
+    Routing notices, heartbeats, status changes, and every other system-lane
+    message must never refresh this timestamp.
     """
-    if not isinstance(msg, dict) or msg.get("lane") == "system":
+    if not isinstance(msg, dict):
         return False
 
     event = msg.get("event") or {}
     if not isinstance(event, dict):
         event = {}
+    text = str(msg.get("text") or msg.get("msg") or "").strip()
+    if event.get("kind") == "gateway_dispatch":
+        return bool(text)
+    if msg.get("lane") == "system":
+        return False
     if event.get("kind") in {
         "routing", "routing_notice", "heartbeat", "model_change",
-        "model_selected", "status_update", "system_notice", "gateway_dispatch",
+        "model_selected", "status_update", "system_notice",
     }:
         return False
 
-    return bool(str(msg.get("text") or msg.get("msg") or "").strip())
+    return bool(text)
 
 
 def get_last_real_conversation_timestamp(messages: List[Dict[str, Any]]) -> Optional[float]:
@@ -178,6 +185,19 @@ def evaluate_room_unread_status(room_id: str, messages: List[Dict[str, Any]]) ->
     last_read_ts = float(cursor.get("last_read_ts") or 0.0) if cursor else 0.0
     last_read_id = cursor.get("last_read_msg_id") if cursor else None
 
+    last_real_message_at = get_last_real_conversation_timestamp(messages)
+    # A room with no cursor still rises for a *recent* real post so live
+    # updates are not buried. Older backlog stays quiet until Ed opens it.
+    unseen_horizon_seconds = 4 * 3600
+    now_ts = time.time()
+    if last_real_message_at:
+        if cursor:
+            has_unseen_real_activity = last_real_message_at > last_read_ts
+        else:
+            has_unseen_real_activity = (now_ts - last_real_message_at) <= unseen_horizon_seconds
+    else:
+        has_unseen_real_activity = False
+
     real_agent_replies = [m for m in messages if is_real_agent_reply(m)]
     if not real_agent_replies:
         return {
@@ -185,6 +205,8 @@ def evaluate_room_unread_status(room_id: str, messages: List[Dict[str, Any]]) ->
             "unread_count": 0,
             "last_agent_reply_ts": None,
             "last_agent_reply_id": None,
+            "last_real_message_at": last_real_message_at,
+            "has_unseen_real_activity": has_unseen_real_activity,
         }
 
     latest_reply = real_agent_replies[-1]
@@ -215,4 +237,6 @@ def evaluate_room_unread_status(room_id: str, messages: List[Dict[str, Any]]) ->
         "unread_count": unread_count,
         "last_agent_reply_ts": latest_reply_ts if latest_reply_ts > 0 else None,
         "last_agent_reply_id": latest_reply_id,
+        "last_real_message_at": last_real_message_at,
+        "has_unseen_real_activity": has_unseen_real_activity,
     }

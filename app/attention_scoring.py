@@ -71,24 +71,23 @@ def calculate_channel_attention_score(
     if attention_summary.get("is_busy"):
         return "busy", None, None
 
-    # 5. Real conversation recency.  This is deliberately the dominant normal
-    # ordering signal: a new instruction from Ed or a substantive reply from an
-    # associate should bring that channel to the front.  System messages never
-    # populate last_real_message_at.
+    # 5. Real conversation recency.  Unreviewed posts (Ed or a worker) get a
+    # large boost so the channel rises immediately.  After Ed opens the room
+    # the boost collapses and ordinary importance / urgency take over.
     last_real_message_at = None
     real_activity_age_minutes = None
     real_activity_points = 0.0
+    has_unseen_real_activity = bool(unread_info and unread_info.get("has_unseen_real_activity"))
     if unread_info and unread_info.get("last_real_message_at") is not None:
         try:
             candidate_ts = float(unread_info["last_real_message_at"])
             if candidate_ts <= now_ts:
                 last_real_message_at = candidate_ts
                 real_activity_age_minutes = max(0.0, now_ts - candidate_ts) / 60.0
-                # 500 points when brand new, 250 after 30 minutes, and 100
-                # after two hours.  Normal importance must not defeat a newer
-                # real conversation; explicit priority_override is the escape
-                # hatch for genuinely exceptional channels.
-                real_activity_points = 500.0 / (1.0 + (real_activity_age_minutes / 30.0))
+                if has_unseen_real_activity or (unread_info and unread_info.get("has_unread")):
+                    real_activity_points = 2500.0 / (1.0 + (real_activity_age_minutes / 20.0))
+                else:
+                    real_activity_points = 25.0 / (1.0 + (real_activity_age_minutes / 180.0))
         except (TypeError, ValueError):
             pass
 
@@ -114,7 +113,7 @@ def calculate_channel_attention_score(
     attn_state = attention_summary.get("attention_state")
     is_actionable_state = (attn_state in ACTIONABLE_ATTENTION_STATES)
 
-    if not is_actionable_state and not has_unread:
+    if not is_actionable_state and not has_unread and not has_unseen_real_activity:
         if attn_state is None or attn_state == AttentionState.UNKNOWN:
             return "unknown", None, None
         return "idle", None, None
@@ -194,6 +193,7 @@ def calculate_channel_attention_score(
         "unread_freshness_points": round(unread_freshness_points, 2),
         "unread_points": round(unread_points, 2),
         "has_unread": has_unread,
+        "has_unseen_real_activity": has_unseen_real_activity,
         "snoozed": False,
         "total_score": total_score,
     }
@@ -271,6 +271,7 @@ def build_attention_queue(
         )
 
         has_unread = bool(unread_info and unread_info.get("has_unread"))
+        has_unseen_real_activity = bool(unread_info and unread_info.get("has_unseen_real_activity"))
         unread_count = int(unread_info.get("unread_count", 0)) if unread_info else 0
 
         queue_items.append({
@@ -283,6 +284,7 @@ def build_attention_queue(
             "attention_state": attn_state_val,
             "is_busy": bool(attn_summary.get("is_busy")),
             "has_unread": has_unread,
+            "has_unseen_real_activity": has_unseen_real_activity,
             "unread_count": unread_count,
             "working_since": working_since,
             "working_elapsed_seconds": working_elapsed,
@@ -296,22 +298,27 @@ def build_attention_queue(
         })
 
     def sort_key(item: Dict[str, Any]):
-        # An explicit override is reserved for truly critical work.  Every
-        # other channel is sorted primarily by its last real conversation, not
-        # Rocket.Chat's lm/_updatedAt system traffic or a calculated score.
+        # Unreviewed real posts (or a live Busy worker) rise first by recency.
+        # After Ed views a room the unseen flag drops and importance score wins.
         override_priority = 0 if item["priority_override"] else 1
         suppressed_priority = 1 if item["queue_category"] in {"inactive", "snoozed"} else 0
-        has_real_activity_priority = 0 if item["last_real_message_at"] is not None else 1
+        needs_eyes = bool(
+            item.get("has_unseen_real_activity")
+            or item.get("has_unread")
+            or item["queue_category"] == "busy"
+        )
+        needs_eyes_priority = 0 if needs_eyes else 1
         activity_priority = -(item["last_real_message_at"] or 0.0)
         has_score_priority = 0 if item["score"] is not None else 1
         score_priority = -(item["score"] or 0.0)
         return (
             suppressed_priority,
             override_priority,
-            has_real_activity_priority,
-            activity_priority,
+            needs_eyes_priority,
+            activity_priority if needs_eyes else 0.0,
             has_score_priority,
             score_priority,
+            activity_priority,
             item["channel_name"].lower(),
         )
 
