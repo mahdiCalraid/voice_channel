@@ -49,6 +49,7 @@ const btnMessageReadToggle = document.getElementById("btn-message-read-toggle");
 const messageReadToggleIcon = document.getElementById("message-read-toggle-icon");
 const btnMessageReadStop = document.getElementById("btn-message-read-stop");
 const btnMessageReadClose = document.getElementById("btn-message-read-close");
+const messageReadSpeedSelect = document.getElementById("message-read-player-speed");
 const commandInput = document.getElementById("command-input");
 const btnMic = document.getElementById("btn-mic");
 const btnSend = document.getElementById("btn-send");
@@ -1483,6 +1484,9 @@ function init() {
     btnPlayPause.addEventListener("click", handlePlayPause);
     btnStop.addEventListener("click", handleStop);
     speedRange.addEventListener("input", handleSpeedChange);
+    if (messageReadSpeedSelect) {
+        messageReadSpeedSelect.addEventListener("change", handleSpeedChange);
+    }
     if (digestContent) {
         digestContent.addEventListener("input", handleNarrationEdit);
     }
@@ -1712,11 +1716,23 @@ function bindCopyMessageControls() {
             if (readBtn) {
                 event.preventDefault();
                 event.stopPropagation();
+                
+                let speechText = readBtn.getAttribute("data-raw-text") || "";
+                const card = readBtn.closest(".chat-card");
+                if (card) {
+                    const chatBody = card.querySelector(".chat-body");
+                    if (chatBody) {
+                        // Use innerText for visible text (dropping markdown characters), 
+                        // fallback to textContent (for test harnesses) or raw text.
+                        speechText = chatBody.innerText || chatBody.textContent || speechText;
+                    }
+                }
+
                 startMessageReadAloud({
                     messageId: readBtn.getAttribute("data-message-id") || "",
                     roomId: activeRoomId,
                     author: readBtn.getAttribute("data-author") || "Agent",
-                    text: readBtn.getAttribute("data-raw-text") || ""
+                    text: speechText
                 });
             }
         });
@@ -2051,6 +2067,9 @@ btnGenerateDigest.addEventListener("click", handleGenerateDigest);
 btnPlayPause.addEventListener("click", handlePlayPause);
 btnStop.addEventListener("click", handleStop);
 speedRange.addEventListener("input", handleSpeedChange);
+if (messageReadSpeedSelect) {
+    messageReadSpeedSelect.addEventListener("change", handleSpeedChange);
+}
 if (digestContent) {
     digestContent.addEventListener("input", handleNarrationEdit);
 }
@@ -4550,7 +4569,17 @@ function handleStop() {
     updateVoiceModeUI(voiceMode);
 }
 
-function handleSpeedChange() {
+function handleSpeedChange(event) {
+    if (event && messageReadSpeedSelect && event.target === messageReadSpeedSelect) {
+        speedRange.value = messageReadSpeedSelect.value;
+    } else if (messageReadSpeedSelect) {
+        // Find closest match or exact string
+        const valStr = parseFloat(speedRange.value).toFixed(1);
+        if (messageReadSpeedSelect.querySelector(`option[value="${valStr}"]`)) {
+            messageReadSpeedSelect.value = valStr;
+        }
+    }
+
     speechRate = parseFloat(speedRange.value);
     speedVal.innerText = `${speechRate.toFixed(1)}x`;
     const source = playbackSource === "message" && messageReadAloudState ? "message" : "narration";
