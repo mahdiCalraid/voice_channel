@@ -327,6 +327,81 @@ class TestAttentionScoring(unittest.TestCase):
         )
         self.assertEqual([item["channel_name"] for item in queue], ["critical", "recent_normal"])
 
+    def test_config_only_live_room_keeps_new_state_in_attention_queue(self):
+        now = time.time()
+        room_id = "room-config-only-new"
+        marker = "2026-08-17T15:44:25.869Z"
+        config = ChannelAttentionConfig(channels={
+            "Client_zen": ChannelAttentionEntry(base_importance=3),
+        })
+        message = {
+            "_id": "config-only-reply",
+            "timestamp": now - 5,
+            "lane": "agent",
+            "name": "codex",
+            "text": "Completed the requested update.",
+        }
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "success": True,
+                    "update": [{
+                        "_id": room_id,
+                        "name": "Client_zen",
+                        "t": "c",
+                        "lm": marker,
+                        "_updatedAt": marker,
+                    }],
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        previous_messages = main_module.ROOM_MESSAGES_CACHE.get(room_id)
+        previous_activity = main_module.ROOM_REAL_ACTIVITY_CACHE.get(room_id)
+        main_module.ROOM_MESSAGES_CACHE[room_id] = [message]
+        main_module.ROOM_REAL_ACTIVITY_CACHE[room_id] = {
+            "marker": marker,
+            "last_real_message_at": now - 5,
+        }
+        try:
+            with patch.object(main_module, "load_channel_attention_config", return_value=config), \
+                 patch.object(main_module, "load_channel_registry", return_value=([], "test")), \
+                 patch.object(main_module.httpx, "AsyncClient", FakeClient):
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(main_module.get_attention_queue(now=now))
+        finally:
+            if previous_messages is None:
+                main_module.ROOM_MESSAGES_CACHE.pop(room_id, None)
+            else:
+                main_module.ROOM_MESSAGES_CACHE[room_id] = previous_messages
+            if previous_activity is None:
+                main_module.ROOM_REAL_ACTIVITY_CACHE.pop(room_id, None)
+            else:
+                main_module.ROOM_REAL_ACTIVITY_CACHE[room_id] = previous_activity
+
+        item = next(entry for entry in result["queue"] if entry["channel_name"] == "Client_zen")
+        self.assertEqual(item["room_id"], room_id)
+        self.assertTrue(item["has_unseen_real_activity"])
+        self.assertEqual(item["queue_category"], "ranked")
+
     def test_get_attention_queue_endpoint(self):
         client = TestClient(app)
         resp = client.get("/api/attention/queue?now=1000000.0")

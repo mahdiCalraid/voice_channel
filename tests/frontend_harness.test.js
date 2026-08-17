@@ -1814,6 +1814,37 @@ test("unseen real activity rises above viewed importance until the room is opene
     assert.ok(html.indexOf('data-channel-name="important_reviewed"') < html.indexOf('data-channel-name="fresh_update"'));
 });
 
+test("a room-level New badge outranks reviewed and Busy queue items", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        roomsList = [
+            { id: "reviewed", name: "important_reviewed" },
+            { id: "busy", name: "busy_worker" },
+            {
+                id: "config-only",
+                name: "config_only_new",
+                has_unread: true,
+                last_real_message_at: 500
+            }
+        ];
+        attentionQueueData = [
+            { channel_name: "important_reviewed", queue_category: "ranked", score: 900, has_unread: false },
+            { channel_name: "busy_worker", queue_category: "busy", last_real_message_at: 600, has_unread: false },
+            { channel_name: "config_only_new", queue_category: "unknown", score: null, has_unread: false, has_unseen_real_activity: false }
+        ];
+        renderChannelsList();
+    `, app.sandbox);
+
+    const html = app.sandbox.document.getElementById("channels-list").innerHTML;
+    const newIndex = html.indexOf('data-channel-name="config_only_new"');
+    const busyIndex = html.indexOf('data-channel-name="busy_worker"');
+    const reviewedIndex = html.indexOf('data-channel-name="important_reviewed"');
+    assert.ok(newIndex >= 0 && busyIndex >= 0 && reviewedIndex >= 0);
+    assert.ok(newIndex < busyIndex);
+    assert.ok(newIndex < reviewedIndex);
+    assert.ok(html.includes('title="Unreviewed real activity in this channel">New</span>'));
+});
+
 test("channel rail skips a second paint when the payload is unchanged", () => {
     const app = loadFrontend();
     vm.runInContext(`

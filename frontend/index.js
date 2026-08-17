@@ -2037,6 +2037,7 @@ function selectRoom(roomId) {
     const targetRoom = roomsList.find(r => r.id === roomId);
     if (targetRoom) {
         targetRoom.has_unread = false;
+        targetRoom.has_unseen_real_activity = false;
         targetRoom.unread_count = 0;
     }
     (attentionQueueData || []).forEach((item) => {
@@ -2458,12 +2459,16 @@ async function saveAttentionSettings() {
     }
 }
 
-function realConversationTimestamp(queueItem) {
-    const raw = queueItem && (
-        queueItem.last_real_message_at != null
-            ? queueItem.last_real_message_at
-            : queueItem.last_activity_at
-    );
+function realConversationTimestamp(queueItem, room = null) {
+    const raw = queueItem && queueItem.last_real_message_at != null
+        ? queueItem.last_real_message_at
+        : queueItem && queueItem.last_activity_at != null
+            ? queueItem.last_activity_at
+            : room && room.last_real_message_at != null
+                ? room.last_real_message_at
+                : room && (room.has_unread || room.has_unseen_real_activity)
+                    ? (room.lm || room._updatedAt)
+                    : null;
     if (typeof raw === "number") return raw > 1e12 ? raw : raw * 1000;
     const parsed = new Date(raw || 0).getTime();
     return Number.isFinite(parsed) ? parsed : 0;
@@ -2523,15 +2528,20 @@ function buildChannelRowModel(room, queueMap) {
     const qitem = queueMap.get((room.name || "").toLowerCase());
     const badge = buildChannelBadge(qitem);
     const hasUnread = Boolean((qitem && qitem.has_unread) || room.has_unread);
+    const hasUnseenRealActivity = Boolean(
+        (qitem && qitem.has_unseen_real_activity)
+        || room.has_unseen_real_activity
+    );
+    const hasNewActivity = hasUnread || hasUnseenRealActivity;
     return {
         id: room.id,
         name: room.name || "",
         active: room.id === activeRoomId,
-        unread: hasUnread,
+        unread: hasNewActivity,
         badgeKey: badge.key,
         badgeHTML: badge.html,
-        unreadBadgeHTML: hasUnread
-            ? `<span class="unread-badge" title="Unseen real agent reply in this channel">New</span>`
+        unreadBadgeHTML: hasNewActivity
+            ? `<span class="unread-badge" title="Unreviewed real activity in this channel">New</span>`
             : "",
     };
 }
@@ -2689,20 +2699,22 @@ function renderChannelsList(filterText = "") {
         const overrideB = Boolean(qb && qb.priority_override);
         if (overrideA !== overrideB) return overrideA ? -1 : 1;
 
-        const needsEyes = (item) => Boolean(
-            item && (
-                item.has_unseen_real_activity
-                || item.has_unread
-                || item.queue_category === "busy"
-            )
+        const hasNewActivity = (item, room) => Boolean(
+            (item && (item.has_unseen_real_activity || item.has_unread))
+            || (room && (room.has_unseen_real_activity || room.has_unread))
         );
-        const eyesA = needsEyes(qa);
-        const eyesB = needsEyes(qb);
-        if (eyesA !== eyesB) return eyesA ? -1 : 1;
+        const newA = hasNewActivity(qa, a);
+        const newB = hasNewActivity(qb, b);
+        if (newA !== newB) return newA ? -1 : 1;
 
-        const realTimeA = realConversationTimestamp(qa);
-        const realTimeB = realConversationTimestamp(qb);
-        if (eyesA && eyesB && realTimeA !== realTimeB) return realTimeB - realTimeA;
+        const realTimeA = realConversationTimestamp(qa, a);
+        const realTimeB = realConversationTimestamp(qb, b);
+        if (newA && newB && realTimeA !== realTimeB) return realTimeB - realTimeA;
+
+        const busyA = Boolean(qa && qa.queue_category === "busy");
+        const busyB = Boolean(qb && qb.queue_category === "busy");
+        if (busyA !== busyB) return busyA ? -1 : 1;
+        if (busyA && busyB && realTimeA !== realTimeB) return realTimeB - realTimeA;
 
         const scoreA = qa && qa.score != null && Number.isFinite(Number(qa.score)) ? Number(qa.score) : null;
         const scoreB = qb && qb.score != null && Number.isFinite(Number(qb.score)) ? Number(qb.score) : null;

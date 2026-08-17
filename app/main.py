@@ -1600,7 +1600,9 @@ async def get_rooms():
                         "lm": room.get("lm"),
                         "_updatedAt": room.get("_updatedAt") or room.get("lm"),
                         "has_unread": unread_eval["has_unread"],
+                        "has_unseen_real_activity": unread_eval["has_unseen_real_activity"],
                         "unread_count": unread_eval["unread_count"],
+                        "last_real_message_at": unread_eval["last_real_message_at"],
                     })
 
             # Sort rooms recency-first by timestamp descending (fallback to name)
@@ -1751,10 +1753,23 @@ async def get_attention_queue(now: Optional[float] = None):
     room_summaries: Dict[str, Dict[str, Any]] = {}
     room_unread_map: Dict[str, Dict[str, Any]] = {}
     real_activity_map: Dict[str, Optional[float]] = {}
+    # Attention configuration can legitimately know about a Rocket.Chat room
+    # whose ACLI matter folder is not mounted in this Gateway container.  Those
+    # rooms were previously omitted here, leaving the queue item "orphaned"
+    # with no room id or unread state even while /api/rooms displayed "New".
+    # Merge registry and attention-config names so live RC state remains the
+    # source of truth for rail ordering regardless of matter-folder access.
+    tracked_channel_names: Dict[str, str] = {}
     for citem in channel_registry:
-        cname = citem.get("channel_name")
-        if not cname:
-            continue
+        cname = str(citem.get("channel_name") or citem.get("name") or "").strip()
+        if cname:
+            tracked_channel_names[cname.casefold()] = cname
+    for cname in config.channels:
+        clean_name = str(cname or "").strip()
+        if clean_name:
+            tracked_channel_names.setdefault(clean_name.casefold(), clean_name)
+
+    for cname in tracked_channel_names.values():
         cname_lower = cname.lower()
         matched_rc_room = room_by_cname.get(cname_lower)
         room_id = matched_rc_room.get("_id") if matched_rc_room else None

@@ -298,24 +298,26 @@ def build_attention_queue(
         })
 
     def sort_key(item: Dict[str, Any]):
-        # Unreviewed real posts (or a live Busy worker) rise first by recency.
-        # After Ed views a room the unseen flag drops and importance score wins.
+        # Unreviewed real posts rise before Busy and reviewed work. After Ed
+        # views a room the unseen flag drops and importance score wins.
         override_priority = 0 if item["priority_override"] else 1
         suppressed_priority = 1 if item["queue_category"] in {"inactive", "snoozed"} else 0
-        needs_eyes = bool(
+        has_new = bool(
             item.get("has_unseen_real_activity")
             or item.get("has_unread")
-            or item["queue_category"] == "busy"
         )
-        needs_eyes_priority = 0 if needs_eyes else 1
+        new_priority = 0 if has_new else 1
+        busy_priority = 0 if item["queue_category"] == "busy" else 1
         activity_priority = -(item["last_real_message_at"] or 0.0)
         has_score_priority = 0 if item["score"] is not None else 1
         score_priority = -(item["score"] or 0.0)
         return (
             suppressed_priority,
             override_priority,
-            needs_eyes_priority,
-            activity_priority if needs_eyes else 0.0,
+            new_priority,
+            activity_priority if has_new else 0.0,
+            busy_priority,
+            activity_priority if item["queue_category"] == "busy" else 0.0,
             has_score_priority,
             score_priority,
             activity_priority,
