@@ -7,10 +7,12 @@ services:
     ports:
       - "6891:6891"
     environment:
-      - RC_URL=${ACLI_RC_URL:-http://host.docker.internal:3000}
-      - RC_USER=${ACLI_RC_USER:-acli_bot}
-      - RC_USER_ID=${ACLI_RC_USER_ID:-acli_bot}
-      - RC_AUTH_TOKEN=${ACLI_RC_AUTH_TOKEN:-}
+      # Local names are intentionally VC-prefixed so an ACLI-launched Compose
+      # command cannot override this project's credentials with ambient ACLI_RC_*.
+      - RC_URL=${VC_RC_URL:-http://host.docker.internal:3000}
+      - RC_USER=${VC_RC_USER:-acli_bot}
+      - RC_USER_ID=${VC_RC_USER_ID:-acli_bot}
+      - RC_AUTH_TOKEN=${VC_RC_AUTH_TOKEN:-}
       - RC_ROOM_ID=${RC_ROOM_ID:-6a32407ea294f44649684786}
       # Dedicated Rocket.Chat identity used only for signed gateway dispatch.
       # Do not point these at acli_bot; missing values intentionally fail closed.
@@ -20,6 +22,9 @@ services:
       - GATEWAY_RC_WEBHOOK_SECRET=${GATEWAY_RC_WEBHOOK_SECRET:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - VC_WORKER=${VC_WORKER:-codex}
+      # Stable single-process daily-use default. Set to 1 explicitly only while
+      # developing and accepting reload-supervisor interruption semantics.
+      - VC_UVICORN_RELOAD=${VC_UVICORN_RELOAD:-0}
       # Chatterbox stays on the Mac/server. The browser never receives this URL
       # or the model name; override this only when the Gateway runs in Docker.
       - VC_TTS_PROVIDER=${VC_TTS_PROVIDER:-chatterbox}

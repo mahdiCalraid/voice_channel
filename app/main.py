@@ -49,6 +49,10 @@ from app.rc_webhook import (
     WebhookAuthError,
     WebhookReplayError,
     authenticate_webhook_request,
+    load_webhook_state,
+    rollback_message_id,
+    update_webhook_state,
+    webhook_event_is_stale,
     webhook_configured,
 )
 from app.supervision_strategy import (
@@ -69,6 +73,7 @@ from app.attention_scoring import build_attention_queue
 from app.read_cursor import (
     _extract_msg_timestamp,
     evaluate_room_unread_status,
+    get_last_real_conversation_timestamp,
     get_all_read_cursors,
     get_read_cursor,
     is_real_agent_reply,
@@ -80,6 +85,19 @@ ROOM_MESSAGES_CACHE: Dict[str, List[Dict[str, Any]]] = {}
 # user, routing, heartbeat, and final-reply events for one ACLI interaction;
 # those events must not race the same volatile history baseline.
 ROOM_WEBHOOK_WAKE_LOCKS: Dict[str, asyncio.Lock] = {}
+WEBHOOK_DEBOUNCE_SECONDS = max(
+    0.0,
+    min(2.0, float(os.environ.get("GATEWAY_RC_WEBHOOK_DEBOUNCE_SECONDS", "0.75"))),
+)
+WEBHOOK_MAX_CONCURRENCY = max(
+    1,
+    min(16, int(os.environ.get("GATEWAY_RC_WEBHOOK_MAX_CONCURRENCY", "4"))),
+)
+WEBHOOK_WAKE_SEMAPHORE = asyncio.Semaphore(WEBHOOK_MAX_CONCURRENCY)
+WEBHOOK_PENDING_BATCHES: Dict[str, Dict[str, Any]] = {}
+# Volatile, metadata-only cache.  The marker is Rocket.Chat's room update value;
+# the timestamp is derived only from a substantive non-system message.
+ROOM_REAL_ACTIVITY_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -116,7 +134,7 @@ async def startup_cleanup():
 
 class RocketChatDDPAdapter:
     """Gateway-owned native DDP websocket adapter for Rocket.Chat events.
-    
+
     Implements U-11E-a architecture:
     - Connects directly to Rocket.Chat websocket DDP server.
     - Authenticates using existing RC_AUTH_TOKEN / RC_USER_ID or GATEWAY_RC_* fallback.
@@ -232,7 +250,7 @@ class RocketChatDDPAdapter:
         auth_token = GATEWAY_RC_AUTH_TOKEN or RC_AUTH_TOKEN
         user_id = GATEWAY_RC_USER_ID or RC_USER_ID
         headers = {"X-Auth-Token": auth_token, "X-User-Id": user_id}
-        
+
         target_rids = set()
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
@@ -279,7 +297,7 @@ class RocketChatDDPAdapter:
         # Append to ROOM_MESSAGES_CACHE
         if rid not in ROOM_MESSAGES_CACHE:
             ROOM_MESSAGES_CACHE[rid] = []
-            
+
         lane_info = classify_message(msg_obj)
         converted_msg = {
             "id": msg_id,
@@ -360,7 +378,7 @@ sse_broadcaster = SSEBroadcaster()
 @app.get("/api/events")
 async def sse_events_endpoint(request: Request):
     """Gateway-to-browser Server-Sent Events (SSE) push endpoint.
-    
+
     Pushes lightweight room-recency and prewarm-ready signals to open browser tabs,
     allowing browser polling intervals to be retired without sending raw message bodies.
     """
@@ -386,7 +404,7 @@ async def sse_events_endpoint(request: Request):
 
 async def _gateway_channel_monitor_loop():
     """Server-side background loop running independently of browser tabs.
-    
+
     Periodically polls history for channels configured with narration_active=True
     (and active task rooms), and schedules text prewarming for newly observed real agent replies.
     Starts DDP websocket event transport if GATEWAY_RC_EVENTS=1.
@@ -471,7 +489,7 @@ def parse_routing(text: str):
     if not agent_match:
         return None
     agent = agent_match.group(1)
-    
+
     model_details_match = re.search(r"\[model:\s*\`?([^\`\]]+)\`?(?:,\s*effort:\s*\`?([^\`\]]+)\`?)?\]", text)
     model_name = None
     effort = "low"
@@ -479,7 +497,7 @@ def parse_routing(text: str):
         model_name = model_details_match.group(1).strip("` ")
         if model_details_match.group(2):
             effort = model_details_match.group(2).strip("` ")
-            
+
     provider = "unknown"
     if model_name:
         lower_name = model_name.lower()
@@ -491,7 +509,7 @@ def parse_routing(text: str):
             provider = "anthropic"
         elif "grok" in lower_name:
             provider = "xai"
-            
+
     return {
         "kind": "routing",
         "agent": agent,
@@ -516,7 +534,7 @@ def parse_heartbeat(text: str):
     else:
         agent = match.group(1)
         elapsed_str = match.group(2)
-        
+
     elapsed_seconds = None
     if elapsed_str:
         elapsed_str = elapsed_str.strip()
@@ -531,7 +549,7 @@ def parse_heartbeat(text: str):
         if h_match:
             seconds += int(h_match.group(1)) * 3600
         elapsed_seconds = seconds
-        
+
     return {
         "kind": "heartbeat",
         "agent": agent,
@@ -551,7 +569,7 @@ def parse_stopped(text: str):
             "stopped": True,
             "raw_text": text
         }
-        
+
     # Check for direct notice from dispatcher
     if text.strip().startswith("🛑") or "job stopped" in text.lower() or "cancelled job" in text.lower():
         agent_match = re.search(r"(?:🛑|stopped|cancelled)\s+\*?\*?@?([a-zA-Z0-9_]+)", text, re.IGNORECASE)
@@ -562,7 +580,7 @@ def parse_stopped(text: str):
             "stopped": True,
             "raw_text": text
         }
-        
+
     return None
 
 def parse_model_selected(text: str):
@@ -571,9 +589,9 @@ def parse_model_selected(text: str):
     # ✅ Set **grok** current model to `grok-4.5` with effort `high`.
     match1 = re.search(r"\*\*([a-zA-Z0-9_]+)\*\*\s+current model is\s+\`?([^\`\s]+)\`?(?:\s+with effort\s+\`?([^\`\s\.]+)\`?)?", text, re.IGNORECASE)
     match2 = re.search(r"Set\s+\*\*([a-zA-Z0-9_]+)\*\*\s+current model to\s+\`?([^\`\s]+)\`?(?:\s+with effort\s+\`?([^\`\s\.]+)\`?)?", text, re.IGNORECASE)
-    
+
     match = match1 or match2
-    
+
     if not match:
         # Fallback to the original matching patterns
         if "Model set to" in text or "Model for" in text:
@@ -600,11 +618,11 @@ def parse_model_selected(text: str):
                 "raw_text": text
             }
         return None
-        
+
     agent = match.group(1)
     model_name = match.group(2).strip("` ")
     effort = match.group(3).strip("` ") if match.group(3) else "low"
-    
+
     provider = "unknown"
     if model_name:
         lower_name = model_name.lower()
@@ -616,7 +634,7 @@ def parse_model_selected(text: str):
             provider = "anthropic"
         elif "grok" in lower_name:
             provider = "xai"
-            
+
     return {
         "kind": "model_selected",
         "agent": agent,
@@ -648,7 +666,7 @@ def classify_message(msg: dict) -> dict:
     text = msg.get("msg", "")
     username = msg.get("u", {}).get("username", "unknown")
     t = msg.get("t")
-    
+
     # 1. Rocket.Chat Native System Messages
     if t and t != "thread-message":
         return {
@@ -677,7 +695,7 @@ def classify_message(msg: dict) -> dict:
                 "raw_text": text,
             },
         }
-        
+
     # 2. ACLI Dispatcher System Messages & Agent Relays (usually sent by acli_bot)
     if username == "acli_bot":
         # CRITICAL: Match agent relays FIRST before any system/stopped/error rules
@@ -695,23 +713,23 @@ def classify_message(msg: dict) -> dict:
                     "raw_text": text
                 }
             }
-            
+
         routing = parse_routing(text)
         if routing:
             return {"lane": "system", "event": routing}
-            
+
         heartbeat = parse_heartbeat(text)
         if heartbeat:
             return {"lane": "system", "event": heartbeat}
-            
+
         model_selected = parse_model_selected(text)
         if model_selected:
             return {"lane": "system", "event": model_selected}
-            
+
         attachment = parse_attachment(text)
         if attachment:
             return {"lane": "system", "event": attachment}
-            
+
         stopped = parse_stopped(text)
         if stopped:
             return {"lane": "system", "event": stopped}
@@ -738,7 +756,7 @@ def classify_message(msg: dict) -> dict:
                     "raw_text": text
                 }
             }
-            
+
         # Narrow error notices: warning emoji or known invalid-model phrasing only.
         # Do not match bare substring "error" (false-positives already fixed for relays;
         # still avoid over-matching remaining dispatcher text).
@@ -758,7 +776,7 @@ def classify_message(msg: dict) -> dict:
                     "raw_text": text
                 }
             }
-            
+
         if "established" in text.lower() or "started" in text.lower():
             return {
                 "lane": "system",
@@ -771,7 +789,7 @@ def classify_message(msg: dict) -> dict:
                     "raw_text": text
                 }
             }
-            
+
         # Default fallback for any remaining acli_bot message is system/other
         return {
             "lane": "system",
@@ -784,7 +802,7 @@ def classify_message(msg: dict) -> dict:
                 "raw_text": text
             }
         }
-        
+
     # 3. User Messages (Ed)
     if username == "ed":
         return {
@@ -798,7 +816,7 @@ def classify_message(msg: dict) -> dict:
                 "raw_text": text
             }
         }
-        
+
     # 4. Direct Agent Messages
     active_agents = {"gemini", "agy", "codex", "claude", "pplx", "cursor", "grok"}
     if username in active_agents:
@@ -813,7 +831,7 @@ def classify_message(msg: dict) -> dict:
                 "raw_text": text
             }
         }
-        
+
     default_lane = "user" if username == "ed" else "agent"
     return {
         "lane": default_lane,
@@ -830,10 +848,10 @@ def classify_message(msg: dict) -> dict:
 def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict]:
     cleaned_messages = []
     last_routing_ts = {}
-    
+
     # Agent statistics tracking
     agent_stats = {}
-    
+
     for msg in raw_messages:
         classification = classify_message(msg)
         lane = classification["lane"]
@@ -841,13 +859,13 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
         interaction_id = extract_interaction_id(msg.get("msg", ""))
         if interaction_id:
             event["interaction_id"] = interaction_id
-        
+
         text = msg.get("msg", "")
         is_routing = text.startswith("🔄 Routing to") or "Routing to" in text
-        
+
         user = msg.get("u", {})
         username = user.get("username", "unknown")
-        
+
         # Track message count per agent
         if lane == "agent":
             agent = event.get("agent")
@@ -855,14 +873,14 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
                 if agent not in agent_stats:
                     agent_stats[agent] = { "run_times": [], "msg_count": 0, "status": "idle", "working_start": None }
                 agent_stats[agent]["msg_count"] += 1
-        
+
         # Dynamic response time calculation & back-patching
         if lane == "system" and event.get("kind") == "routing":
             agent = event.get("agent")
             if agent:
                 try:
                     ts = parse_datetime(msg.get("ts"))
-                    
+
                     # Mark prior open routing for the same agent as superseded
                     if agent in last_routing_ts:
                         for prev_msg in reversed(cleaned_messages):
@@ -870,9 +888,9 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
                                 if prev_msg["event"].get("status") == "working":
                                     prev_msg["event"]["status"] = "superseded"
                                     break
-                    
+
                     last_routing_ts[agent] = ts
-                    
+
                     # Initialize stats entry
                     if agent not in agent_stats:
                         agent_stats[agent] = { "run_times": [], "msg_count": 0, "status": "idle", "working_start": None }
@@ -881,7 +899,7 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
                     event["status"] = "working"
                 except Exception:
                     pass
-                    
+
         elif lane == "agent":
             agent = event.get("agent")
             if agent and agent in last_routing_ts:
@@ -890,14 +908,14 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
                     rout_ts = last_routing_ts[agent]
                     diff = (resp_ts - rout_ts).total_seconds()
                     event["response_time_seconds"] = diff
-                    
+
                     # Update stats
                     if agent not in agent_stats:
                         agent_stats[agent] = { "run_times": [], "msg_count": 0, "status": "idle", "working_start": None }
                     agent_stats[agent]["run_times"].append(diff)
                     agent_stats[agent]["status"] = "idle"
                     agent_stats[agent]["working_start"] = None
-                    
+
                     # Back-patch the routing message (find the last routing msg for this agent in cleaned_messages)
                     for prev_msg in reversed(cleaned_messages):
                         if prev_msg["lane"] == "system" and prev_msg["event"].get("kind") == "routing" and prev_msg["event"].get("agent") == agent:
@@ -905,11 +923,11 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
                                 prev_msg["event"]["response_time_seconds"] = diff
                                 prev_msg["event"]["status"] = "completed"
                                 break
-                            
+
                     del last_routing_ts[agent]
                 except Exception as e:
                     logger.error(f"Error matching agent response: {e}")
-                    
+
         elif lane == "system" and event.get("kind") in ("stopped", "error"):
             agent = event.get("agent")
             if agent:
@@ -917,17 +935,17 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
                     agent_stats[agent] = { "run_times": [], "msg_count": 0, "status": "idle", "working_start": None }
                 agent_stats[agent]["status"] = "idle"
                 agent_stats[agent]["working_start"] = None
-                
+
                 # Back-patch routing message as failed/stopped
                 for prev_msg in reversed(cleaned_messages):
                     if prev_msg["lane"] == "system" and prev_msg["event"].get("kind") == "routing" and prev_msg["event"].get("agent") == agent:
                         if prev_msg["event"].get("status") == "working":
                             prev_msg["event"]["status"] = "stopped" if event.get("kind") == "stopped" else "failed"
                             break
-                        
+
                 if agent in last_routing_ts:
                     del last_routing_ts[agent]
-                    
+
         # Create message object
         cleaned_messages.append({
             "id": msg.get("_id"),
@@ -939,14 +957,14 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
             "lane": lane,
             "event": event
         })
-    
+
     # Compute rolling summary statistics
     rolling_stats = {}
     for agent, stats in agent_stats.items():
         times = stats["run_times"]
         avg_time = sum(times) / len(times) if times else 0
         runs = len(times)
-        
+
         # Check if still working and calculate current elapsed
         current_elapsed = 0
         if stats["status"] == "working" and stats["working_start"]:
@@ -958,7 +976,7 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
                     current_elapsed = (datetime.now(timezone.utc) - stats["working_start"]).total_seconds()
             else:
                 current_elapsed = (datetime.now(timezone.utc) - stats["working_start"]).total_seconds()
-                
+
         rolling_stats[agent] = {
             "runs": runs,
             "avg_response_time": round(avg_time, 1),
@@ -966,7 +984,7 @@ def process_history_messages(raw_messages: List[dict]) -> tuple[List[dict], dict
             "status": stats["status"],
             "current_elapsed": round(current_elapsed, 1) if current_elapsed > 0 else 0
         }
-        
+
     return cleaned_messages, rolling_stats
 
 # Initialize OpenAI client if key is available
@@ -1100,6 +1118,32 @@ async def update_narration_prewarm_config(payload: Dict[str, Any] = Body(...)):
         logger.warning("Could not save narration prewarm settings: %s", err)
         raise HTTPException(status_code=500, detail="Could not save narration prewarm settings")
 
+def _get_webhook_status() -> Dict[str, Any]:
+    configured = webhook_configured()
+    persisted = load_webhook_state()
+    last_verified_at = persisted.get("last_verified_at")
+    status_dict = {
+        "status": "configured" if configured else "not_configured",
+        "path": "/api/rc/webhook/message",
+        "last_received_at": persisted.get("last_received_at"),
+        "last_verified_at": last_verified_at,
+        "covered_rooms": persisted.get("covered_rooms") or {},
+        "metrics": persisted.get("metrics") or {},
+        "last_error": persisted.get("last_error"),
+        "last_error_at": persisted.get("last_error_at"),
+        "last_event": persisted.get("last_event"),
+        "debounce_seconds": WEBHOOK_DEBOUNCE_SECONDS,
+        "max_concurrency": WEBHOOK_MAX_CONCURRENCY,
+        "state": "not_configured",
+    }
+    if configured:
+        if last_verified_at and (time.time() - float(last_verified_at)) < 120:
+            status_dict["state"] = "healthy"
+        else:
+            status_dict["state"] = "degraded_polling"
+    return status_dict
+
+
 @app.get("/api/status")
 async def get_status():
     base_url = get_rc_base_url()
@@ -1107,11 +1151,11 @@ async def get_status():
         "X-Auth-Token": RC_AUTH_TOKEN,
         "X-User-Id": RC_USER_ID,
     }
-    
+
     rc_status = "unknown"
     rc_username = None
     rc_error = None
-    
+
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{base_url}/api/v1/me", headers=headers)
@@ -1129,7 +1173,7 @@ async def get_status():
     except Exception as e:
         rc_status = "disconnected"
         rc_error = str(e)
-        
+
     # Check if codex is available & executes successfully
     codex_available = False
     codex_exec_works = False
@@ -1168,11 +1212,11 @@ async def get_status():
                     pass
     except Exception:
         pass
-        
+
     active_worker = os.environ.get("VC_WORKER", "codex")
     has_ai_worker = (codex_available and codex_exec_works) or (openai_client is not None)
     worker_status = "ready" if has_ai_worker else "degraded"
-    
+
     # Verify app storage path health
     app_status = "healthy"
     try:
@@ -1183,7 +1227,7 @@ async def get_status():
         os.remove(test_path)
     except Exception:
         app_status = "degraded"
-        
+
     return {
         "status": "online",
         "schema_version": CURRENT_SCHEMA_VERSION,
@@ -1214,10 +1258,7 @@ async def get_status():
             ) and GATEWAY_RC_USER_ID != RC_USER_ID else "not_configured"
         },
         "ddp": ddp_adapter.get_status(),
-        "rc_webhook": {
-            "status": "configured" if webhook_configured() else "not_configured",
-            "path": "/api/rc/webhook/message",
-        },
+        "rc_webhook": _get_webhook_status(),
     }
 
 
@@ -1226,6 +1267,7 @@ async def process_rocket_chat_message_wake(
     *,
     channel_name: Optional[str] = None,
     hint_message_id: Optional[str] = None,
+    hint_message_ids: Optional[List[str]] = None,
     source: str = "wake",
 ) -> Dict[str, Any]:
     """Handle a room wake-up without trusting the event body as transcript truth.
@@ -1238,6 +1280,12 @@ async def process_rocket_chat_message_wake(
     if not rid:
         raise HTTPException(status_code=400, detail="room_id is required")
 
+    hints: List[str] = []
+    for value in list(hint_message_ids or []) + ([hint_message_id] if hint_message_id else []):
+        normalized_hint = str(value or "").strip()
+        if normalized_hint and normalized_hint not in hints:
+            hints.append(normalized_hint)
+
     wake_lock = ROOM_WEBHOOK_WAKE_LOCKS.setdefault(rid, asyncio.Lock())
     async with wake_lock:
         had_baseline = rid in ROOM_MESSAGES_CACHE
@@ -1245,31 +1293,41 @@ async def process_rocket_chat_message_wake(
             refreshed_replies = await _refresh_active_task_room(client, rid)
 
         new_replies = refreshed_replies
-        if hint_message_id:
+        stale_message_ids: List[str] = []
+        if hints:
             # An authenticated outgoing webhook identifies one Rocket.Chat
-            # message. A full history refresh may also discover older messages
+            # message (or a short coalesced batch). A full history refresh may
+            # also discover older messages
             # absent from a browser's short cache; never narrate that wider diff.
             # Re-fetching still establishes Rocket.Chat as the source of truth,
-            # while this exact-ID selection keeps concurrent ACLI event bursts
-            # bounded to the message that caused each wake-up.
-            hint = str(hint_message_id).strip()
+            # while exact-ID selection keeps concurrent ACLI event bursts bounded
+            # to the messages that caused this wake-up.
             candidates = list(refreshed_replies or [])
             candidates.extend(ROOM_MESSAGES_CACHE.get(rid, []))
-            hinted_reply = next(
-                (
-                    message
-                    for message in candidates
-                    if str(message.get("id") or message.get("_id") or "") == hint
-                    and is_real_agent_reply(message)
-                ),
-                None,
-            )
-            if hinted_reply is not None:
+            selected_replies: List[Dict[str, Any]] = []
+            selected_ids: Set[str] = set()
+            for hint in hints:
+                hinted_reply = next(
+                    (
+                        message
+                        for message in candidates
+                        if str(message.get("id") or message.get("_id") or "") == hint
+                        and is_real_agent_reply(message)
+                    ),
+                    None,
+                )
+                if hinted_reply is None:
+                    continue
                 msg_ts = _extract_msg_timestamp(hinted_reply)
                 # Explicit wake => treat as fresh unless clearly old backlog (>15 min).
                 if msg_ts > 0 and (time.time() - msg_ts) > 900:
-                    hinted_reply = None
-            new_replies = [hinted_reply] if hinted_reply is not None else []
+                    stale_message_ids.append(hint)
+                    continue
+                reply_id = str(hinted_reply.get("id") or hinted_reply.get("_id") or hint)
+                if reply_id not in selected_ids:
+                    selected_ids.add(reply_id)
+                    selected_replies.append(hinted_reply)
+            new_replies = selected_replies
 
     await sse_broadcaster.publish({
         "type": "room_changed",
@@ -1277,11 +1335,11 @@ async def process_rocket_chat_message_wake(
         "timestamp": time.time(),
         "source": source,
     })
-    if hint_message_id:
+    for hint in hints:
         await sse_broadcaster.publish({
             "type": "message",
             "room_id": rid,
-            "msg_id": str(hint_message_id),
+            "msg_id": hint,
             "timestamp": time.time(),
             "source": source,
         })
@@ -1297,13 +1355,11 @@ async def process_rocket_chat_message_wake(
         queue = [{
             "room_id": rid,
             "channel_name": resolved_name or rid,
-            "queue_category": "ranked",
-            "rank": 1,
         }]
         scheduled = await _schedule_background_narration_prewarm(
             queue=queue,
             new_replies_by_room={rid: new_replies},
-            supervised_room_ids={rid},
+            supervised_room_ids=set(),
         )
 
     return {
@@ -1314,7 +1370,71 @@ async def process_rocket_chat_message_wake(
         "new_real_agent_replies": len(new_replies or []),
         "prewarm_scheduled": int(scheduled or 0),
         "had_baseline": had_baseline,
+        "hint_count": len(hints),
+        "stale_rejections": len(stale_message_ids),
+        "stale_message_ids": stale_message_ids,
     }
+
+
+async def _drain_webhook_room_batch(room_id: str) -> None:
+    """Coalesce a short same-room burst into one Rocket.Chat history fetch."""
+    if WEBHOOK_DEBOUNCE_SECONDS:
+        await asyncio.sleep(WEBHOOK_DEBOUNCE_SECONDS)
+    batch = WEBHOOK_PENDING_BATCHES.pop(room_id, None)
+    if not batch:
+        return
+    items = batch.get("items") or []
+    futures = [item[1] for item in items]
+    hints = list(dict.fromkeys(
+        str(item[0].get("message_id") or "").strip()
+        for item in items
+        if str(item[0].get("message_id") or "").strip()
+    ))
+    channel_name = next(
+        (
+            str(item[0].get("channel_name") or "").strip()
+            for item in items
+            if str(item[0].get("channel_name") or "").strip()
+        ),
+        "",
+    )
+    if len(items) > 1:
+        update_webhook_state(increments={"coalesced_count": len(items) - 1})
+    try:
+        async with WEBHOOK_WAKE_SEMAPHORE:
+            result = await process_rocket_chat_message_wake(
+                room_id,
+                channel_name=channel_name or None,
+                hint_message_ids=hints,
+                source="rc_webhook",
+            )
+    except Exception as error:
+        for future in futures:
+            if not future.done():
+                future.set_exception(error)
+        return
+    stale_ids = set(result.get("stale_message_ids") or [])
+    for normalized, future in items:
+        if not future.done():
+            event_result = dict(result)
+            event_result["stale_rejections"] = (
+                1 if str(normalized.get("message_id") or "") in stale_ids else 0
+            )
+            future.set_result(event_result)
+
+
+async def _enqueue_webhook_wake(normalized: Dict[str, str]) -> Dict[str, Any]:
+    """Queue one authenticated event and await its room's coalesced refresh."""
+    room_id = str(normalized.get("room_id") or "").strip()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    batch = WEBHOOK_PENDING_BATCHES.get(room_id)
+    if not batch:
+        batch = {"items": []}
+        WEBHOOK_PENDING_BATCHES[room_id] = batch
+        batch["task"] = asyncio.create_task(_drain_webhook_room_batch(room_id))
+    batch["items"].append((dict(normalized), future))
+    return await future
 
 
 async def _channel_name_hints() -> Dict[str, List[str]]:
@@ -1361,9 +1481,18 @@ async def rocket_chat_message_webhook(request: Request, payload: Dict[str, Any] 
         )
 
     headers = {k.lower(): v for k, v in request.headers.items()}
+    received_at = time.time()
     try:
         normalized = authenticate_webhook_request(headers, payload if isinstance(payload, dict) else {})
+        update_webhook_state(
+            received_at=received_at,
+            increments={"received_count": 1},
+        )
     except WebhookReplayError as err:
+        update_webhook_state(
+            received_at=received_at,
+            increments={"received_count": 1, "replayed_count": 1},
+        )
         # Idempotent success: RC retries must not re-run work or return 5xx.
         logger.info("Ignoring replayed Rocket.Chat webhook: %s", err)
         return {
@@ -1372,17 +1501,63 @@ async def rocket_chat_message_webhook(request: Request, payload: Dict[str, Any] 
             "detail": str(err),
         }
     except WebhookAuthError as err:
+        update_webhook_state(
+            increments={"auth_failures": 1},
+            error=str(err),
+        )
         raise HTTPException(status_code=401, detail=str(err))
 
-    result = await process_rocket_chat_message_wake(
-        normalized["room_id"],
-        channel_name=normalized.get("channel_name") or None,
-        hint_message_id=normalized.get("message_id") or None,
-        source="rc_webhook",
-    )
-    result["replayed"] = False
-    result["user_name"] = normalized.get("user_name") or None
-    result["bot_flag"] = normalized.get("bot") == "1"
+    if webhook_event_is_stale(normalized, now=received_at):
+        update_webhook_state(
+            increments={"stale_rejections": 1},
+            last_event={
+                "message_id": normalized["message_id"],
+                "room_id": normalized["room_id"],
+                "verified_at": None,
+                "new_real_agent_replies": 0,
+                "prewarm_scheduled": 0,
+                "stale": True,
+            },
+            error=f"Rejected stale webhook event {normalized['message_id']}",
+        )
+        return {
+            "success": True,
+            "replayed": False,
+            "stale": True,
+            "room_id": normalized["room_id"],
+        }
+
+    try:
+        result = await _enqueue_webhook_wake(normalized)
+        verified_at = time.time()
+        update_webhook_state(
+            verified_at=verified_at,
+            covered_room_id=normalized["room_id"],
+            increments={
+                "verified_count": 1,
+                "stale_rejections": int(result.get("stale_rejections") or 0),
+                "real_agent_replies": int(result.get("new_real_agent_replies") or 0),
+                "prewarm_scheduled": int(result.get("prewarm_scheduled") or 0),
+            },
+            last_event={
+                "message_id": normalized["message_id"],
+                "room_id": normalized["room_id"],
+                "verified_at": verified_at,
+                "new_real_agent_replies": int(result.get("new_real_agent_replies") or 0),
+                "prewarm_scheduled": int(result.get("prewarm_scheduled") or 0),
+                "stale": bool(result.get("stale_rejections")),
+            },
+        )
+        result["replayed"] = False
+        result["user_name"] = normalized.get("user_name") or None
+        result["bot_flag"] = normalized.get("bot") == "1"
+    except Exception as error:
+        rollback_message_id(normalized.get("message_id") or "")
+        update_webhook_state(
+            increments={"processing_failures": 1},
+            error=f"{type(error).__name__}: {error}",
+        )
+        raise
     return result
 
 
@@ -1393,21 +1568,21 @@ async def get_rooms():
         "X-Auth-Token": RC_AUTH_TOKEN,
         "X-User-Id": RC_USER_ID,
     }
-    
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             url = f"{base_url}/api/v1/rooms.get?count=100"
             resp = await client.get(url, headers=headers)
-            
+
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail=f"Rocket.Chat rooms error: {resp.text}")
-                
+
             data = resp.json()
             if not data.get("success"):
                 raise HTTPException(status_code=400, detail="Rocket.Chat rooms request failed")
-                
+
             raw_rooms = data.get("update", [])
-            
+
             # Format and filter rooms with recency timestamps & unread evaluation
             rooms = []
             for room in raw_rooms:
@@ -1426,7 +1601,7 @@ async def get_rooms():
                         "has_unread": unread_eval["has_unread"],
                         "unread_count": unread_eval["unread_count"],
                     })
-            
+
             # Sort rooms recency-first by timestamp descending (fallback to name)
             rooms.sort(
                 key=lambda r: (
@@ -1435,12 +1610,12 @@ async def get_rooms():
                 ),
                 reverse=True
             )
-            
+
             return {
                 "success": True,
                 "rooms": rooms
             }
-            
+
     except Exception as e:
         logger.exception("Error fetching rooms")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1459,7 +1634,7 @@ async def post_read_cursor(payload: Dict[str, Any] = Body(...)):
 @app.get("/api/attention/queue")
 async def get_attention_queue(now: Optional[float] = None):
     """GET /api/attention/queue: Return ranked channel attention queue with factor breakdown (U-10b).
-    
+
     Scores are computed dynamically at request time and are never persisted to disk.
     """
     config = load_channel_attention_config()
@@ -1477,24 +1652,18 @@ async def get_attention_queue(now: Optional[float] = None):
     except Exception as err:
         logger.debug(f"Could not fetch Rocket.Chat rooms for attention queue: {err}")
 
-    # Build room lookup & last activity map by channel name
+    # Build room lookup.  Rocket.Chat's lm/_updatedAt is used only as a cheap
+    # cache invalidation marker; it is never used as conversation recency.
     room_by_cname: Dict[str, Dict[str, Any]] = {}
-    activity_map: Dict[str, Optional[float]] = {}
+    room_marker_by_id: Dict[str, str] = {}
     for r in rc_rooms:
         rname = r.get("name") or r.get("fname")
         if rname:
             cname_key = rname.lower()
             room_by_cname[cname_key] = r
-            lm = r.get("lm") or r.get("_updatedAt")
-            if lm:
-                if isinstance(lm, (int, float)):
-                    activity_map[cname_key] = float(lm)
-                elif isinstance(lm, str):
-                    try:
-                        dt = datetime.fromisoformat(lm.replace("Z", "+00:00"))
-                        activity_map[cname_key] = dt.timestamp()
-                    except Exception:
-                        activity_map[cname_key] = None
+            room_id = r.get("_id")
+            if room_id:
+                room_marker_by_id[room_id] = str(r.get("lm") or r.get("_updatedAt") or "")
 
     # /api/history normally hydrates the supervisor, but the browser polls that
     # endpoint only for the focused room. Refresh active tasks here as part of
@@ -1509,6 +1678,11 @@ async def get_attention_queue(now: Optional[float] = None):
         cname.lower()
         for cname, entry in config.channels.items()
         if entry.narration_active and entry.attention_active
+    }
+    attention_active_cnames = {
+        cname.lower()
+        for cname, entry in config.channels.items()
+        if entry.attention_active
     }
     background_room_ids = {
         room.get("_id")
@@ -1537,9 +1711,45 @@ async def get_attention_queue(now: Optional[float] = None):
         except Exception as err:
             logger.debug("Could not refresh background task rooms for attention: %s", err)
 
+    # Sync last real conversation timestamps for rooms whose server marker has
+    # changed.  The history is classified locally so a routing line, heartbeat,
+    # or other system event can never make a room appear freshly active.
+    for room_id in background_room_ids:
+        if room_id in ROOM_MESSAGES_CACHE:
+            ROOM_REAL_ACTIVITY_CACHE[room_id] = {
+                "marker": room_marker_by_id.get(room_id, ""),
+                "last_real_message_at": get_last_real_conversation_timestamp(ROOM_MESSAGES_CACHE[room_id]),
+            }
+
+    rooms_to_refresh_activity = [
+        room.get("_id")
+        for cname, room in room_by_cname.items()
+        if room.get("_id")
+        and cname in attention_active_cnames
+        and ROOM_REAL_ACTIVITY_CACHE.get(room["_id"], {}).get("marker") != room_marker_by_id.get(room["_id"], "")
+    ]
+    if rooms_to_refresh_activity:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                results = await asyncio.gather(
+                    *[_refresh_room_real_activity(client, room_id) for room_id in rooms_to_refresh_activity],
+                    return_exceptions=True,
+                )
+            for room_id, result in zip(rooms_to_refresh_activity, results):
+                if isinstance(result, Exception):
+                    logger.debug("Could not refresh real activity for room %s: %s", room_id, result)
+                    continue
+                ROOM_REAL_ACTIVITY_CACHE[room_id] = {
+                    "marker": room_marker_by_id.get(room_id, ""),
+                    "last_real_message_at": get_last_real_conversation_timestamp(ROOM_MESSAGES_CACHE.get(room_id, [])),
+                }
+        except Exception as err:
+            logger.debug("Could not refresh channel real activity: %s", err)
+
     # Collect task supervisor summaries per channel & compute unread status
     room_summaries: Dict[str, Dict[str, Any]] = {}
     room_unread_map: Dict[str, Dict[str, Any]] = {}
+    real_activity_map: Dict[str, Optional[float]] = {}
     for citem in channel_registry:
         cname = citem.get("channel_name")
         if not cname:
@@ -1552,6 +1762,7 @@ async def get_attention_queue(now: Optional[float] = None):
             summary = task_supervisor.get_channel_attention_summary(room_id)
             cached_msgs = ROOM_MESSAGES_CACHE.get(room_id, [])
             unread_eval = evaluate_room_unread_status(room_id, cached_msgs)
+            real_activity_map[cname] = ROOM_REAL_ACTIVITY_CACHE.get(room_id, {}).get("last_real_message_at")
         else:
             summary = {
                 "room_id": None,
@@ -1562,6 +1773,7 @@ async def get_attention_queue(now: Optional[float] = None):
                 "active_task_count": 0,
             }
             unread_eval = {"has_unread": False, "unread_count": 0, "last_agent_reply_ts": None}
+            real_activity_map[cname] = None
 
         room_summaries[cname] = summary
         room_unread_map[cname] = unread_eval
@@ -1573,7 +1785,7 @@ async def get_attention_queue(now: Optional[float] = None):
         config=config,
         channel_registry=channel_registry,
         room_summaries=room_summaries,
-        room_activity_map={cname: activity_map.get(cname.lower()) for cname in room_summaries},
+        room_activity_map=real_activity_map,
         now=now,
         room_unread_map=room_unread_map,
     )
@@ -1605,7 +1817,7 @@ async def get_attention_config():
 async def update_attention_config(payload: Dict[str, Any] = Body(...)):
     """PUT /api/attention/config: Atomically update channel attention configuration for one or all channels."""
     current_config = load_channel_attention_config()
-    
+
     try:
         if "channels" in payload and isinstance(payload["channels"], dict):
             new_config = ChannelAttentionConfig.model_validate(payload) if hasattr(ChannelAttentionConfig, "model_validate") else ChannelAttentionConfig.parse_obj(payload)
@@ -1618,7 +1830,7 @@ async def update_attention_config(payload: Dict[str, Any] = Body(...)):
             new_config = ChannelAttentionConfig(schema_version=current_config.schema_version, channels=updated_channels)
         else:
             raise ValueError("Payload must specify either 'channels' object or 'channel_name' and 'entry'.")
-            
+
         save_channel_attention_config(new_config)
         return {
             "success": True,
@@ -1666,10 +1878,10 @@ async def _refresh_active_task_room(client: httpx.AsyncClient, room_id: str) -> 
             params=params,
         )
     if response.status_code != 200:
-        return []
+        raise RuntimeError(f"Failed to fetch history for room {room_id}, status {response.status_code}")
     payload = response.json()
     if not payload.get("success"):
-        return []
+        raise RuntimeError(f"Failed to fetch history for room {room_id}, payload success=False")
 
     had_cache_baseline = room_id in ROOM_MESSAGES_CACHE
     previous_message_ids = {
@@ -1699,11 +1911,50 @@ async def _refresh_active_task_room(client: httpx.AsyncClient, room_id: str) -> 
     ]
 
 
+async def _refresh_room_real_activity(client: httpx.AsyncClient, room_id: str) -> Optional[float]:
+    """Refresh only the timestamp needed to order active portfolio channels.
+
+    This intentionally remains separate from active-task hydration: it does not
+    change the scope of narration/task monitoring, but it lets the rail inspect
+    the newest substantive conversation in every active configured channel.
+    """
+    params = {"roomId": room_id, "count": 100, "offset": 0}
+    response = await client.get(
+        f"{get_rc_base_url()}/api/v1/channels.history",
+        headers={"X-Auth-Token": RC_AUTH_TOKEN, "X-User-Id": RC_USER_ID},
+        params=params,
+    )
+    if response.status_code != 200:
+        response = await client.get(
+            f"{get_rc_base_url()}/api/v1/groups.history",
+            headers={"X-Auth-Token": RC_AUTH_TOKEN, "X-User-Id": RC_USER_ID},
+            params=params,
+        )
+    if response.status_code != 200:
+        return None
+    payload = response.json()
+    if not payload.get("success"):
+        return None
+
+    raw_messages = list(payload.get("messages", []))
+    raw_messages.reverse()
+    seen_ids = set()
+    deduped_raw = []
+    for message in raw_messages:
+        message_id = message.get("_id")
+        if message_id and message_id not in seen_ids:
+            seen_ids.add(message_id)
+            deduped_raw.append(message)
+    cleaned_messages, _ = process_history_messages(deduped_raw)
+    ROOM_MESSAGES_CACHE[room_id] = cleaned_messages
+    return get_last_real_conversation_timestamp(cleaned_messages)
+
+
 @app.get("/api/history")
 async def get_history(
-    roomId: Optional[str] = None, 
-    count: int = 30, 
-    offset: int = 0, 
+    roomId: Optional[str] = None,
+    count: int = 30,
+    offset: int = 0,
     latest: Optional[str] = None,
     before: Optional[str] = None
 ):
@@ -1712,10 +1963,10 @@ async def get_history(
         "X-Auth-Token": RC_AUTH_TOKEN,
         "X-User-Id": RC_USER_ID,
     }
-    
+
     room_id = roomId or RC_ROOM_ID
     clamped_count = min(max(count, 1), 100)
-    
+
     params = {
         "roomId": room_id,
         "count": clamped_count,
@@ -1729,18 +1980,18 @@ async def get_history(
 
     last_error = None
     data = None
-    
+
     # Retry loop with exponential backoff for transient failures
     async with httpx.AsyncClient(timeout=10.0) as client:
         for attempt in range(3):
             try:
                 # Try channels history first
                 resp = await client.get(f"{base_url}/api/v1/channels.history", headers=headers, params=params)
-                
+
                 # If error (e.g. is private group), fall back to groups history
                 if resp.status_code != 200:
                     resp = await client.get(f"{base_url}/api/v1/groups.history", headers=headers, params=params)
-                    
+
                 if resp.status_code == 200:
                     parsed = resp.json()
                     if parsed.get("success"):
@@ -1752,21 +2003,21 @@ async def get_history(
                     last_error = f"HTTP {resp.status_code}: {resp.text[:100]}"
             except Exception as e:
                 last_error = str(e)
-                
+
             if attempt < 2:
                 await asyncio.sleep(0.15 * (2 ** attempt))
-                
+
     if not data:
         logger.error(f"Failed to fetch history for room {room_id}: {last_error}")
         raise HTTPException(status_code=502, detail=f"Rocket.Chat history request failed: {last_error}")
 
     raw_messages = data.get("messages", [])
     has_more = len(raw_messages) >= clamped_count
-    
+
     # Rocket.Chat returns messages in reverse chronological order (newest first).
     # We reverse them first to process and compute stats chronologically.
     raw_messages.reverse()
-    
+
     # Deduplicate raw_messages by message _id to avoid duplicates across page boundaries
     seen_ids = set()
     deduped_raw = []
@@ -1788,7 +2039,7 @@ async def get_history(
         m_id = str(latest_m.get("id") or latest_m.get("_id") or "")
         m_ts = _extract_msg_timestamp(latest_m)
         update_read_cursor(room_id, msg_id=m_id, ts=m_ts, actor="ed")
-    
+
     return {
         "success": True,
         "room_id": room_id,
@@ -1850,38 +2101,38 @@ def save_summary(room_id: str, digest: str):
 @app.post("/api/digest")
 async def generate_digest(req: DigestRequest):
     room_id = req.roomId or RC_ROOM_ID
-    
+
     # Enforce history_limit context depth N on backend (U-02)
     limit = req.history_limit if req.history_limit and req.history_limit > 0 else 20
     raw_lane_b_c = [m for m in req.messages if m.get("lane") in ("agent", "user")]
     lane_b_c = raw_lane_b_c[-limit:] if len(raw_lane_b_c) > limit else raw_lane_b_c
     included_message_ids = [m.get("id") for m in lane_b_c if m.get("id")]
-    
+
     if not lane_b_c:
         return {
             "digest": "No new agent updates or user instructions in the channel.",
             "included_message_ids": [],
             "prior_summary_used": False
         }
-        
+
     # Read matter documents and prior summary history
     matter_docs = read_matter_docs()
     prior_summaries = read_prior_summaries(room_id)
     prior_summary_used = len(prior_summaries) > 0
-    
+
     # Filter system messages for Stage 1 Operational Stats
     system_msgs = [m for m in req.messages if m.get("lane") == "system"]
-    
+
     # --- STEP 2: Job Builder ---
     import subprocess
     import sys
     import time
     import uuid
-    
+
     job_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
     job_dir = os.path.join("tmp", "jobs", job_id)
     os.makedirs(job_dir, exist_ok=True)
-    
+
     # Write inputs
     messages_path = os.path.join(job_dir, "messages_for_llm.json")
     system_events_path = os.path.join(job_dir, "system_events.json")
@@ -1889,16 +2140,16 @@ async def generate_digest(req: DigestRequest):
     task_instructions_path = os.path.join(job_dir, "task_instructions.md")
     room_context_path = os.path.join(job_dir, "room_context.json")
     job_path = os.path.join(job_dir, "job.json")
-    
+
     with open(messages_path, "w", encoding="utf-8") as f:
         json.dump(lane_b_c, f, indent=2)
-        
+
     with open(system_events_path, "w", encoding="utf-8") as f:
         json.dump(system_msgs, f, indent=2)
-        
+
     with open(matter_context_path, "w", encoding="utf-8") as f:
         f.write(matter_docs)
-        
+
     rules = (
         "1. Speak directly to Ed. Refer to him as 'Ed' or 'you'.\n"
         "2. Give exactly one short paragraph summarizing what is happening and the meaningful outcome.\n"
@@ -1909,14 +2160,14 @@ async def generate_digest(req: DigestRequest):
     )
     with open(task_instructions_path, "w", encoding="utf-8") as f:
         f.write(rules)
-        
+
     room_ctx = {
         "room_id": room_id,
         "prior_summaries": prior_summaries
     }
     with open(room_context_path, "w", encoding="utf-8") as f:
         json.dump(room_ctx, f, indent=2)
-        
+
     # Create job.json referencing relative paths inside job directory
     job_cfg = {
         "room_id": room_id,
@@ -1932,10 +2183,10 @@ async def generate_digest(req: DigestRequest):
     }
     with open(job_path, "w", encoding="utf-8") as f:
         json.dump(job_cfg, f, indent=2)
-        
+
     # --- STEP 3: Wire to run_worker.py ---
     worker_name = os.environ.get("VC_WORKER", "codex")
-    
+
     # Run the worker script
     cmd = [
         sys.executable,
@@ -1944,16 +2195,16 @@ async def generate_digest(req: DigestRequest):
         "--worker", worker_name,
         "--job", job_path
     ]
-    
+
     success = False
     digest_text = None
-    
+
     try:
         try:
             # Run worker with 30s timeout
             env = os.environ.copy()
             env["PYTHONPATH"] = env.get("PYTHONPATH", "") + ":" + os.getcwd()
-            
+
             result_proc = subprocess.run(
                 cmd,
                 env=env,
@@ -1962,7 +2213,7 @@ async def generate_digest(req: DigestRequest):
                 stdin=subprocess.DEVNULL,
                 timeout=30
             )
-            
+
             if result_proc.returncode == 0:
                 result_json_path = os.path.join(job_dir, "result.json")
                 if os.path.exists(result_json_path):
@@ -1974,7 +2225,7 @@ async def generate_digest(req: DigestRequest):
                         logger.info(f"Worker '{worker_name}' successfully generated digest.")
             else:
                 logger.error(f"Worker execution failed: {result_proc.stderr}")
-                
+
         except subprocess.TimeoutExpired:
             logger.warning(f"Worker '{worker_name}' execution timed out after 30s.")
         except Exception as e:
@@ -1985,7 +2236,7 @@ async def generate_digest(req: DigestRequest):
                 shutil.rmtree(job_dir, ignore_errors=True)
             except Exception as e:
                 logger.warning(f"Could not remove temp job_dir '{job_dir}': {e}")
-        
+
     if success and digest_text:
         digest_text = normalize_narrator_summary(digest_text)
         # Persist summary
@@ -1995,7 +2246,7 @@ async def generate_digest(req: DigestRequest):
             "included_message_ids": included_message_ids,
             "prior_summary_used": prior_summary_used
         }
-        
+
     # Rule-based fallback summary: one high-level paragraph.
     logger.warning("Worker failed or returned error. Falling back to rule-based summary.")
     p1_parts = ["Ed, here is the high-level context from the recent channel updates."]
@@ -2004,10 +2255,10 @@ async def generate_digest(req: DigestRequest):
         agent_name = m.get("event", {}).get("agent") if m.get("lane") == "agent" else None
         author = agent_name or m.get("name") or m.get("username") or "Unknown"
         user_counts[author] = user_counts.get(author, 0) + 1
-        
+
     for user, count in user_counts.items():
         p1_parts.append(f"{user} contributed {count} updates.")
-        
+
     if lane_b_c:
         last_msg = lane_b_c[-1]
         agent_name = last_msg.get("event", {}).get("agent") if last_msg.get("lane") == "agent" else None
@@ -2018,15 +2269,15 @@ async def generate_digest(req: DigestRequest):
         )
     else:
         p1_parts.append("There are no active agent replies or user requests in the current window.")
-        
+
     fallback_digest = " ".join(p1_parts)
-    
+
     # Persist fallback summary
     try:
         save_summary(room_id, fallback_digest)
     except Exception:
         pass
-        
+
     return {
         "digest": fallback_digest,
         "included_message_ids": included_message_ids,
@@ -2298,7 +2549,7 @@ async def _run_and_cache_response_assistant(key: tuple, req: ResponseAssistantRe
         async with response_assistant_idempotency_lock:
             response_assistant_results[key] = (time.monotonic(), dict(result))
             _prune_response_assistant_results(time.monotonic())
-            
+
         room_id, trigger_message_id = key
         await sse_broadcaster.publish({
             "type": "prewarm_ready",
@@ -2503,17 +2754,17 @@ async def deduplicate_nonce(nonce: str, execute_func):
         expired = [k for k, v in list(processed_nonces.items()) if now - v[0] > 600]
         for k in expired:
             processed_nonces.pop(k, None)
-            
+
         if nonce in processed_nonces:
             val = processed_nonces[nonce][1]
             if val == "pending":
                 raise HTTPException(status_code=409, detail="Request is already being processed")
             logger.info(f"Duplicate request detected for nonce: {nonce}. Returning cached response.")
             return val
-            
+
         # Mark as pending
         processed_nonces[nonce] = (now, "pending")
-        
+
     try:
         res = await execute_func()
         async with processed_nonces_lock:
@@ -2550,7 +2801,7 @@ def _prepare_gateway_interaction(
         refined_draft = f"@{target_agent} {raw_text}"
     else:
         refined_draft = raw_text
-    
+
     interp = Interpretation(
         schema_version=CURRENT_SCHEMA_VERSION,
         selected_action="post_message",
@@ -2562,10 +2813,10 @@ def _prepare_gateway_interaction(
         audit_explanation="Interaction converted to message post draft.",
         source_context_ids=[]
     )
-    
+
     expiry = time.time() + 300.0
     nonce = f"nonce_{req.interaction_id}"
-    
+
     conf = ConfirmationSnapshot(
         schema_version=CURRENT_SCHEMA_VERSION,
         immutable_interaction_id=req.interaction_id,
@@ -2576,7 +2827,7 @@ def _prepare_gateway_interaction(
         expires_at=expiry,
         nonce=nonce
     )
-    
+
     event = TaskEvent(
         interaction_id=req.interaction_id,
         timestamp=time.time(),
@@ -2584,10 +2835,10 @@ def _prepare_gateway_interaction(
         details={"room_id": target_room, "agent": target_agent}
     )
     task_supervisor.create_interaction(req, conf, event)
-    
+
     interp_dict = interp.model_dump() if hasattr(interp, "model_dump") else interp.dict()
     conf_dict = conf.model_dump() if hasattr(conf, "model_dump") else conf.dict()
-    
+
     return GatewayResult(
         schema_version=CURRENT_SCHEMA_VERSION,
         status=TaskState.AWAITING_CONFIRMATION,
@@ -2640,7 +2891,7 @@ async def gateway_confirm(conf: ConfirmationSnapshot):
             status_code=503,
             detail="Rocket.Chat gateway ingress must use a dedicated non-acli_bot identity",
         )
-        
+
     async def _do_send():
         base_url = get_rc_base_url()
         headers = {
@@ -2671,7 +2922,7 @@ async def gateway_confirm(conf: ConfirmationSnapshot):
         except Exception as e:
             logger.exception("Error posting confirmed message")
             raise HTTPException(status_code=500, detail=str(e))
-            
+
     if conf.nonce:
         async with processed_nonces_lock:
             if conf.nonce in processed_nonces:
@@ -2768,7 +3019,7 @@ async def gateway_tts_stop():
 async def send_message(req: MessageSendRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Message text cannot be empty")
-        
+
     async def _do_send():
         base_url = get_rc_base_url()
         headers = {
@@ -2776,26 +3027,26 @@ async def send_message(req: MessageSendRequest):
             "X-User-Id": RC_USER_ID,
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "roomId": req.roomId,
             "text": req.text
         }
-        
+
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(f"{base_url}/api/v1/chat.postMessage", headers=headers, json=payload)
                 if resp.status_code != 200:
                     raise HTTPException(status_code=resp.status_code, detail=f"Rocket.Chat post error: {resp.text}")
-                    
+
                 data = resp.json()
                 if not data.get("success"):
                     raise HTTPException(status_code=400, detail="Rocket.Chat post message failed")
-                    
+
                 msg_data = data.get("message", {})
                 msg_id = msg_data.get("_id")
                 return {
-                    "success": True, 
+                    "success": True,
                     "msgId": msg_id,
                     "message": msg_data
                 }
@@ -2812,7 +3063,7 @@ async def send_message(req: MessageSendRequest):
                 if entry[1] == "pending":
                     raise HTTPException(status_code=409, detail="Request is already being processed")
                 return entry[1]
-                
+
         return await deduplicate_nonce(req.nonce, _do_send)
     else:
         return await _do_send()

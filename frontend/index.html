@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
-    <link rel="stylesheet" href="index.css?v=voice-mode-1">
+    <link rel="stylesheet" href="index.css?v=message-read-aloud-1">
 </head>
 <body>
     <div class="app-layout">
@@ -31,7 +31,20 @@
             </div>
 
             <div class="channels-list-container">
-                <div class="sidebar-section-title">CHANNELS</div>
+                <div class="sidebar-section-header">
+                    <div class="sidebar-section-title">CHANNELS</div>
+                    <div class="channels-header-actions">
+                        <span class="webhook-status-chip is-unknown" id="webhook-status-chip"
+                              role="status" aria-live="polite" title="Webhook status is loading">
+                            <span class="webhook-status-dot" aria-hidden="true"></span>
+                            <span class="webhook-status-label">Checking</span>
+                        </span>
+                        <button class="channels-refresh-button" id="btn-refresh-channels" type="button"
+                                title="Refresh channel list" aria-label="Refresh channel list">
+                            <span class="material-symbols-rounded" aria-hidden="true">refresh</span>
+                        </button>
+                    </div>
+                </div>
                 <div class="channels-list" id="channels-list">
                     <div class="loading-state-sm">
                         <span class="material-symbols-rounded spinning">progress_activity</span>
@@ -113,6 +126,53 @@
                     <div class="loading-state">
                         <span class="material-symbols-rounded spinning">progress_activity</span>
                         <p>Loading recent updates...</p>
+                    </div>
+                </div>
+                <div
+                    class="message-read-player"
+                    id="message-read-player"
+                    role="region"
+                    aria-label="Read aloud controls"
+                    aria-live="polite"
+                    hidden
+                >
+                    <div class="message-read-player-info">
+                        <span class="message-read-player-mark material-symbols-rounded" aria-hidden="true">graphic_eq</span>
+                        <div class="message-read-player-copy">
+                            <span class="message-read-player-kicker">READING ALOUD</span>
+                            <strong class="message-read-player-title" id="message-read-player-title">Agent response</strong>
+                            <span class="message-read-player-status" id="message-read-player-status">Ready</span>
+                        </div>
+                    </div>
+                    <div class="message-read-player-controls">
+                        <button
+                            class="message-read-player-button message-read-player-toggle"
+                            id="btn-message-read-toggle"
+                            type="button"
+                            title="Pause reading"
+                            aria-label="Pause reading"
+                        >
+                            <span class="material-symbols-rounded" id="message-read-toggle-icon" aria-hidden="true">pause</span>
+                        </button>
+                        <button
+                            class="message-read-player-button"
+                            id="btn-message-read-stop"
+                            type="button"
+                            title="Stop reading"
+                            aria-label="Stop reading"
+                        >
+                            <span class="material-symbols-rounded" aria-hidden="true">stop</span>
+                        </button>
+                        <span class="message-read-player-divider" aria-hidden="true"></span>
+                        <button
+                            class="message-read-player-button message-read-player-close"
+                            id="btn-message-read-close"
+                            type="button"
+                            title="Close read aloud"
+                            aria-label="Close read aloud"
+                        >
+                            <span class="material-symbols-rounded" aria-hidden="true">close</span>
+                        </button>
                     </div>
                 </div>
                 <button
@@ -231,6 +291,7 @@
                             <button class="quick-suggestion-menu-item" type="button" role="menuitem" data-quick-suggestion="status">Status?</button>
                             <button class="quick-suggestion-menu-item" type="button" role="menuitem" data-quick-suggestion="blockers">Blockers?</button>
                             <button class="quick-suggestion-menu-item" type="button" role="menuitem" data-quick-suggestion="summarize">Summarize</button>
+                            <button class="quick-suggestion-menu-item" type="button" role="menuitem" data-quick-suggestion="executive-summary">Executive summary</button>
                             <button class="quick-suggestion-menu-item" type="button" role="menuitem" data-quick-suggestion="what-changed">What changed?</button>
                             <button class="quick-suggestion-menu-item" type="button" role="menuitem" data-quick-suggestion="decisions">List decisions</button>
                             <button class="quick-suggestion-menu-item" type="button" role="menuitem" data-quick-suggestion="attention">What needs my attention?</button>
@@ -610,19 +671,25 @@
                             <select id="attn-urgency" class="setting-select">
                                 <option value="low">Low</option>
                                 <option value="normal" selected>Normal</option>
-                                <option value="high">High (+25 pts)</option>
+                                <option value="high">High</option>
                             </select>
                         </div>
                     </div>
 
                     <div class="setting-group toggle-group">
-                        <label for="attn-blocking">Blocking other work (+30 pts)</label>
+                        <label for="attn-blocking">Blocking other work</label>
                         <input type="checkbox" id="attn-blocking" class="setting-checkbox">
                     </div>
 
                     <div class="setting-group toggle-group">
-                        <label for="attn-focus-today">Focus Today (Boost +50 pts until midnight)</label>
+                        <label for="attn-focus-today">Focus Today (boost until midnight)</label>
                         <input type="checkbox" id="attn-focus-today" class="setting-checkbox">
+                    </div>
+
+                    <div class="setting-group toggle-group">
+                        <label for="attn-priority-override">Always prioritize this channel</label>
+                        <input type="checkbox" id="attn-priority-override" class="setting-checkbox">
+                        <span class="setting-hint" style="display: block; font-size: 0.75rem; color: #a5b4fc; margin-top: 0.25rem;">Use only for genuinely critical work. Otherwise the newest real conversation rises first.</span>
                     </div>
 
                     <div class="settings-grid">
@@ -704,6 +771,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="history_state.js?v=response-assistant-3"></script>
-    <script src="index.js?v=voice-mode-1"></script>
+    <script src="index.js?v=message-read-aloud-1"></script>
 </body>
 </html>

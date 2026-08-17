@@ -112,8 +112,13 @@ def _automatic_system_file(filename: str) -> Optional[Path]:
         if not str(root):
             continue
         candidate = root / filename
-        if candidate.is_file():
-            return candidate
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            # Optional host paths may exist in the registry without being
+            # mounted or readable by the Gateway process.
+            continue
     return None
 
 
@@ -158,7 +163,7 @@ def load_channel_registry() -> Tuple[List[dict], str]:
     }
     discovered = []
     for candidate in ACLI_MATTERS_REGISTRY_CANDIDATES:
-        if not str(candidate) or not candidate.is_file():
+        if not str(candidate):
             continue
         try:
             registry = json.loads(candidate.read_text(encoding="utf-8"))
@@ -174,20 +179,22 @@ def load_channel_registry() -> Tuple[List[dict], str]:
                 continue
             if Path(folder_path).name.casefold() in EXCLUDED_ACLI_MATTER_FOLDERS:
                 continue
-            matter_file = next(
-                (candidate for candidate in _matter_file_candidates(folder_path) if candidate.is_file()),
-                None,
-            )
-            if matter_file is None:
+            matter_data = None
+            for matter_file in _matter_file_candidates(folder_path):
+                try:
+                    loaded = json.loads(matter_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    # Try the mapped/container candidate when a registered
+                    # host path is absent or inaccessible to this process.
+                    continue
+                if isinstance(loaded, dict):
+                    matter_data = loaded
+                    break
+            if matter_data is None:
+                # Do not fabricate a channel without its ACLI contract; the
+                # restart mount synchronizer handles inaccessible host paths.
                 continue
-            try:
-                matter_data = json.loads(matter_file.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError):
-                # The registry can contain a host path that is not mounted in
-                # this process.  Do not fabricate a channel without its ACLI
-                # contract; the restart mount synchronizer handles that case.
-                continue
-            channel = matter_data.get("channel") if isinstance(matter_data, dict) else None
+            channel = matter_data.get("channel")
             channel_name = str((channel or {}).get("name") or "").strip()
             if not channel_name or channel_name.casefold() in channel_keys:
                 continue
@@ -198,8 +205,7 @@ def load_channel_registry() -> Tuple[List[dict], str]:
                 "active": True,
                 "roles": None,
                 "default_worker": str(
-                    (matter_data.get("default_agent") if isinstance(matter_data, dict) else None)
-                    or "codex"
+                    matter_data.get("default_agent") or "codex"
                 ).strip().lower(),
                 "notes": "Discovered from ACLI's registered matter registry.",
                 "strategy_source": str(candidate),

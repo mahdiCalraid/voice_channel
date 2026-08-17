@@ -131,15 +131,85 @@ function loadFrontend(options = {}) {
     return { elements, sandbox, spoken, storage, storageWrites, documentListeners, intervals };
 }
 
-test("channel discovery keeps a snappy baseline refresh independent of event transport", () => {
+test("the channel rail is never refreshed on a timer", () => {
     const app = loadFrontend();
     app.documentListeners.DOMContentLoaded();
 
-    // Status ~5s, active conversation ~4s, rail/attention ~7s.
+    // Status ~5s and active conversation history ~4s only. The rail/attention 7s
+    // timer is deliberately gone: the list must not move on its own cadence.
     assert.deepEqual(
         app.intervals.map(interval => interval.delay),
-        [5000, 4000, 7000]
+        [5000, 4000]
     );
+});
+
+test("the channels refresh button re-pulls the room list on demand", async () => {
+    const app = loadFrontend();
+    const roomCalls = [];
+    app.sandbox.fetch = url => {
+        roomCalls.push(url);
+        return Promise.resolve({ ok: true, json: async () => ({ success: true, rooms: [] }) });
+    };
+
+    const button = app.sandbox.document.getElementById("btn-refresh-channels");
+    assert.equal(typeof button.listeners.click, "function");
+
+    await button.listeners.click();
+
+    assert.ok(roomCalls.some(url => url.startsWith("/api/rooms")));
+    assert.equal(button.disabled, false);
+    assert.equal(button.classList.contains("is-refreshing"), false);
+});
+
+test("a refresh already in flight is not started twice", async () => {
+    const app = loadFrontend();
+    let roomFetches = 0;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    app.sandbox.fetch = url => {
+        if (url.startsWith("/api/rooms")) {
+            roomFetches += 1;
+            return gate.then(() => ({ ok: true, json: async () => ({ success: true, rooms: [] }) }));
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ success: true, messages: [] }) });
+    };
+
+    const button = app.sandbox.document.getElementById("btn-refresh-channels");
+    const first = button.listeners.click();
+    await button.listeners.click();
+    release();
+    await first;
+
+    assert.equal(roomFetches, 1);
+});
+
+test("webhook status chip makes live and fallback delivery visible", () => {
+    const app = loadFrontend();
+    const chip = app.sandbox.document.getElementById("webhook-status-chip");
+
+    app.sandbox.updateWebhookStatusChip({ state: "healthy" });
+    assert.equal(chip.dataset.state, "healthy");
+    assert.equal(chip.className, "webhook-status-chip is-healthy");
+    assert.match(chip.getAttribute("title"), /delivering verified message events/);
+
+    app.sandbox.updateWebhookStatusChip({ state: "degraded_polling" });
+    assert.equal(chip.dataset.state, "degraded");
+    assert.equal(chip.className, "webhook-status-chip is-degraded");
+    assert.match(chip.getAttribute("title"), /polling fallback/);
+});
+
+test("prepared narration uses the defined guarded play entry point", () => {
+    const app = loadFrontend({ enableSpeech: true });
+    vm.runInContext(`
+        currentDigestText = "Prepared narration is ready.";
+        digestContent.innerText = currentDigestText;
+    `, app.sandbox);
+
+    assert.equal(app.sandbox.playPreparedNarrationIfIdle(), true);
+    assert.deepEqual(app.spoken, ["Prepared narration is ready."]);
+    app.sandbox.window.speechSynthesis.speaking = true;
+    assert.equal(app.sandbox.playPreparedNarrationIfIdle(), false);
+    assert.equal(app.spoken.length, 1);
 });
 
 test("automatic assistance prepares the digest and draft without starting narration", async () => {
@@ -954,6 +1024,7 @@ test("quick suggestions expose smart AI chips, More menu, and most-used predefin
     assert.match(htmlContent, /id="quick-suggestion-smart-1"/);
     assert.match(htmlContent, /id="btn-more-quick-suggestions"/);
     assert.match(htmlContent, /id="quick-suggestions-menu"/);
+    assert.match(htmlContent, /data-quick-suggestion="executive-summary"/);
 
     assert.match(cssContent, /\.composer-container[\s\S]*?overflow:\s*visible/);
     assert.match(cssContent, /\.quick-suggestions-menu[\s\S]*?z-index:\s*1000/);
@@ -984,6 +1055,11 @@ test("quick suggestions expose smart AI chips, More menu, and most-used predefin
     assert.equal(app.sandbox.insertQuickSuggestion("most-used"), true);
     assert.equal(input.value, "What is the status of the current task?");
     assert.equal(app.storage.vc_quick_suggestion_usage, JSON.stringify({ status: 2 }));
+
+    input.value = "";
+    assert.equal(app.sandbox.insertQuickSuggestion("executive-summary"), true);
+    assert.match(input.value, /^Give an executive summary of where we are in the overall plan/);
+    assert.match(input.value, /Omit code, file changes, commits, classes, tests, and routine implementation details\.$/);
 });
 
 test("browser composer sends through gateway contracts without a confirmation dialog", async () => {
@@ -1384,7 +1460,7 @@ test("backend suppression stays authoritative when cross-tab storage is unavaila
 test("in-flight lease claim is touched during long requests to prevent expiry", async () => {
     const app = loadFrontend();
     const key = app.sandbox.automaticAssistantStorageKey("lease", "room-long-request", "msg-long");
-    
+
     vm.runInContext(`
         activeRoomId = "room-long-request";
         roomsList = [{ id: "room-long-request", name: "voice_channel" }];
@@ -1392,10 +1468,10 @@ test("in-flight lease claim is touched during long requests to prevent expiry", 
 
     app.sandbox.tryClaimAutomaticAssistance("room-long-request", "msg-long");
     const initialLease = JSON.parse(app.storage[key]);
-    
+
     app.sandbox.touchAutomaticAssistanceClaim("room-long-request", "msg-long");
     const touchedLease = JSON.parse(app.storage[key]);
-    
+
     assert.ok(touchedLease.expiresAt >= initialLease.expiresAt);
 });
 
@@ -1681,36 +1757,163 @@ test("pending attention queue applies immediately when the composer clears", asy
     assert.equal(app.sandbox.document.getElementById("channels-list").innerHTML.includes("#1 · 200"), false);
 });
 
-test("attention rail sorts configured channels by score then recent activity", () => {
+test("attention rail sorts by real conversation recency except explicit priority overrides", () => {
     const app = loadFrontend();
     vm.runInContext(`
         roomsList = [
             { id: "u-new", name: "unconfigured_new", lm: "2026-08-02T12:00:00Z" },
             { id: "c-old", name: "configured_old", lm: "2026-08-01T08:00:00Z" },
             { id: "c-new", name: "configured_new", lm: "2026-08-02T10:00:00Z" },
-            { id: "c-idle", name: "configured_idle", lm: "2026-08-02T11:00:00Z" },
+            { id: "c-critical", name: "configured_critical", lm: "2026-07-01T11:00:00Z" },
             { id: "u-old", name: "unconfigured_old", lm: "2026-07-30T08:00:00Z" }
         ];
         attentionQueueData = [
-            { channel_name: "configured_old", configured: true, queue_category: "ranked", score: 100, last_activity_at: 100 },
-            { channel_name: "configured_new", configured: true, queue_category: "ranked", score: 100, last_activity_at: 200 },
-            { channel_name: "configured_idle", configured: true, queue_category: "idle", score: null, last_activity_at: 300 },
-            { channel_name: "unconfigured_new", configured: false, queue_category: "unconfigured", score: null, last_activity_at: 500 },
-            { channel_name: "unconfigured_old", configured: false, queue_category: "unconfigured", score: null, last_activity_at: 400 }
+            { channel_name: "configured_old", configured: true, queue_category: "ranked", score: 900, last_real_message_at: 100 },
+            { channel_name: "configured_new", configured: true, queue_category: "ranked", score: 1, last_real_message_at: 200 },
+            { channel_name: "configured_critical", configured: true, queue_category: "ranked", score: 5, last_real_message_at: 50, priority_override: true },
+            { channel_name: "unconfigured_new", configured: false, queue_category: "unconfigured", score: null, last_real_message_at: 500 },
+            { channel_name: "unconfigured_old", configured: false, queue_category: "unconfigured", score: null, last_real_message_at: 400 }
         ];
         renderChannelsList();
     `, app.sandbox);
 
     const html = app.sandbox.document.getElementById("channels-list").innerHTML;
     const order = [
-        "configured_new",
-        "configured_old",
-        "configured_idle",
+        "configured_critical",
         "unconfigured_new",
-        "unconfigured_old"
+        "unconfigured_old",
+        "configured_new",
+        "configured_old"
     ].map(name => html.indexOf(`data-channel-name="${name}"`));
     assert.ok(order.every(index => index >= 0));
     assert.deepEqual([...order].sort((a, b) => a - b), order);
+});
+
+test("channel rail skips a second paint when the payload is unchanged", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        roomsList = [
+            { id: "c-new", name: "configured_new" },
+            { id: "c-old", name: "configured_old" }
+        ];
+        attentionQueueData = [
+            { channel_name: "configured_new", configured: true, queue_category: "ranked", last_real_message_at: 200 },
+            { channel_name: "configured_old", configured: true, queue_category: "ranked", last_real_message_at: 100 }
+        ];
+        renderChannelsList();
+    `, app.sandbox);
+
+    const list = app.sandbox.document.getElementById("channels-list");
+    const firstHtml = list.innerHTML;
+    assert.ok(firstHtml.includes('data-channel-name="configured_new"'));
+    list.innerHTML = "MUTATED";
+    vm.runInContext("renderChannelsList();", app.sandbox);
+    assert.equal(list.innerHTML, "MUTATED");
+});
+
+test("recent stats bar is not rewritten when the stats payload is unchanged", () => {
+    const app = loadFrontend();
+    const stats = { codex: { runs: 2, avg_response_time: 5, msg_count: 3, status: "idle" } };
+    app.sandbox.__stats = stats;
+    vm.runInContext("renderStats(__stats);", app.sandbox);
+
+    const bar = app.sandbox.document.getElementById("stats-bar");
+    assert.ok(bar.innerHTML.includes("Recent Window Stats"));
+    bar.innerHTML = "MUTATED";
+    vm.runInContext("renderStats(__stats);", app.sandbox);
+    assert.equal(bar.innerHTML, "MUTATED");
+    assert.equal(bar.style.display, "flex");
+
+    app.sandbox.__stats2 = { codex: { runs: 3, avg_response_time: 5, msg_count: 4, status: "idle" } };
+    vm.runInContext("renderStats(__stats2);", app.sandbox);
+    assert.ok(bar.innerHTML.includes("Recent Window Stats"));
+});
+
+test("room select options are not rebuilt when the room set is unchanged", async () => {
+    const app = loadFrontend();
+    const rooms = [{ id: "r1", name: "alpha" }, { id: "r2", name: "bravo" }];
+    app.sandbox.fetch = (url) => Promise.resolve({
+        ok: true,
+        json: async () => url.startsWith("/api/rooms")
+            ? { success: true, rooms }
+            : { success: true, messages: [], queue: [] },
+    });
+
+    await vm.runInContext("loadRooms();", app.sandbox);
+    const select = app.sandbox.document.getElementById("room-select");
+    assert.ok(select.innerHTML.includes('value="r1"'));
+
+    select.innerHTML = "MUTATED";
+    await vm.runInContext("loadRooms();", app.sandbox);
+    assert.equal(select.innerHTML, "MUTATED");
+
+    rooms.push({ id: "r3", name: "charlie" });
+    await vm.runInContext("loadRooms();", app.sandbox);
+    assert.ok(select.innerHTML.includes('value="r3"'));
+});
+
+test("channel rail applies updated recency ordering immediately", () => {
+    const app = loadFrontend();
+    vm.runInContext(`
+        roomsList = [
+            { id: "a", name: "alpha" },
+            { id: "b", name: "bravo" }
+        ];
+        attentionQueueData = [
+            { channel_name: "alpha", configured: true, queue_category: "ranked", last_real_message_at: 200 },
+            { channel_name: "bravo", configured: true, queue_category: "ranked", last_real_message_at: 100 }
+        ];
+        renderChannelsList();
+        attentionQueueData = [
+            { channel_name: "alpha", configured: true, queue_category: "ranked", last_real_message_at: 50 },
+            { channel_name: "bravo", configured: true, queue_category: "ranked", last_real_message_at: 300 }
+        ];
+        renderChannelsList();
+    `, app.sandbox);
+
+    const resorted = app.sandbox.document.getElementById("channels-list").innerHTML;
+    const liveOrder = [
+        "bravo",
+        "alpha"
+    ].map(name => resorted.indexOf(`data-channel-name="${name}"`));
+    assert.ok(liveOrder.every(index => index >= 0));
+    assert.deepEqual([...liveOrder].sort((a, b) => a - b), liveOrder);
+});
+
+test("failed attention fetch preserves newest-first room order", async () => {
+    const app = loadFrontend();
+    app.sandbox.fetch = (url) => {
+        if (url === "/api/rooms") {
+            return Promise.resolve({
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    rooms: [
+                        { id: "new", name: "zulu_recent", lm: "2026-08-16T20:00:00Z" },
+                        { id: "old", name: "alpha_old", lm: "2026-08-15T20:00:00Z" }
+                    ]
+                })
+            });
+        }
+        if (url === "/api/attention/queue") {
+            return Promise.resolve({ ok: false, status: 500 });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ success: true }) });
+    };
+    vm.runInContext(`
+        attentionQueueData = [
+            { channel_name: "alpha_old", queue_category: "ranked", last_real_message_at: 999 }
+        ];
+    `, app.sandbox);
+
+    await vm.runInContext("loadRooms();", app.sandbox);
+
+    const html = app.sandbox.document.getElementById("channels-list").innerHTML;
+    const recentIndex = html.indexOf('data-channel-name="zulu_recent"');
+    const oldIndex = html.indexOf('data-channel-name="alpha_old"');
+    assert.ok(recentIndex >= 0 && oldIndex >= 0);
+    assert.ok(recentIndex < oldIndex);
+    assert.equal(vm.runInContext("attentionQueueData.length", app.sandbox), 0);
 });
 
 test("composer text freezes attention queue updates until the turn ends", async () => {
@@ -2153,7 +2356,7 @@ test("Apply dispatches the native model command without a confirmation dialog or
     assert.equal(sendFeedback.className, "send-feedback hidden");
 });
 
-test("renderTranscript includes copy button with escaped raw text and copy helper works cleanly", () => {
+test("agent responses render read-aloud beside copy while user messages remain silent", () => {
     const app = loadFrontend();
     const messages = [
         {
@@ -2164,6 +2367,15 @@ test("renderTranscript includes copy button with escaped raw text and copy helpe
             timestamp: "2026-08-05T18:00:00.000Z",
             lane: "agent",
             event: { kind: "agent_response", agent: "codex" }
+        },
+        {
+            id: "msg-user-test-1",
+            name: "Ed",
+            username: "ed",
+            text: "This user message should not get a speech button.",
+            timestamp: "2026-08-05T18:01:00.000Z",
+            lane: "user",
+            event: { kind: "user_message" }
         }
     ];
 
@@ -2172,6 +2384,70 @@ test("renderTranscript includes copy button with escaped raw text and copy helpe
     assert.ok(feed.innerHTML.includes('class="btn-copy-msg"'));
     assert.ok(feed.innerHTML.includes('data-raw-text="Hello, this is a test message to copy &amp; paste!"'));
     assert.ok(feed.innerHTML.includes('content_copy'));
+    assert.equal((feed.innerHTML.match(/class="btn-read-msg/g) || []).length, 1);
+    assert.ok(feed.innerHTML.includes('data-message-id="msg-copy-test-1"'));
+    assert.ok(feed.innerHTML.includes('data-author="Codex"'));
+    assert.ok(feed.innerHTML.includes('volume_up'));
+});
+
+test("message read-aloud keeps one active response and exposes pause stop and close", () => {
+    const app = loadFrontend({ enableSpeech: true });
+    const synth = app.sandbox.window.speechSynthesis;
+    let cancelCount = 0;
+    let pauseCount = 0;
+    let resumeCount = 0;
+    synth.cancel = () => { cancelCount += 1; };
+    synth.pause = () => { pauseCount += 1; synth.paused = true; };
+    synth.resume = () => { resumeCount += 1; synth.paused = false; };
+    synth.paused = false;
+
+    app.sandbox.startMessageReadAloud({
+        messageId: "agent-grok-1",
+        roomId: "room-daily",
+        author: "Grok",
+        text: "The first worker response."
+    });
+
+    const player = app.sandbox.document.getElementById("message-read-player");
+    const title = app.sandbox.document.getElementById("message-read-player-title");
+    const status = app.sandbox.document.getElementById("message-read-player-status");
+    const toggleIcon = app.sandbox.document.getElementById("message-read-toggle-icon");
+    assert.equal(player.hidden, false);
+    assert.equal(title.innerText, "Grok response");
+    assert.equal(status.innerText, "Playing · Fast voice");
+    assert.deepEqual(app.spoken, ["The first worker response."]);
+
+    // Starting another worker response replaces the active reading in place.
+    app.sandbox.startMessageReadAloud({
+        messageId: "agent-codex-2",
+        roomId: "room-daily",
+        author: "Codex",
+        text: "The replacement response."
+    });
+    assert.equal(title.innerText, "Codex response");
+    assert.deepEqual(app.spoken, ["The first worker response.", "The replacement response."]);
+    assert.ok(cancelCount >= 2);
+    assert.equal(vm.runInContext("messageReadAloudState.messageId", app.sandbox), "agent-codex-2");
+
+    synth.speaking = true;
+    app.sandbox.toggleMessageReadAloud();
+    assert.equal(pauseCount, 1);
+    assert.equal(status.innerText, "Paused · Fast voice");
+    assert.equal(toggleIcon.textContent, "play_arrow");
+
+    app.sandbox.toggleMessageReadAloud();
+    assert.equal(resumeCount, 1);
+    assert.equal(status.innerText, "Playing · Fast voice");
+    assert.equal(toggleIcon.textContent, "pause");
+
+    app.sandbox.stopMessageReadAloud();
+    assert.equal(player.hidden, false);
+    assert.equal(status.innerText, "Stopped · Fast voice");
+    assert.equal(toggleIcon.textContent, "play_arrow");
+
+    app.sandbox.closeMessageReadAloud();
+    assert.equal(player.hidden, true);
+    assert.equal(vm.runInContext("messageReadAloudState", app.sandbox), null);
 });
 
 test("push-to-talk speech recognition appends transcript, updates draft state, and requires explicit send", async () => {
@@ -2282,4 +2558,66 @@ test("push-to-talk speech recognition appends transcript, updates draft state, a
     assert.equal(confirmPayload.exact_message, "@codex check task status");
     assert.equal(commandInput.value, "");
 });
+test("history poll is suppressed only for explicitly covered rooms with fresh watermarks and active SSE", async () => {
+    const app = loadFrontend();
+    app.documentListeners.DOMContentLoaded();
+    let historyCalls = 0;
+    app.sandbox.loadHistory = async () => { historyCalls++; };
+    vm.runInContext("activeRoomId = 'room-test';", app.sandbox);
 
+    const historyInterval = app.intervals.find(i => i.delay === 4000);
+    assert.ok(historyInterval, "4s history interval should exist");
+
+    // Case 1: SSE active, but no watermark -> unsuppressed (uncovered)
+    app.sandbox.window.sseConnected = true;
+    app.sandbox.window.webhookCoveredRooms = {};
+    historyInterval.callback();
+    assert.equal(historyCalls, 1, "Should poll uncovered room");
+
+    // Case 2: SSE active, watermark exists but stale (> 120s) -> unsuppressed
+    app.sandbox.window.webhookCoveredRooms = { "room-test": (Date.now() / 1000) - 150 };
+    historyInterval.callback();
+    assert.equal(historyCalls, 2, "Should poll stale room");
+
+    // Case 3: SSE active, watermark exists and fresh -> suppressed (covered)
+    app.sandbox.window.webhookCoveredRooms = { "room-test": (Date.now() / 1000) - 10 };
+    historyInterval.callback();
+    assert.equal(historyCalls, 2, "Should suppress covered room");
+
+    // Case 4: Watermark fresh, but SSE disconnected -> unsuppressed
+    app.sandbox.window.sseConnected = false;
+    historyInterval.callback();
+    assert.equal(historyCalls, 3, "Should poll when SSE disconnected despite coverage");
+});
+
+test("prewarm_ready consumes cached result without double generation", async (t) => {
+    const app = loadFrontend();
+
+    // Mock EventSource
+    let eventListeners = {};
+    app.sandbox.EventSource = class {
+        constructor(url) { this.url = url; }
+        addEventListener(event, callback) { eventListeners[event] = callback; }
+    };
+
+    app.documentListeners.DOMContentLoaded();
+
+    // Mock loadHistory and handleGenerateDigest to observe which is called
+    let historyCalls = 0;
+    let digestCalls = 0;
+    app.sandbox.loadHistory = async () => { historyCalls++; };
+    app.sandbox.handleGenerateDigest = async () => { digestCalls++; };
+    app.sandbox.fetchAttentionQueue = async () => {};
+
+    vm.runInContext("activeRoomId = 'room-test';", app.sandbox);
+    vm.runInContext("initSSEEventSource();", app.sandbox);
+
+    // Emit prewarm_ready
+    const prewarmReadyCb = eventListeners["prewarm_ready"];
+    assert.ok(prewarmReadyCb, "prewarm_ready listener should be registered");
+
+    prewarmReadyCb({ data: JSON.stringify({ room_id: "room-test" }) });
+
+    assert.equal(historyCalls, 1, "loadHistory should be called");
+    assert.equal(digestCalls, 0, "handleGenerateDigest should NOT be called");
+});

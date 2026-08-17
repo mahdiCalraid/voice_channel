@@ -6,6 +6,9 @@ let isPlaying = false;
 let currentUtterance = null;
 let currentRemoteAudio = null;
 let remotePlayback = null;
+let playbackSource = null;
+let playbackSessionId = 0;
+let messageReadAloudState = null;
 let ttsProvider = "browser";
 let chatterboxAvailable = false;
 let voiceMode = "fast";
@@ -39,6 +42,13 @@ const niceVoiceToggle = document.getElementById("toggle-nice-voice");
 const voiceModeStatus = document.getElementById("voice-mode-status");
 const transcriptFeed = document.getElementById("transcript-feed");
 const btnJumpToLatest = document.getElementById("btn-jump-to-latest");
+const messageReadPlayer = document.getElementById("message-read-player");
+const messageReadPlayerTitle = document.getElementById("message-read-player-title");
+const messageReadPlayerStatus = document.getElementById("message-read-player-status");
+const btnMessageReadToggle = document.getElementById("btn-message-read-toggle");
+const messageReadToggleIcon = document.getElementById("message-read-toggle-icon");
+const btnMessageReadStop = document.getElementById("btn-message-read-stop");
+const btnMessageReadClose = document.getElementById("btn-message-read-close");
 const commandInput = document.getElementById("command-input");
 const btnMic = document.getElementById("btn-mic");
 const btnSend = document.getElementById("btn-send");
@@ -54,6 +64,8 @@ const assistantStatus = document.getElementById("assistant-status");
 // New Three-Pane DOM Elements
 const channelsListEl = document.getElementById("channels-list");
 const channelSearchInput = document.getElementById("channel-search-input");
+const btnRefreshChannels = document.getElementById("btn-refresh-channels");
+const webhookStatusChip = document.getElementById("webhook-status-chip");
 const currentRoomNameEl = document.getElementById("current-room-name");
 const currentRoomStatusEl = document.getElementById("current-room-status");
 const btnToggleNarrator = document.getElementById("btn-toggle-narrator");
@@ -96,6 +108,7 @@ const QUICK_SUGGESTIONS = [
     { id: "status", label: "Status?", command: "What is the status of the current task?" },
     { id: "blockers", label: "Blockers?", command: "Are there any blockers?" },
     { id: "summarize", label: "Summarize", command: "Summarize the work done so far." },
+    { id: "executive-summary", label: "Executive summary", command: "Give an executive summary of where we are in the overall plan and what the team is doing now. Focus on the current outcome, what is working, what remains unresolved, and any material risk or blocker in its plan context. Omit code, file changes, commits, classes, tests, and routine implementation details." },
     { id: "what-changed", label: "What changed?", command: "What changed since the last update?" },
     { id: "decisions", label: "List decisions", command: "List the important decisions made so far." },
     { id: "attention", label: "What needs my attention?", command: "What needs my attention next?" }
@@ -757,6 +770,7 @@ function updateVoiceModeUI(mode = voiceMode) {
             : "Fast browser voice — starts immediately";
     }
     updateTTSModeStatus();
+    if (messageReadAloudState) renderMessageReadAloudUI();
 }
 
 function setVoiceMode(mode, persist = true) {
@@ -1407,7 +1421,7 @@ function initSSEEventSource() {
                 if (data && data.room_id) {
                     fetchAttentionQueue();
                     if (data.room_id === activeRoomId) {
-                        handleGenerateDigest();
+                        loadHistory();
                     }
                 }
             } catch (e) {}
@@ -1446,11 +1460,23 @@ function init() {
     // the honest fallback when DDP/webhooks are off or degraded.
     // Active conversation ~4s; channel rail / attention ~7s.
     setInterval(checkStatus, 5000);
-    setInterval(loadHistory, 4000);
     setInterval(() => {
-        fetchAttentionQueue();
-        loadRooms();
-    }, 7000);
+        // Only skip polling if we have active SSE delivery AND the current room has proven webhook coverage
+        let roomCovered = false;
+        if (window.webhookCoveredRooms && activeRoomId && window.webhookCoveredRooms[activeRoomId]) {
+            const lastSeenMs = window.webhookCoveredRooms[activeRoomId] * 1000;
+            roomCovered = (Date.now() - lastSeenMs) < 120000;
+        }
+
+        if (!(window.sseConnected && roomCovered)) {
+            loadHistory();
+        }
+    }, 4000);
+    // The channel rail is NOT polled on a timer. Ed's live-use requirement is that the
+    // list must never move on its own cadence. It refreshes on three occasions only:
+    //   1. initial load,
+    //   2. a real SSE event (new message / room_changed), which is an actual change,
+    //   3. the manual refresh button next to the CHANNELS header.
 
     // Bind Event Listeners
     btnGenerateDigest.addEventListener("click", handleGenerateDigest);
@@ -1508,6 +1534,7 @@ function init() {
 
     bindQuickSuggestionControls();
     bindCopyMessageControls();
+    initMessageReadAloudControls();
     bindJumpToLatestMessageControl();
 }
 
@@ -1669,8 +1696,8 @@ function showCopySuccess(btnElement) {
 }
 
 function bindCopyMessageControls() {
-    if (transcriptFeed && transcriptFeed.dataset.copyListenerBound !== "true") {
-        transcriptFeed.dataset.copyListenerBound = "true";
+    if (transcriptFeed && transcriptFeed.dataset.messageActionsBound !== "true") {
+        transcriptFeed.dataset.messageActionsBound = "true";
         transcriptFeed.addEventListener("click", event => {
             const copyBtn = event.target.closest(".btn-copy-msg");
             if (copyBtn) {
@@ -1678,9 +1705,37 @@ function bindCopyMessageControls() {
                 event.stopPropagation();
                 const textToCopy = copyBtn.getAttribute("data-raw-text") || "";
                 copyTextToClipboard(textToCopy, copyBtn);
+                return;
+            }
+
+            const readBtn = event.target.closest(".btn-read-msg");
+            if (readBtn) {
+                event.preventDefault();
+                event.stopPropagation();
+                startMessageReadAloud({
+                    messageId: readBtn.getAttribute("data-message-id") || "",
+                    roomId: activeRoomId,
+                    author: readBtn.getAttribute("data-author") || "Agent",
+                    text: readBtn.getAttribute("data-raw-text") || ""
+                });
             }
         });
     }
+}
+
+function initMessageReadAloudControls() {
+    if (!messageReadPlayer || messageReadPlayer.dataset.controlsInitialized === "true") return;
+    messageReadPlayer.dataset.controlsInitialized = "true";
+    if (btnMessageReadToggle) {
+        btnMessageReadToggle.addEventListener("click", toggleMessageReadAloud);
+    }
+    if (btnMessageReadStop) {
+        btnMessageReadStop.addEventListener("click", stopMessageReadAloud);
+    }
+    if (btnMessageReadClose) {
+        btnMessageReadClose.addEventListener("click", closeMessageReadAloud);
+    }
+    renderMessageReadAloudUI();
 }
 
 function initNarratorSidebarState() {
@@ -1725,6 +1780,9 @@ async function checkStatus() {
         if (!response.ok) throw new Error("HTTP error " + response.status);
         const data = await response.json();
         window.ddpConnected = data.ddp && data.ddp.state === "connected";
+        window.webhookHealthy = data.rc_webhook && data.rc_webhook.state === "healthy";
+        window.webhookCoveredRooms = (data.rc_webhook && data.rc_webhook.covered_rooms) || {};
+        updateWebhookStatusChip(data.rc_webhook);
 
         // Update Rocket.Chat status chip
         const rc = data.rocket_chat;
@@ -1742,9 +1800,33 @@ async function checkStatus() {
         }
     } catch (err) {
         console.error("Status check failed:", err);
+        updateWebhookStatusChip({ state: "unavailable" });
         rcStatusChip.className = "status-chip error";
         rcStatusChip.querySelector(".status-label").innerText = `Rocket.Chat: Offline`;
     }
+}
+
+function updateWebhookStatusChip(webhook) {
+    if (!webhookStatusChip) return;
+    const rawState = webhook && webhook.state;
+    const state = rawState === "healthy"
+        ? "healthy"
+        : (rawState === "degraded_polling" ? "degraded" : "offline");
+    if (webhookStatusChip.dataset.state === state) return;
+    webhookStatusChip.dataset.state = state;
+    webhookStatusChip.className = `webhook-status-chip is-${state}`;
+    const label = webhookStatusChip.querySelector(".webhook-status-label");
+    if (label) {
+        label.innerText = state === "healthy"
+            ? "Live"
+            : (state === "degraded" ? "Fallback" : "Off");
+    }
+    const title = state === "healthy"
+        ? "Rocket.Chat webhook is delivering verified message events"
+        : (state === "degraded"
+            ? "Webhook delivery is not recently verified; the open conversation keeps its polling fallback"
+            : "Rocket.Chat webhook is unavailable or not configured");
+    webhookStatusChip.setAttribute("title", title);
 }
 
 // 1.5. Room Selector Management
@@ -1757,11 +1839,17 @@ async function loadRooms() {
         if (data.success && data.rooms && data.rooms.length > 0) {
             roomsList = data.rooms;
 
-            // Re-render select options
+            // Re-render select options only when the room set actually changed.
+            // An unconditional rebuild on SSE/manual refresh repaints the header
+            // control and closes an open dropdown even when nothing changed.
             if (roomSelect) {
-                roomSelect.innerHTML = roomsList.map(room => {
-                    return `<option value="${room.id}">${escapeHTML(room.name)}</option>`;
-                }).join("");
+                const optionsSignature = roomsList.map(room => `${room.id}\t${room.name || ""}`).join("\n");
+                if (roomSelect.dataset.optionsSignature !== optionsSignature) {
+                    roomSelect.dataset.optionsSignature = optionsSignature;
+                    roomSelect.innerHTML = roomsList.map(room => {
+                        return `<option value="${room.id}">${escapeHTML(room.name)}</option>`;
+                    }).join("");
+                }
             }
 
             // Determine active room ID
@@ -1792,18 +1880,26 @@ async function loadRooms() {
                 localStorage.setItem("activeRoomId", activeRoomId);
             }
 
-            await fetchAttentionQueue(true);
-            renderChannelsList();
+            const renderedFromQueue = await fetchAttentionQueue(true);
+            if (!renderedFromQueue) {
+                renderChannelsList();
+            }
             updateHeaderRoomInfo();
             await fetchAgentModels(activeRoomId, getRoomName(activeRoomId));
         } else {
-            if (roomSelect) roomSelect.innerHTML = `<option value="">No rooms found</option>`;
+            if (roomSelect) {
+                roomSelect.dataset.optionsSignature = "";
+                roomSelect.innerHTML = `<option value="">No rooms found</option>`;
+            }
             if (channelsListEl) channelsListEl.innerHTML = `<div class="empty-channels">No rooms found</div>`;
             showTranscriptError("No channels available from Rocket.Chat.");
         }
     } catch (err) {
         console.error("Failed to load rooms:", err);
-        if (roomSelect) roomSelect.innerHTML = `<option value="error">Error loading rooms</option>`;
+        if (roomSelect) {
+            roomSelect.dataset.optionsSignature = "";
+            roomSelect.innerHTML = `<option value="error">Error loading rooms</option>`;
+        }
         if (channelsListEl) {
             channelsListEl.innerHTML = `
                 <div class="empty-channels">
@@ -2021,9 +2117,40 @@ if (channelSearchInput) {
     });
 }
 
+// Manual channel-rail refresh. This is the only user-driven way to re-pull the room
+// list now that the 7s rail timer is gone.
+let channelsRefreshInFlight = false;
+
+async function refreshChannelsNow() {
+    if (channelsRefreshInFlight) return;
+    channelsRefreshInFlight = true;
+    if (btnRefreshChannels) {
+        btnRefreshChannels.disabled = true;
+        if (btnRefreshChannels.classList) btnRefreshChannels.classList.add("is-refreshing");
+    }
+    try {
+        // loadRooms() re-pulls the attention queue and repaints the rail only if the
+        // content actually changed, so a no-op refresh stays visually silent.
+        await loadRooms();
+    } catch (err) {
+        console.error("Manual channel refresh failed:", err);
+    } finally {
+        channelsRefreshInFlight = false;
+        if (btnRefreshChannels) {
+            btnRefreshChannels.disabled = false;
+            if (btnRefreshChannels.classList) btnRefreshChannels.classList.remove("is-refreshing");
+        }
+    }
+}
+
+if (btnRefreshChannels) {
+    btnRefreshChannels.addEventListener("click", refreshChannelsNow);
+}
+
 let attentionQueueData = [];
 let pendingAttentionQueueData = null;
 let queueHasPendingUpdate = false;
+let lastChannelsListSignature = "";
 
 function formatElapsedSeconds(sec) {
     if (sec == null || isNaN(sec)) return "";
@@ -2044,7 +2171,17 @@ function isMidTurnActive() {
 async function fetchAttentionQueue(forceRender = false) {
     try {
         const resp = await fetch("/api/attention/queue");
-        if (!resp.ok) return;
+        if (!resp.ok) {
+            attentionQueueData = [];
+            pendingAttentionQueueData = null;
+            queueHasPendingUpdate = false;
+            hideQueueUpdateNotice();
+            if (forceRender) {
+                renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
+                return true;
+            }
+            return false;
+        }
         const data = await resp.json();
         if (data && data.success && Array.isArray(data.queue)) {
             if (!forceRender && isMidTurnActive()) {
@@ -2057,11 +2194,21 @@ async function fetchAttentionQueue(forceRender = false) {
                 queueHasPendingUpdate = false;
                 hideQueueUpdateNotice();
                 renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
+                return true;
             }
         }
     } catch (err) {
         console.warn("Could not fetch attention queue:", err);
+        attentionQueueData = [];
+        pendingAttentionQueueData = null;
+        queueHasPendingUpdate = false;
+        hideQueueUpdateNotice();
+        if (forceRender) {
+            renderChannelsList(channelSearchInput ? channelSearchInput.value : "");
+            return true;
+        }
     }
+    return false;
 }
 
 function showQueueUpdateNotice() {
@@ -2115,6 +2262,7 @@ async function openAttentionSettingsModal(channelName) {
     const urgSelect = document.getElementById("attn-urgency");
     const blockCb = document.getElementById("attn-blocking");
     const boostCb = document.getElementById("attn-focus-today");
+    const priorityOverrideCb = document.getElementById("attn-priority-override");
     const snoozeSelect = document.getElementById("attn-snooze-select");
     const keepOption = document.getElementById("attn-snooze-keep-option");
     const statusText = document.getElementById("attn-snooze-status-text");
@@ -2141,6 +2289,7 @@ async function openAttentionSettingsModal(channelName) {
     if (urgSelect) urgSelect.value = "normal";
     if (blockCb) blockCb.checked = false;
     if (boostCb) boostCb.checked = false;
+    if (priorityOverrideCb) priorityOverrideCb.checked = false;
     if (snoozeSelect) snoozeSelect.value = "none";
     if (keepOption) keepOption.style.display = "none";
     if (statusText) statusText.style.display = "none";
@@ -2165,6 +2314,7 @@ async function openAttentionSettingsModal(channelName) {
                 if (urgSelect) urgSelect.value = entry.urgency || "normal";
                 if (blockCb) blockCb.checked = !!entry.blocking;
                 if (boostCb) boostCb.checked = !!entry.temporary_boost_until;
+                if (priorityOverrideCb) priorityOverrideCb.checked = !!entry.priority_override;
 
                 // Snooze retention
                 if (entry.snoozed_until) {
@@ -2220,6 +2370,7 @@ async function saveAttentionSettings() {
     const urgSelect = document.getElementById("attn-urgency");
     const blockCb = document.getElementById("attn-blocking");
     const boostCb = document.getElementById("attn-focus-today");
+    const priorityOverrideCb = document.getElementById("attn-priority-override");
     const snoozeSelect = document.getElementById("attn-snooze-select");
     const deadlineInput = document.getElementById("attn-deadline");
 
@@ -2257,6 +2408,7 @@ async function saveAttentionSettings() {
             base_importance: impSelect ? parseInt(impSelect.value, 10) : 3,
             urgency: urgSelect ? urgSelect.value : "normal",
             blocking: blockCb ? blockCb.checked : false,
+            priority_override: priorityOverrideCb ? priorityOverrideCb.checked : false,
             temporary_boost_until: boostUntil,
             snoozed_until: snoozedUntil,
             deadline: deadlineVal,
@@ -2281,12 +2433,219 @@ async function saveAttentionSettings() {
     }
 }
 
+function realConversationTimestamp(queueItem) {
+    const raw = queueItem && (
+        queueItem.last_real_message_at != null
+            ? queueItem.last_real_message_at
+            : queueItem.last_activity_at
+    );
+    if (typeof raw === "number") return raw > 1e12 ? raw : raw * 1000;
+    const parsed = new Date(raw || 0).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function buildChannelBadge(qitem) {
+    if (!qitem) {
+        return {
+            key: "unknown",
+            html: `<span class="attn-badge attn-badge-unknown" title="Unwatched room">?</span>`,
+        };
+    }
+    const category = qitem.queue_category;
+    if (category === "busy") {
+        const elapsedStr = formatElapsedSeconds(qitem.working_elapsed_seconds);
+        return {
+            key: `busy:${elapsedStr}`,
+            html: `<span class="attn-badge attn-badge-busy" title="Agent is currently working">Busy ${elapsedStr}</span>`,
+        };
+    }
+    if (category === "ranked") {
+        const attentionState = String(qitem.attention_state || "needs_review").toLowerCase();
+        const statusClass = attentionState === "needs_help"
+            ? "attn-badge-needs-help"
+            : attentionState === "needs_decision"
+                ? "attn-badge-needs-decision"
+                : "attn-badge-ready";
+        const statusTitle = attentionState === "needs_help"
+            ? "Agent reported a problem"
+            : attentionState === "needs_decision"
+                ? "Your decision is needed"
+                : "Response ready to review";
+        return {
+            key: `ranked:${attentionState}`,
+            html: `<span class="attn-badge ${statusClass}" title="${statusTitle}" aria-label="${statusTitle}"><span class="attn-ready-dot" aria-hidden="true"></span></span>`,
+        };
+    }
+    if (category === "snoozed") {
+        return { key: "snoozed", html: `<span class="attn-badge attn-badge-snoozed" title="Snoozed">Snoozed</span>` };
+    }
+    if (category === "unconfigured") {
+        return { key: "unconfigured", html: `<span class="attn-badge attn-badge-unconfigured" title="Unconfigured">Unconfigured</span>` };
+    }
+    if (category === "unknown") {
+        return { key: "unknown", html: `<span class="attn-badge attn-badge-unknown" title="Unwatched room">?</span>` };
+    }
+    if (category === "idle") {
+        return { key: "idle", html: `<span class="attn-badge attn-badge-idle" title="Idle">Idle</span>` };
+    }
+    if (category === "inactive") {
+        return { key: "inactive", html: `<span class="attn-badge attn-badge-inactive" title="Inactive">Inactive</span>` };
+    }
+    return { key: String(category || "none"), html: "" };
+}
+
+function buildChannelRowModel(room, queueMap) {
+    const qitem = queueMap.get((room.name || "").toLowerCase());
+    const badge = buildChannelBadge(qitem);
+    const hasUnread = Boolean((qitem && qitem.has_unread) || room.has_unread);
+    return {
+        id: room.id,
+        name: room.name || "",
+        active: room.id === activeRoomId,
+        unread: hasUnread,
+        badgeKey: badge.key,
+        badgeHTML: badge.html,
+        unreadBadgeHTML: hasUnread
+            ? `<span class="unread-badge" title="Unseen real agent reply in this channel">New</span>`
+            : "",
+    };
+}
+
+function channelRowSignature(model) {
+    return [model.id, model.name, model.active ? "1" : "0", model.unread ? "1" : "0", model.badgeKey].join("\t");
+}
+
+function channelRowHTML(model) {
+    return `
+            <div class="channel-item ${model.active ? "active" : ""} ${model.unread ? "has-unread" : ""}" data-room-id="${model.id}" data-channel-name="${escapeHTML(model.name)}" data-row-sig="${escapeHTML(channelRowSignature(model))}" role="button" tabindex="0">
+                <span class="material-symbols-rounded channel-icon">tag</span>
+                <div class="channel-info">
+                    <span class="channel-name">${escapeHTML(model.name)}</span>
+                </div>
+                <div class="channel-badges">
+                    ${model.unreadBadgeHTML}
+                    ${model.badgeHTML}
+                    <button class="btn-tune-channel" data-channel-name="${escapeHTML(model.name)}" title="Edit Channel Attention Settings">
+                        <span class="material-symbols-rounded" style="font-size:16px;">tune</span>
+                    </button>
+                </div>
+            </div>
+        `;
+}
+
+function bindChannelTuneButton(item) {
+    const tuneBtn = item && item.querySelector ? item.querySelector(".btn-tune-channel") : null;
+    if (!tuneBtn || tuneBtn.dataset.bound === "1") return;
+    tuneBtn.dataset.bound = "1";
+    tuneBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openAttentionSettingsModal(tuneBtn.dataset.channelName);
+    });
+}
+
+function bindChannelItemHandlers(item) {
+    if (!item) return;
+    // The tune button can be replaced when a row's badges are patched, so it is
+    // bound separately from the row itself.
+    bindChannelTuneButton(item);
+    if (item.dataset.bound === "1") return;
+    item.dataset.bound = "1";
+    const handleSelect = (e) => {
+        if (e && e.target && e.target.closest && e.target.closest(".btn-tune-channel")) {
+            return;
+        }
+        const rid = item.dataset.roomId;
+        selectRoom(rid);
+        if (channelsSidebar) channelsSidebar.classList.remove("mobile-open");
+    };
+    item.addEventListener("click", handleSelect);
+    item.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleSelect(e);
+        }
+    });
+}
+
+function patchChannelBadges(item, model) {
+    const badges = item.querySelector ? item.querySelector(".channel-badges") : null;
+    if (!badges) return;
+    // Replace only the badge spans. The tune button keeps its bound click
+    // handler and is never torn down by a poll-driven badge update.
+    const tuneBtn = badges.querySelector(".btn-tune-channel");
+    Array.from(badges.children || []).forEach((child) => {
+        if (child !== tuneBtn) badges.removeChild(child);
+    });
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `${model.unreadBadgeHTML}${model.badgeHTML}`;
+    Array.from(wrap.children || []).forEach((child) => {
+        badges.insertBefore(child, tuneBtn || null);
+    });
+}
+
+function paintChannelsList(models) {
+    const existingItems = channelsListEl.querySelectorAll
+        ? Array.from(channelsListEl.querySelectorAll(".channel-item") || [])
+        : [];
+    const canPatch = existingItems.length > 0 && typeof channelsListEl.insertBefore === "function";
+    if (!canPatch) {
+        channelsListEl.innerHTML = models.map(channelRowHTML).join("");
+        const painted = channelsListEl.querySelectorAll
+            ? channelsListEl.querySelectorAll(".channel-item")
+            : [];
+        if (painted && painted.forEach) {
+            painted.forEach(bindChannelItemHandlers);
+        }
+        return;
+    }
+
+    const byId = new Map();
+    existingItems.forEach((item) => {
+        const rid = item.dataset && item.dataset.roomId;
+        if (rid) byId.set(rid, item);
+    });
+    const keep = new Set(models.map((model) => model.id));
+    existingItems.forEach((item) => {
+        const rid = item.dataset && item.dataset.roomId;
+        if (rid && !keep.has(rid) && item.parentNode === channelsListEl) {
+            channelsListEl.removeChild(item);
+        }
+    });
+
+    models.forEach((model, index) => {
+        let item = byId.get(model.id);
+        const nextSig = channelRowSignature(model);
+        if (!item) {
+            const wrap = document.createElement("div");
+            wrap.innerHTML = channelRowHTML(model).trim();
+            item = wrap.firstElementChild || wrap.children[0];
+            if (!item) return;
+            byId.set(model.id, item);
+        } else if (item.dataset.rowSig !== nextSig) {
+            const wrap = document.createElement("div");
+            wrap.innerHTML = channelRowHTML(model).trim();
+            const fresh = wrap.firstElementChild || wrap.children[0];
+            if (fresh) {
+                item.className = fresh.className;
+                item.dataset.channelName = model.name;
+                item.dataset.rowSig = nextSig;
+                patchChannelBadges(item, model);
+                const nameEl = item.querySelector(".channel-name");
+                if (nameEl) nameEl.textContent = model.name;
+            }
+        }
+        bindChannelItemHandlers(item);
+        const current = channelsListEl.children[index];
+        if (current !== item) {
+            channelsListEl.insertBefore(item, current || null);
+        }
+    });
+}
+
 function renderChannelsList(filterText = "") {
     if (!channelsListEl) return;
 
     const term = (filterText || "").trim().toLowerCase();
-
-    // Map attention queue item by canonical channel name (lowercase)
     const queueMap = new Map();
     (attentionQueueData || []).forEach(q => {
         if (q && q.channel_name) {
@@ -2294,32 +2653,23 @@ function renderChannelsList(filterText = "") {
         }
     });
 
-    const activityTimestamp = (room, queueItem) => {
-        const raw = queueItem && queueItem.last_activity_at != null
-            ? queueItem.last_activity_at
-            : (room._updatedAt || room.lm || room.updatedAt || 0);
-        if (typeof raw === "number") return raw > 1e12 ? raw : raw * 1000;
-        const parsed = new Date(raw || 0).getTime();
-        return Number.isFinite(parsed) ? parsed : 0;
-    };
-
-    const isConfigured = queueItem => Boolean(
-        queueItem && (
-            queueItem.configured === true
-            || (
-                queueItem.configured == null
-                && queueItem.queue_category !== "unconfigured"
-                && queueItem.status !== "unconfigured"
-            )
-        )
-    );
-
+    const roomOrder = new Map(roomsList.map((room, index) => [room.id, index]));
     const sortedRooms = [...roomsList].sort((a, b) => {
         const qa = queueMap.get((a.name || "").toLowerCase());
         const qb = queueMap.get((b.name || "").toLowerCase());
-        const configuredA = isConfigured(qa);
-        const configuredB = isConfigured(qb);
-        if (configuredA !== configuredB) return configuredA ? -1 : 1;
+        const suppressedA = Boolean(qa && (qa.queue_category === "inactive" || qa.queue_category === "snoozed"));
+        const suppressedB = Boolean(qb && (qb.queue_category === "inactive" || qb.queue_category === "snoozed"));
+        if (suppressedA !== suppressedB) return suppressedA ? 1 : -1;
+        const overrideA = Boolean(qa && qa.priority_override);
+        const overrideB = Boolean(qb && qb.priority_override);
+        if (overrideA !== overrideB) return overrideA ? -1 : 1;
+
+        const realTimeA = realConversationTimestamp(qa);
+        const realTimeB = realConversationTimestamp(qb);
+        const hasRealA = realTimeA > 0;
+        const hasRealB = realTimeB > 0;
+        if (hasRealA !== hasRealB) return hasRealA ? -1 : 1;
+        if (realTimeA !== realTimeB) return realTimeB - realTimeA;
 
         const scoreA = qa && qa.score != null && Number.isFinite(Number(qa.score)) ? Number(qa.score) : null;
         const scoreB = qb && qb.score != null && Number.isFinite(Number(qb.score)) ? Number(qb.score) : null;
@@ -2329,14 +2679,18 @@ function renderChannelsList(filterText = "") {
             if (scoreA !== scoreB) return scoreB - scoreA;
         }
 
-        const timeDifference = activityTimestamp(b, qb) - activityTimestamp(a, qa);
-        if (timeDifference !== 0) return timeDifference;
-        return (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" });
+        // /api/rooms is already newest-first. Preserve that order whenever
+        // attention data is absent, incomplete, or tied instead of silently
+        // falling back to alphabetical ordering.
+        return (roomOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER)
+            - (roomOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER);
     });
 
     const filtered = sortedRooms.filter(r => (r.name || "").toLowerCase().includes(term));
-
     if (filtered.length === 0) {
+        const emptySig = `empty:${term}`;
+        if (lastChannelsListSignature === emptySig) return;
+        lastChannelsListSignature = emptySig;
         channelsListEl.innerHTML = `
             <div class="empty-channels">
                 <span class="material-symbols-rounded">search_off</span>
@@ -2346,91 +2700,14 @@ function renderChannelsList(filterText = "") {
         return;
     }
 
-    channelsListEl.innerHTML = filtered.map(room => {
-        const isActive = room.id === activeRoomId;
-        const activeClass = isActive ? "active" : "";
-        const qitem = queueMap.get((room.name || "").toLowerCase());
-        const hasUnread = Boolean((qitem && qitem.has_unread) || room.has_unread);
-        const unreadClass = hasUnread ? "has-unread" : "";
-        const unreadBadgeHTML = hasUnread ? `<span class="unread-badge" title="Unseen real agent reply in this channel">New</span>` : "";
+    const models = filtered.map((room) => buildChannelRowModel(room, queueMap));
+    const paintSignature = models.map(channelRowSignature).join("\n")
+        + "\0" + term
+        + "\0" + models.map((model) => model.id).join(",");
+    if (paintSignature === lastChannelsListSignature) return;
 
-        let badgeHTML = "";
-
-        if (qitem) {
-            const category = qitem.queue_category;
-            if (category === "busy") {
-                const elapsedStr = formatElapsedSeconds(qitem.working_elapsed_seconds);
-                badgeHTML = `<span class="attn-badge attn-badge-busy" title="Agent is currently working">Busy ${elapsedStr}</span>`;
-            } else if (category === "ranked") {
-                const attentionState = String(qitem.attention_state || "needs_review").toLowerCase();
-                const statusClass = attentionState === "needs_help"
-                    ? "attn-badge-needs-help"
-                    : attentionState === "needs_decision"
-                        ? "attn-badge-needs-decision"
-                        : "attn-badge-ready";
-                const statusTitle = attentionState === "needs_help"
-                    ? "Agent reported a problem"
-                    : attentionState === "needs_decision"
-                        ? "Your decision is needed"
-                        : "Response ready to review";
-                badgeHTML = `<span class="attn-badge ${statusClass}" title="${statusTitle}" aria-label="${statusTitle}"><span class="attn-ready-dot" aria-hidden="true"></span></span>`;
-            } else if (category === "snoozed") {
-                badgeHTML = `<span class="attn-badge attn-badge-snoozed" title="Snoozed">Snoozed</span>`;
-            } else if (category === "unconfigured") {
-                badgeHTML = `<span class="attn-badge attn-badge-unconfigured" title="Unconfigured">Unconfigured</span>`;
-            } else if (category === "unknown") {
-                badgeHTML = `<span class="attn-badge attn-badge-unknown" title="Unwatched room">?</span>`;
-            } else if (category === "idle") {
-                badgeHTML = `<span class="attn-badge attn-badge-idle" title="Idle">Idle</span>`;
-            } else if (category === "inactive") {
-                badgeHTML = `<span class="attn-badge attn-badge-inactive" title="Inactive">Inactive</span>`;
-            }
-        } else {
-            badgeHTML = `<span class="attn-badge attn-badge-unknown" title="Unwatched room">?</span>`;
-        }
-
-        return `
-            <div class="channel-item ${activeClass} ${unreadClass}" data-room-id="${room.id}" data-channel-name="${escapeHTML(room.name)}" role="button" tabindex="0">
-                <span class="material-symbols-rounded channel-icon">tag</span>
-                <div class="channel-info">
-                    <span class="channel-name">${escapeHTML(room.name)}</span>
-                </div>
-                <div class="channel-badges">
-                    ${unreadBadgeHTML}
-                    ${badgeHTML}
-                    <button class="btn-tune-channel" data-channel-name="${escapeHTML(room.name)}" title="Edit Channel Attention Settings">
-                        <span class="material-symbols-rounded" style="font-size:16px;">tune</span>
-                    </button>
-                </div>
-            </div>
-        `;
-    }).join("");
-
-    channelsListEl.querySelectorAll(".channel-item").forEach(item => {
-        const handleSelect = (e) => {
-            if (e && e.target && e.target.closest(".btn-tune-channel")) {
-                return;
-            }
-            const rid = item.dataset.roomId;
-            selectRoom(rid);
-            if (channelsSidebar) channelsSidebar.classList.remove("mobile-open");
-        };
-        item.addEventListener("click", handleSelect);
-        item.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                handleSelect(e);
-            }
-        });
-    });
-
-    channelsListEl.querySelectorAll(".btn-tune-channel").forEach(btn => {
-        btn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const cname = btn.dataset.channelName;
-            openAttentionSettingsModal(cname);
-        });
-    });
+    lastChannelsListSignature = paintSignature;
+    paintChannelsList(models);
 }
 
 function handleRoomChange() {
@@ -2459,6 +2736,7 @@ function handleRoomChange() {
     }
 
     handleStop();
+    closeMessageReadAloud();
 
     // Reload history to get latest updates
     loadHistory();
@@ -3077,11 +3355,32 @@ async function recoverPrewarmedNarration(targetRoomId, messages) {
             sourcesList.innerHTML = state.digestSourcesHtml;
             bindSourceItemHandlers();
             digestSourcesContainer.style.display = sourceMessages.length > 0 ? "block" : "none";
+            if (settings.autoNarrate && !DISABLE_AUTO_NARRATION) {
+                playPreparedNarrationIfIdle();
+            }
         }
-    } catch (_error) {
+    } catch (error) {
         // Cache recovery is an acceleration only. The active-room automatic
         // path continues to work normally when nothing was pre-generated.
+        console.warn("Could not recover prepared narration:", error);
     }
+}
+
+function playPreparedNarrationIfIdle() {
+    const browserSpeechActive = Boolean(
+        window.speechSynthesis
+        && (window.speechSynthesis.speaking || window.speechSynthesis.paused)
+    );
+    if (
+        isPlaying
+        || currentRemoteAudio
+        || (remotePlayback && remotePlayback.loading)
+        || browserSpeechActive
+    ) {
+        return false;
+    }
+    handlePlayPause();
+    return true;
 }
 
 async function loadHistory() {
@@ -3276,6 +3575,27 @@ function renderTranscript(messages, state = null) {
         }
 
         const escapedRawText = escapeHTML(msg.text || "");
+        const escapedMessageId = escapeHTML(msg.id || "");
+        const escapedAuthor = escapeHTML(displayName || "Agent");
+        const readAloudActive = Boolean(
+            messageReadAloudState
+            && messageReadAloudState.messageId === msg.id
+            && !["stopped", "finished", "error"].includes(messageReadAloudState.status)
+        );
+        const readAloudButton = laneClass === "agent" ? `
+                        <button
+                            class="btn-read-msg${readAloudActive ? " is-reading" : ""}"
+                            type="button"
+                            data-message-id="${escapedMessageId}"
+                            data-author="${escapedAuthor}"
+                            data-raw-text="${escapedRawText}"
+                            title="Read ${escapedAuthor}'s response aloud"
+                            aria-label="Read ${escapedAuthor}'s response aloud"
+                            aria-pressed="${readAloudActive ? "true" : "false"}"
+                        >
+                            <span class="material-symbols-rounded" aria-hidden="true">volume_up</span>
+                        </button>
+        ` : "";
         return `
             <div class="${cardClass}" data-id="${msg.id}">
                 <div class="chat-header">
@@ -3283,6 +3603,7 @@ function renderTranscript(messages, state = null) {
                     <div class="chat-header-meta">
                         ${respTimeBadge}
                         <span class="chat-time">${timeStr}</span>
+                        ${readAloudButton}
                         <button class="btn-copy-msg" type="button" data-raw-text="${escapedRawText}" title="Copy message text" aria-label="Copy message text">
                             <span class="material-symbols-rounded">content_copy</span>
                         </button>
@@ -3351,7 +3672,12 @@ function renderStats(stats) {
 
     if (items.trim() === "") {
         statsBar.style.display = "none";
+    } else if (statsBar.dataset.statsSignature === items) {
+        // The stats bar is rebuilt on the 4s history poll. Skip the DOM write
+        // when the rendered content is byte-identical to what is on screen.
+        statsBar.style.display = "flex";
     } else {
+        statsBar.dataset.statsSignature = items;
         statsBar.innerHTML = `<span class="stats-label" style="font-weight: 600; opacity: 0.7; font-size: calc(var(--system-font-size) * 0.8); margin-right: 12px; display: inline-flex; align-items: center; gap: 4px;"><span class="material-symbols-rounded" style="font-size: calc(var(--system-font-size) * 0.95);">history</span> Recent Window Stats:</span>` + items;
         statsBar.style.display = "flex";
     }
@@ -3813,11 +4139,187 @@ async function handleGenerateDigest(options = {}) {
     }
 }
 
+function messageReadVoiceLabel() {
+    return voiceMode === "nice" && chatterboxAvailable ? "Nice voice" : "Fast voice";
+}
+
+function messageReadStatusLabel(status) {
+    switch (status) {
+        case "preparing": return `Preparing · ${messageReadVoiceLabel()}`;
+        case "playing": return `Playing · ${messageReadVoiceLabel()}`;
+        case "paused": return `Paused · ${messageReadVoiceLabel()}`;
+        case "stopped": return `Stopped · ${messageReadVoiceLabel()}`;
+        case "finished": return `Finished · ${messageReadVoiceLabel()}`;
+        case "error": return "Could not read this response";
+        default: return `Ready · ${messageReadVoiceLabel()}`;
+    }
+}
+
+function updateMessageReadButtons() {
+    if (!transcriptFeed || !transcriptFeed.querySelectorAll) return;
+    transcriptFeed.querySelectorAll(".btn-read-msg").forEach(button => {
+        const isCurrent = Boolean(
+            messageReadAloudState
+            && button.getAttribute("data-message-id") === messageReadAloudState.messageId
+            && !["stopped", "finished", "error"].includes(messageReadAloudState.status)
+        );
+        button.classList.toggle("is-reading", isCurrent);
+        button.setAttribute("aria-pressed", String(isCurrent));
+        const icon = button.querySelector(".material-symbols-rounded");
+        if (icon) icon.textContent = isCurrent ? "graphic_eq" : "volume_up";
+    });
+}
+
+function renderMessageReadAloudUI() {
+    if (!messageReadPlayer || !transcriptFeedContainer) return;
+    const state = messageReadAloudState;
+    messageReadPlayer.hidden = !state;
+    transcriptFeedContainer.classList.toggle("has-message-read-player", Boolean(state));
+
+    if (!state) {
+        messageReadPlayer.classList.remove("is-playing", "is-paused");
+        updateMessageReadButtons();
+        return;
+    }
+
+    const isPlayingNow = state.status === "playing" || state.status === "preparing";
+    const canPause = state.status !== "preparing";
+    const isRestartable = ["stopped", "finished", "error"].includes(state.status);
+    messageReadPlayer.classList.toggle("is-playing", isPlayingNow);
+    messageReadPlayer.classList.toggle("is-paused", state.status === "paused");
+    if (messageReadPlayerTitle) {
+        messageReadPlayerTitle.innerText = `${state.author || "Agent"} response`;
+    }
+    if (messageReadPlayerStatus) {
+        messageReadPlayerStatus.innerText = messageReadStatusLabel(state.status);
+    }
+    if (btnMessageReadToggle) {
+        btnMessageReadToggle.disabled = !canPause;
+        const action = isRestartable || state.status === "paused" ? "Resume reading" : "Pause reading";
+        btnMessageReadToggle.title = action;
+        btnMessageReadToggle.setAttribute("aria-label", action);
+    }
+    if (messageReadToggleIcon) {
+        messageReadToggleIcon.textContent = isRestartable || state.status === "paused"
+            ? "play_arrow"
+            : "pause";
+    }
+    if (btnMessageReadStop) {
+        btnMessageReadStop.disabled = isRestartable;
+    }
+    updateMessageReadButtons();
+}
+
+function setMessageReadAloudStatus(status) {
+    if (!messageReadAloudState) return;
+    messageReadAloudState.status = status;
+    renderMessageReadAloudUI();
+}
+
+function stopPlaybackAudio(label = "Speech Engine: Ready") {
+    playbackSessionId += 1;
+    const hadRemotePlayback = Boolean(remotePlayback || currentRemoteAudio);
+    remotePlayback = null;
+    if (currentRemoteAudio) {
+        try { currentRemoteAudio.pause(); } catch (error) {}
+        if (typeof URL !== "undefined" && URL.revokeObjectURL && currentRemoteAudio.src) {
+            URL.revokeObjectURL(currentRemoteAudio.src);
+        }
+        currentRemoteAudio = null;
+    }
+    if (hadRemotePlayback) {
+        fetch("/api/gateway/tts/stop", { method: "POST" }).catch(() => {});
+    }
+    currentUtterance = null;
+    if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+    }
+    playbackSource = null;
+    setPlaybackUI(false, label);
+}
+
+function startMessageReadAloud(message) {
+    const text = String(message && message.text || "").trim();
+    if (!text) return false;
+
+    stopPlaybackAudio();
+    messageReadAloudState = {
+        messageId: String(message.messageId || ""),
+        roomId: message.roomId || activeRoomId,
+        author: String(message.author || "Agent"),
+        text,
+        status: voiceMode === "nice" && chatterboxAvailable ? "preparing" : "playing"
+    };
+    renderMessageReadAloudUI();
+    startNarration(text, "message");
+    return true;
+}
+
+function toggleMessageReadAloud() {
+    if (!messageReadAloudState) return;
+
+    if (["stopped", "finished", "error"].includes(messageReadAloudState.status)) {
+        stopPlaybackAudio();
+        messageReadAloudState.status = voiceMode === "nice" && chatterboxAvailable ? "preparing" : "playing";
+        renderMessageReadAloudUI();
+        startNarration(messageReadAloudState.text, "message");
+        return;
+    }
+
+    if (currentRemoteAudio) {
+        if (currentRemoteAudio.paused) {
+            currentRemoteAudio.play().catch(() => setMessageReadAloudStatus("error"));
+            setPlaybackUI(true, "Speech Engine: Chatterbox speaking");
+            setMessageReadAloudStatus("playing");
+        } else {
+            currentRemoteAudio.pause();
+            setPlaybackUI(false, "Speech Engine: Chatterbox paused");
+            setMessageReadAloudStatus("paused");
+        }
+        return;
+    }
+
+    if (currentUtterance && window.speechSynthesis && window.speechSynthesis.speaking) {
+        if (window.speechSynthesis.paused) {
+            window.speechSynthesis.resume();
+            setPlaybackUI(true, "Speech Engine: Browser speaking");
+            setMessageReadAloudStatus("playing");
+        } else {
+            window.speechSynthesis.pause();
+            setPlaybackUI(false, "Speech Engine: Browser paused");
+            setMessageReadAloudStatus("paused");
+        }
+        return;
+    }
+
+    stopPlaybackAudio();
+    messageReadAloudState.status = "playing";
+    renderMessageReadAloudUI();
+    startNarration(messageReadAloudState.text, "message");
+}
+
+function stopMessageReadAloud() {
+    if (!messageReadAloudState) return;
+    stopPlaybackAudio();
+    setMessageReadAloudStatus("stopped");
+}
+
+function closeMessageReadAloud() {
+    if (playbackSource === "message" || messageReadAloudState) {
+        stopPlaybackAudio();
+    }
+    messageReadAloudState = null;
+    renderMessageReadAloudUI();
+}
+
 function setPlaybackUI(playing, label = null) {
     isPlaying = playing;
-    visualizer.classList.toggle("playing", playing);
-    playIcon.textContent = playing ? "pause" : "play_arrow";
-    if (label) ttsStatusChip.querySelector(".status-label").innerText = label;
+    if (visualizer) visualizer.classList.toggle("playing", playing);
+    if (playIcon) playIcon.textContent = playing ? "pause" : "play_arrow";
+    if (label && ttsStatusChip) {
+        const statusLabel = ttsStatusChip.querySelector(".status-label");
+        if (statusLabel) statusLabel.innerText = label;
+    }
 }
 
 function splitNarrationIntoChunks(text) {
@@ -3848,18 +4350,25 @@ function splitNarrationIntoChunks(text) {
     return chunks;
 }
 
-function speakBrowserText(text) {
+function speakBrowserText(text, source = "narration", sessionId = null) {
     if (
         !text
         || !('speechSynthesis' in window)
         || typeof SpeechSynthesisUtterance === "undefined"
-    ) return;
+    ) {
+        if (source === "message") setMessageReadAloudStatus("error");
+        return;
+    }
+
+    const activeSessionId = sessionId == null ? ++playbackSessionId : sessionId;
+    playbackSource = source;
 
     // Cancel any ongoing speech
     window.speechSynthesis.cancel();
 
-    currentUtterance = new SpeechSynthesisUtterance(text);
-    currentUtterance.rate = speechRate;
+    const utterance = new SpeechSynthesisUtterance(text);
+    currentUtterance = utterance;
+    utterance.rate = speechRate;
 
     // Choose a high quality voice if available
     const voices = window.speechSynthesis.getVoices();
@@ -3869,47 +4378,58 @@ function speakBrowserText(text) {
     ) || voices.find(v => v.lang.startsWith("en"));
 
     if (preferredVoice) {
-        currentUtterance.voice = preferredVoice;
+        utterance.voice = preferredVoice;
     }
 
-    currentUtterance.onstart = () => {
+    utterance.onstart = () => {
+        if (activeSessionId !== playbackSessionId || currentUtterance !== utterance) return;
         setPlaybackUI(true, "Speech Engine: Browser speaking");
-        ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Speaking`;
+        if (source === "message") setMessageReadAloudStatus("playing");
     };
 
-    currentUtterance.onend = () => {
+    utterance.onend = () => {
+        if (activeSessionId !== playbackSessionId || currentUtterance !== utterance) return;
         setPlaybackUI(false, "Speech Engine: Browser ready");
-        ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Ready`;
         currentUtterance = null;
+        if (source === "message") setMessageReadAloudStatus("finished");
     };
 
-    currentUtterance.onerror = (e) => {
+    utterance.onerror = (e) => {
+        if (activeSessionId !== playbackSessionId || currentUtterance !== utterance) return;
         console.error("SpeechSynthesis error:", e);
         setPlaybackUI(false, "Speech Engine: Browser error");
-        ttsStatusChip.querySelector(".status-label").innerText = `Speech Engine: Error`;
         currentUtterance = null;
+        if (source === "message") setMessageReadAloudStatus("error");
     };
 
-    window.speechSynthesis.speak(currentUtterance);
+    setPlaybackUI(true, "Speech Engine: Browser speaking");
+    if (source === "message") setMessageReadAloudStatus("playing");
+    window.speechSynthesis.speak(utterance);
 }
 
 // Kept as the stable local fallback seam used by the frontend harness and by
 // browsers without an Audio implementation.
-function speakText(text) {
-    speakBrowserText(text);
+function speakText(text, source = "narration") {
+    if (source !== "message" && messageReadAloudState) closeMessageReadAloud();
+    const sessionId = ++playbackSessionId;
+    speakBrowserText(text, source, sessionId);
 }
 
-async function speakChatterboxText(text) {
+async function speakChatterboxText(text, source = "narration", sessionId = null) {
     if (typeof Audio === "undefined" || typeof URL === "undefined" || !URL.createObjectURL) {
         throw new Error("Remote audio playback is unavailable in this browser");
     }
+    const activeSessionId = sessionId == null ? ++playbackSessionId : sessionId;
+    playbackSource = source;
     const chunks = splitNarrationIntoChunks(text);
     const token = {};
-    remotePlayback = { token, chunks, index: 0, loading: true };
+    remotePlayback = { token, chunks, index: 0, loading: true, source, sessionId: activeSessionId };
     setPlaybackUI(true, "Speech Engine: Chatterbox preparing");
+    if (source === "message") setMessageReadAloudStatus("preparing");
+    let completed = false;
     try {
         for (let index = 0; index < chunks.length; index += 1) {
-            if (!remotePlayback || remotePlayback.token !== token) return;
+            if (!remotePlayback || remotePlayback.token !== token || activeSessionId !== playbackSessionId) return;
             remotePlayback.index = index;
             const response = await fetch("/api/gateway/tts/speak", {
                 method: "POST",
@@ -3924,11 +4444,12 @@ async function speakChatterboxText(text) {
             });
             if (!response.ok) throw new Error(`Chatterbox returned ${response.status}`);
             const blob = await response.blob();
-            if (!remotePlayback || remotePlayback.token !== token) return;
+            if (!remotePlayback || remotePlayback.token !== token || activeSessionId !== playbackSessionId) return;
             const audio = new Audio(URL.createObjectURL(blob));
             currentRemoteAudio = audio;
             remotePlayback.loading = false;
             setPlaybackUI(true, "Speech Engine: Chatterbox speaking");
+            if (source === "message") setMessageReadAloudStatus("playing");
             await new Promise((resolve, reject) => {
                 audio.onended = resolve;
                 audio.onerror = () => reject(new Error("Remote audio playback failed"));
@@ -3937,19 +4458,29 @@ async function speakChatterboxText(text) {
             URL.revokeObjectURL(audio.src);
             currentRemoteAudio = null;
         }
+        completed = true;
     } finally {
-        if (remotePlayback && remotePlayback.token === token) {
+        if (
+            remotePlayback
+            && remotePlayback.token === token
+            && activeSessionId === playbackSessionId
+        ) {
             remotePlayback = null;
             currentRemoteAudio = null;
             setPlaybackUI(false, "Speech Engine: Chatterbox ready");
+            if (source === "message" && completed) setMessageReadAloudStatus("finished");
         }
     }
 }
 
-function startNarration(text) {
+function startNarration(text, source = "narration") {
+    if (source !== "message" && messageReadAloudState) closeMessageReadAloud();
+    const sessionId = ++playbackSessionId;
+    playbackSource = source;
     if (voiceMode === "nice" && chatterboxAvailable) {
         ttsProvider = "chatterbox";
-        speakChatterboxText(text).catch(error => {
+        speakChatterboxText(text, source, sessionId).catch(error => {
+            if (sessionId !== playbackSessionId) return;
             console.warn("Chatterbox playback failed; using browser speech:", error);
             if (remotePlayback) remotePlayback = null;
             if (currentRemoteAudio) {
@@ -3959,18 +4490,28 @@ function startNarration(text) {
             ttsProvider = "browser";
             chatterboxAvailable = false;
             updateVoiceModeUI(voiceMode);
-            speakBrowserText(text);
+            speakBrowserText(text, source, sessionId);
         });
         return;
     }
     ttsProvider = "browser";
-    speakBrowserText(text);
+    speakBrowserText(text, source, sessionId);
 }
 
 function handlePlayPause() {
     // Generation is intentionally separate: an empty Play control is inert.
     // Generate Digest creates both the narration and suggested reply.
     if (!String(currentDigestText || "").trim()) return;
+
+    // Digest narration and message reading share one speech engine. Starting
+    // the digest always closes any message-level controller first.
+    if (messageReadAloudState) {
+        closeMessageReadAloud();
+    }
+    if (playbackSource && playbackSource !== "narration") {
+        stopPlaybackAudio();
+    }
+    playbackSource = "narration";
 
     if (currentRemoteAudio || (remotePlayback && remotePlayback.loading)) {
         if (currentRemoteAudio) {
@@ -4001,36 +4542,34 @@ function handlePlayPause() {
 }
 
 function handleStop() {
-    if (remotePlayback) {
-        remotePlayback = null;
-        if (currentRemoteAudio) {
-            try { currentRemoteAudio.pause(); } catch (e) {}
-            if (typeof URL !== "undefined" && URL.revokeObjectURL && currentRemoteAudio.src) {
-                URL.revokeObjectURL(currentRemoteAudio.src);
-            }
-            currentRemoteAudio = null;
-        }
-        fetch("/api/gateway/tts/stop", { method: "POST" }).catch(() => {});
+    const stoppedMessage = playbackSource === "message" && messageReadAloudState;
+    stopPlaybackAudio();
+    if (stoppedMessage) {
+        setMessageReadAloudStatus("stopped");
     }
-    window.speechSynthesis.cancel();
-    currentUtterance = null;
     updateVoiceModeUI(voiceMode);
 }
 
 function handleSpeedChange() {
     speechRate = parseFloat(speedRange.value);
     speedVal.innerText = `${speechRate.toFixed(1)}x`;
+    const source = playbackSource === "message" && messageReadAloudState ? "message" : "narration";
+    const playbackText = source === "message" ? messageReadAloudState.text : currentDigestText;
 
     // If speaking, restart from the beginning (or let the rate change take effect for the next utterance)
     if (currentRemoteAudio || remotePlayback) {
         handleStop();
-        startNarration(currentDigestText);
+        if (source === "message" && messageReadAloudState) {
+            messageReadAloudState.status = voiceMode === "nice" && chatterboxAvailable ? "preparing" : "playing";
+            renderMessageReadAloudUI();
+        }
+        startNarration(playbackText, source);
     } else if (window.speechSynthesis.speaking && currentUtterance) {
         // For browsers that support changing rate mid-speech
         currentUtterance.rate = speechRate;
         // In some browsers, we must cancel and restart to apply rate changes:
         if (isPlaying) {
-            speakBrowserText(currentDigestText);
+            speakText(playbackText, source);
         }
     }
 }

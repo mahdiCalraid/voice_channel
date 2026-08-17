@@ -1,6 +1,8 @@
 import unittest
 import time
 from app.read_cursor import (
+    get_last_real_conversation_timestamp,
+    is_real_conversation_message,
     is_real_agent_reply,
     update_read_cursor,
     get_read_cursor,
@@ -9,6 +11,18 @@ from app.read_cursor import (
 
 
 class TestReadCursor(unittest.TestCase):
+
+    def test_real_conversation_recency_includes_people_and_excludes_system_messages(self):
+        messages = [
+            {"lane": "user", "text": "Please review the latest draft.", "timestamp": 100.0, "event": {"kind": "user_message"}},
+            {"lane": "system", "text": "Routing to codex", "timestamp": 200.0, "event": {"kind": "routing"}},
+            {"lane": "system", "text": "Heartbeat", "timestamp": 300.0, "event": {"kind": "heartbeat"}},
+            {"lane": "agent", "text": "Review is complete.", "timestamp": 400.0, "event": {"kind": "agent_response"}},
+        ]
+        self.assertTrue(is_real_conversation_message(messages[0]))
+        self.assertFalse(is_real_conversation_message(messages[1]))
+        self.assertFalse(is_real_conversation_message(messages[2]))
+        self.assertEqual(get_last_real_conversation_timestamp(messages), 400.0)
 
     def test_is_real_agent_reply(self):
         # Real agent replies

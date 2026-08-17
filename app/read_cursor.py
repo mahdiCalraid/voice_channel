@@ -73,6 +73,40 @@ def is_real_agent_reply(msg: Dict[str, Any]) -> bool:
     return bool(is_agent_lane or is_known_agent_sender or is_agent_kind)
 
 
+def is_real_conversation_message(msg: Dict[str, Any]) -> bool:
+    """Return true for any substantive person/agent message, never system chatter.
+
+    Channel ordering is intentionally broader than unread-reply detection: a recent
+    instruction from Ed and a recent substantive agent response both mean the
+    channel has an active real conversation.  Routing notices, heartbeats, status
+    changes, and all other system-lane messages must never refresh this timestamp.
+    """
+    if not isinstance(msg, dict) or msg.get("lane") == "system":
+        return False
+
+    event = msg.get("event") or {}
+    if not isinstance(event, dict):
+        event = {}
+    if event.get("kind") in {
+        "routing", "routing_notice", "heartbeat", "model_change",
+        "model_selected", "status_update", "system_notice", "gateway_dispatch",
+    }:
+        return False
+
+    return bool(str(msg.get("text") or msg.get("msg") or "").strip())
+
+
+def get_last_real_conversation_timestamp(messages: List[Dict[str, Any]]) -> Optional[float]:
+    """Return the newest substantive non-system message timestamp in a room."""
+    timestamps = [
+        _extract_msg_timestamp(message)
+        for message in messages
+        if is_real_conversation_message(message)
+    ]
+    timestamps = [timestamp for timestamp in timestamps if timestamp > 0]
+    return max(timestamps) if timestamps else None
+
+
 def update_read_cursor(room_id: str, msg_id: Optional[str] = None, ts: Optional[float] = None, actor: str = "ed") -> Dict[str, Any]:
     """Updates the read cursor for a room."""
     data = _load_cursors_data()

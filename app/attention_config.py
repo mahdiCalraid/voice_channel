@@ -58,6 +58,7 @@ class ChannelAttentionEntry(BaseContractModel):
     visible: bool = True
     narration_active: bool = False
     voice_active: bool = False
+    priority_override: bool = False
 
     class Config:
         extra = Extra.forbid

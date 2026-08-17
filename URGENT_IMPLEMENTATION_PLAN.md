@@ -1,10 +1,11 @@
 # Urgent Daily-Use Implementation Plan
 
-Status established: 2026-07-30  
-Last updated: 2026-08-07
-Branch: `urgent/daily-use-console`  
-Parent (return-to): `codex/adaptive-voice-gateway`  
-Historical UI foundation: `feature/full-screen-voice-console` / `IMPLEMENTATION_PLAN.md`  
+Status established: 2026-07-30
+Last updated: 2026-08-10
+Plan origin branch: `urgent/daily-use-console`
+Current webhook safety branch: `feat/rc-message-webhook`
+Parent (return-to): `codex/adaptive-voice-gateway`
+Historical UI foundation: `feature/full-screen-voice-console` / `IMPLEMENTATION_PLAN.md`
 Long-range adaptive plan: `ADAPTIVE_IMPLEMENTATION_PLAN.md` (Omi remains Phase 5 — **not tonight**)
 
 ## 1. Why this plan exists
@@ -407,6 +408,27 @@ Status: `VERIFIED` (2026-08-01) — all three slices below landed in order.
    - **Attention Settings Modal**: Form for editing attention parameters for any channel, persisting to disk via `PUT /api/attention/config`.
 3. Added unit tests in `tests/test_attention_endpoint.py` and `tests/frontend_harness.test.js` (107 Python tests, 31 Node tests passing 100%).
 
+#### U-10d. Daily-use rail stability and recency remediation
+
+**Status**: `VERIFIED` (2026-08-16)
+
+1. Removed the channel rail's timed refresh at Ed's request. The rail now refreshes on
+   initial load, a real Gateway SSE room event, or the explicit refresh button beside
+   **CHANNELS**; the active conversation's separate four-second fallback is unchanged.
+2. Preserved the keyed/no-op DOM renderer so unchanged rows are not rebuilt and actual
+   unread, active, badge, or recency changes update only the affected rail state.
+3. Repaired newest-first ranking after the attention endpoint returned 500 for an
+   inaccessible ACLI matter path:
+   - optional registry and matter paths now skip `OSError`/`PermissionError` and continue
+     to healthy or mapped candidates;
+   - a failed attention fetch discards stale queue data and renders the newest-first
+     `/api/rooms` order rather than falling back to alphabetical order;
+   - the obsolete pointer/hover order freeze was removed, so a completed refresh applies
+     changed recency ordering immediately.
+4. Verification: focused registry and rail regressions pass; the frontend harness passes
+   61/61; the Python suite passes 176 with one intentional skip; and the live local
+   registry load resolves 30 channels despite the inaccessible external path.
+
 Voice commands for the scheduler are explicitly **out of scope** for U-10.
 
 ## 7. After urgent plan (return to adaptive / Omi)
@@ -445,7 +467,10 @@ rail ranking, or active task state.
 
 ### U-11E. Gateway-owned Rocket.Chat event transport & subscription architecture
 
-Status: `IN PROGRESS` (reconciled with 4 required boundaries; U-11E-a staged as next task)
+Status: `VERIFIED FOR PUBLIC CHANNELS` (2026-08-16). One idempotently managed
+Rocket.Chat integration now covers `all_public_channels`; private groups and direct
+messages remain deliberately excluded. The active-conversation four-second fallback
+and the rail's manual refresh remain in place; DDP remains parked and disabled.
 
 Replace the 25-second Gateway history polling loop and 5-second browser polling loops with Gateway-owned Rocket.Chat event delivery:
 
@@ -470,12 +495,214 @@ Replace the 25-second Gateway history polling loop and 5-second browser polling 
 - **U-11E-a**: Gateway-owned DDP websocket adapter (`app/main.py`). Connects, subscribes to the two streams, normalizes events, applies watermarks + `is_real_agent_reply`, and dispatches to `_schedule_background_narration_prewarm`. Behind `GATEWAY_RC_EVENTS=1` with poller retained as fallback. **Not live-verified** until `GATEWAY_RC_EVENTS=1` is set and `ddp.last_connected_at` is non-null.
 - **U-11E-b**: Gateway-to-browser SSE push endpoint (`/api/events`) and settings UI dependency hint.
 - **U-11E-c (primary wake-up path, 2026-08-10)**: Rocket.Chat **outgoing Message Sent webhook** → `POST /api/rc/webhook/message`.
-  - Shared-secret auth (`GATEWAY_RC_WEBHOOK_SECRET`, min 32 chars) + message-id replay protection (`acli/gateway_state/webhook_message_nonces.json`).
+  - Shared-secret auth (`GATEWAY_RC_WEBHOOK_SECRET`, min 32 chars) + bounded SQLite
+    message-id replay protection (`acli/gateway_state/webhook_message_nonces.sqlite3`).
   - Wake-up only: Gateway re-fetches that room from Rocket.Chat (SoT), classifies, scopes preparation to the exact authenticated `message_id`, and SSE-notifies browsers **without** raw message text. Per-room serialization prevents ACLI event bursts from racing the volatile history baseline.
-  - Browser baseline refresh restored to ~4s history / ~7s rail independent of event health (regression fix).
+  - Browser fallback originally restored to ~4s history / ~7s rail independent of event
+    health. The rail timer was later removed for live-use accessibility; channel refresh
+    is now initial-load + real SSE events + Ed's manual refresh button, while the active
+    conversation retains its separate ~4s fallback.
   - **Live-verified 2026-08-10 on Rocket.Chat 8.5.2, `#TV_and_memory`:** Ed message → `0/0`; ACLI routing notice → `0/0`; real ACLI/Codex reply → `new_real_agent_replies=1`, `prewarm_scheduled=1`; replay → idempotent success. Rocket.Chat does fire this integration for the installed ACLI reply format.
 
 Status: `VERIFIED` for the primary webhook path on `feat/rc-message-webhook`. DDP remains disabled and unverified as a fallback path, not the active transport.
+
+#### U-11E-d. Safe webhook expansion and periodic-refresh retirement
+
+Status: `VERIFIED FOR THE APPROVED PUBLIC-CHANNEL SCOPE` (2026-08-16)
+
+Scope and transport decision:
+
+- Wake scope is `all_public_channels`; private groups and direct messages are not in the
+  approved rollout and require a separate privacy/delivery test before inclusion.
+- Narration spend remains narrow: only persisted
+  `narration_active=True ∧ attention_active=True` configuration can schedule preparation.
+- The primary transport is the outgoing webhook. DDP remains parked/disabled. The
+  four-second active-conversation poll and manual channel refresh are the bounded fallback;
+  the timed channel-rail refresh remains removed.
+
+Delivered and verified:
+
+1. `scripts/configure_rc_webhook.py` authenticates through the Rocket.Chat REST API,
+   finds the integration by name, and idempotently creates, updates, verifies, disables,
+   or re-enables it. Dry-run output redacts the webhook token. Live integration ID
+   `6a7a73ff8149d0adbde8b210` verifies with zero drift, empty Script/Responding fields,
+   and the existing container-safe callback URL.
+2. Replay protection is a 6-hour, 5,000-entry SQLite store. Inserts, age pruning,
+   count eviction, rollback-after-processing-failure, and duplicate checks are indexed
+   transactions rather than whole-file JSON rewrites.
+3. Authenticated delivery and verified-refetch watermarks, per-room coverage, last-event
+   metadata, failures, replay/stale counts, coalescing, real-reply, and preparation counts
+   persist in `acli/gateway_state/webhook_status.json`. No raw message text is stored.
+4. Same-room events coalesce for 0.75 seconds into one history refresh; a global semaphore
+   caps concurrent room refreshes at four. The UI shows **Live**, **Fallback**, or **Off**
+   beside the channel Refresh button without reintroducing rail polling or repaint churn.
+5. Prepared-narration recovery now calls a defined, playback-state-guarded entry point and
+   logs acceleration failures instead of swallowing them. The existing explicit manual-
+   playback policy remains controlled by `DISABLE_AUTO_NARRATION`.
+6. Live proof on Rocket.Chat 8.5.2:
+   - a real `acli_bot` message fires the outgoing integration;
+   - a user message in `voice_channel` and operational messages update delivery without
+     spending preparation budget;
+   - a real agent relay in newly covered public room `general` produced
+     `new_real_agent_replies=1` and `prewarm_scheduled=1`;
+   - metadata-only SSE emitted `room_changed` and `message` with no raw text;
+   - Gateway restart preserved watermarks/counters and a replay remained idempotent;
+   - while the integration was disabled, webhook verification did not advance, but
+     history contained the missed message and `/api/rooms` plus `/api/attention/queue`
+     returned 200; state became `degraded_polling`, then recovered to `healthy` after
+     re-enable and the next event;
+   - a nine-message burst across three rooms verified all nine, coalesced six redundant
+     room refreshes, added zero processing failures, and left SQLite integrity `ok`.
+7. The daily-use container now runs one stable Uvicorn process by default. Live source
+   changes exposed a reload-supervisor failure in which the parent retained port 6891
+   after the worker lost its listener, leaving queued HTTP requests despite a live PID.
+   `VC_UVICORN_RELOAD=1` remains an explicit development-only opt-in. Local Compose now
+   uses `VC_RC_*` variable names so ambient `ACLI_RC_*` values cannot override this
+   project's git-ignored credentials again; final Rocket.Chat status is connected as
+   `acli_bot` after an ordinary Compose recreation.
+8. Automated evidence: 189 Python tests and 63 Node frontend tests pass. Focused
+   configuration, webhook, and container-startup coverage is included in those totals.
+
+The single-channel experiment proves that Rocket.Chat 8.5.2 sends outgoing webhook
+events for the installed ACLI reply format. The completed public-channel rollout does not
+authorize private-group/DM expansion or removal of the browser's four-second
+active-conversation safety fallback. The channel rail intentionally has no timer because
+periodic rail movement failed Ed's live-use requirement; it refreshes from real SSE events
+and the manual button.
+
+##### Pre-rollout product boundaries (satisfied for public scope)
+
+1. **Separate wake scope from narration-spend scope.**
+   - Recommended contract, requiring confirmation before implementation:
+     **wake broad / narrate narrow**. An approved-room event may wake the Gateway and
+     update room recency, but only a room explicitly configured with
+     `narration_active=True ∧ attention_active=True` may start digest/suggestion work.
+   - Remove the webhook handler's current eligibility bypass: it constructs a synthetic
+     rank-1 queue and passes the webhook room as `supervised_room_ids`, effectively making
+     every room that fires the webhook eligible to spend narration budget.
+   - Sidebar visibility, current room, browser presence, and attention rank must not
+     grant narration eligibility. Only persisted channel configuration may do that.
+   - Add tests proving that a real agent reply in a wake-enabled but narration-disabled
+     room updates recency without scheduling preparation.
+
+2. **Remove the outgoing-integration response feedback loop.**
+   - Empty the example `responding` body/script in Rocket.Chat before the integration is
+     widened. A webhook acknowledgement must not post another message into the room and
+     recursively trigger the same integration.
+   - Live-test that one source message produces one inbound webhook and no integration-
+     generated Rocket.Chat message.
+
+3. **Bound replay protection for all-room volume.**
+   - Replace the unbounded seven-day, whole-file rewrite behavior with an explicitly
+     bounded store (entry cap and short retention appropriate to Rocket.Chat retry
+     windows), while preserving atomic writes and concurrency safety.
+   - Surface eviction/write failures; never accept a duplicate merely because the replay
+     store silently failed.
+
+4. **Implement webhook retry remediation.**
+   - Defer/roll back replay acceptance when processing fails.
+   - Added regression test proving failed refresh -> 5xx/uncovered -> retry succeeds/records coverage -> duplicate rejected.
+   - Stop client-side double generation. (Completed)
+   - Change the browser's `prewarm_ready` handling to consume the cached/in-progress
+     result that the Gateway just prepared. It must not call `handleGenerateDigest()` and
+     start a second generation for the visible room. (Completed)
+   - Prove one agent reply consumes at most one background-preparation budget slot across
+     webhook delivery, SSE notification, browser refresh, and Rocket.Chat retries. (Completed)
+
+5. **Make age rejection observable.**
+   - Keep the 15-minute stale-message guard against restart/backlog narration, but log and
+     count every age rejection with room/message metadata that excludes raw message text.
+   - Surface the latest rejection and aggregate count in diagnostics/status so a delayed
+     webhook cannot look like unexplained missing narration.
+
+##### Webhook liveness and fallback contract
+
+`rc_webhook.status=configured` proves only that a secret exists. Delivery health now uses
+the persisted received/verified watermarks and falls back safely when verification is
+stale; browser↔Gateway SSE health remains a separate signal from
+Rocket.Chat→Gateway webhook delivery.
+
+1. Record an authenticated delivery watermark such as `last_received_at`, and advance a
+   separate `last_verified_at` only after the Gateway successfully re-fetches the exact
+   room/message from Rocket.Chat. Do not store raw message text in this health state.
+2. Expose `unconfigured`, `awaiting_first_event`, `healthy`, and `degraded_polling`
+   states plus the watermark and degradation reason through `/api/status`.
+3. Settle the liveness threshold before implementation. The initial candidate is
+   **90–120 seconds**, but the design must distinguish a quiet workspace from a broken
+   integration; elapsed time without ordinary traffic alone cannot prove failure. Define
+   a verifiable probe/expected-event rule before using freshness to suppress polling.
+4. Until that rule is proven, retain the current four-second active-conversation fallback
+   and the rail's explicit manual refresh fallback. Do not restore a timed rail refresh.
+   When liveness becomes stale or unverified, report `degraded_polling`; any automatic
+   recovery design must preserve the no-periodic-rail-motion accessibility requirement.
+5. On recovery, reconcile from per-room message/time watermarks, deduplicate by message
+   ID, and never narrate historical backlog. Verify an integration disable/re-enable and
+   a Gateway restart without lost visible messages or duplicate preparation.
+
+##### Transport decision (must be explicit)
+
+Choose and document exactly one recovery transport before closing U-11E:
+
+- **Recommended:** webhook primary, bounded polling fallback. Explicitly park DDP and
+  remove its misleading live-looking status from `/api/status` while it is disabled and
+  unverified.
+- Alternative: keep DDP as fallback only after enabling it and proving a real connection,
+  private-room coverage, reconnect reconciliation, and duplicate suppression live.
+
+An implementation that has never connected is not an operational fallback.
+
+##### Recorded scope, capacity, and administration decisions
+
+The public rollout records:
+
+1. Approved wake scope: `all_public_channels`; **wake broad / narrate narrow** confirmed.
+2. Private groups and direct messages: excluded pending a separate privacy/delivery gate.
+3. Liveness: 120-second verified-event watermark; stale state restores the active-room
+   polling fallback and never restores timed rail movement.
+4. Preparation budget: the existing bounded 12/hour cap remains for this rollout; cap
+   expansion is a later measured decision, not an implicit consequence of broader wake.
+5. Administration: repeatable Rocket.Chat REST configuration through the local admin
+   credential file and `scripts/configure_rc_webhook.py`; no recurring UI edit is required.
+
+##### Live test matrix (public scope completed 2026-08-16)
+
+Run the matrix with the browser both open and closed, first in one room and then across
+the approved set:
+
+- Ed/user message: recency updates; no preparation.
+- ACLI routing/heartbeat/operational message: recency/audit may update; no preparation.
+- Real ACLI agent reply in a narration-enabled room: exactly one preparation.
+- Real ACLI agent reply in a narration-disabled room: recency only; zero preparation.
+- Duplicate/retried delivery: idempotent success; zero additional preparation.
+- Public channel, every included private-group/DM type, concurrent replies in different
+  rooms, Gateway restart, integration disable/re-enable, and a message during the outage.
+- Confirm SSE updates the active transcript and channel rail without raw text in the
+  event, and confirm fallback polling plus watermark reconciliation repairs missed UI
+  state without narrating backlog.
+
+##### Historical implementation order
+
+1. Keep the four-second active-conversation fallback and manual/SSE channel-rail refresh
+   contract in place; do not restore periodic rail movement.
+2. Empty the Rocket.Chat integration response and prove there is no feedback loop.
+3. Fix persisted narration eligibility, client double generation, stale-event
+   observability, and the bounded replay store; add focused tests.
+4. Add verified webhook watermarks/status and implement the agreed liveness and fallback
+   state machine.
+5. Decide the DDP disposition (Recorded: The inactive DDP residual in `app/main.py` is non-blocking. It retains a hardcoded rank-1 bypass which would violate narration eligibility if enabled, but remains safely parked/disabled under `GATEWAY_RC_EVENTS=0`. We will not expand scope to fix it now; it should be repaired or removed in a later pass).
+   Repair/administer the Rocket.Chat integration repeatably, set the multi-room budget policy, and verify private-group/DM delivery if
+   those room types are in scope.
+6. Run the complete live matrix in one channel, then widen only to the approved rooms and
+   repeat it across multiple rooms plus a Gateway restart/outage.
+7. Only after all gates pass, make events the healthy-state refresh path and reduce or
+   suspend periodic browser/Gateway polling. Polling must automatically return during a
+   proven event-path degradation and reconcile once on recovery.
+
+**U-11E-d done when:** every approved room receives prompt event-driven recency updates;
+only configured narration rooms spend preparation budget; each eligible reply prepares
+once; webhook health reflects verified delivery rather than secret configuration; public
+and selected private/DM coverage is proven; and disabling the event path visibly restores
+polling and later reconciles missed UI state without replaying narration backlog.
 
 **Done when:** with the browser closed, a real reply event in an enabled channel starts digest/suggested-message preparation immediately; opening that channel shows the ready result or its in-progress state, without waiting for a refresh interval. An inactive channel receives neither a message subscription nor preparation work.
 

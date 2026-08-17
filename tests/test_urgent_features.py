@@ -1,6 +1,7 @@
 """Unit and contract tests for U-01, U-02, and U-03 urgent implementation features."""
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
@@ -18,12 +19,23 @@ class TestUrgentFeatures(unittest.TestCase):
         req_default = DigestRequest(messages=[])
         self.assertEqual(req_default.history_limit, 20)
 
+    def test_daily_use_container_disables_uvicorn_reload_by_default(self):
+        root = Path(__file__).resolve().parents[1]
+        start_script = (root / "docker" / "start.sh").read_text(encoding="utf-8")
+        compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn('${VC_UVICORN_RELOAD:-0}', start_script)
+        self.assertIn('VC_UVICORN_RELOAD=${VC_UVICORN_RELOAD:-0}', compose)
+        self.assertIn('RC_AUTH_TOKEN=${VC_RC_AUTH_TOKEN:-}', compose)
+        self.assertNotIn('RC_AUTH_TOKEN=${ACLI_RC_AUTH_TOKEN:-}', compose)
+
     def test_frontend_shell_and_assets_disable_stale_browser_cache(self):
         shell = self.client.get("/")
         self.assertEqual(shell.status_code, 200)
         self.assertEqual(shell.headers.get("cache-control"), "no-store, max-age=0")
-        self.assertIn("index.js?v=voice-mode-1", shell.text)
-        self.assertIn("index.css?v=voice-mode-1", shell.text)
+        # The exact cache-bust token changes with every asset revision; what must hold
+        # is that both assets always carry one.
+        self.assertRegex(shell.text, r"index\.js\?v=[A-Za-z0-9._-]+")
+        self.assertRegex(shell.text, r"index\.css\?v=[A-Za-z0-9._-]+")
         self.assertIn("history_state.js?v=response-assistant-3", shell.text)
         self.assertIn('id="setting-system-font-size"', shell.text)
         self.assertIn('id="setting-theme"', shell.text)
