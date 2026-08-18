@@ -3569,3 +3569,56 @@ body[data-theme="quiet-light"] #model-modal-active-summary {
     font-size: calc(var(--system-font-size) * 0.72);
     line-height: 1.4;
 }
+
+/* Local File Popover */
+.local-file-link {
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-style: dashed;
+    text-decoration-color: var(--primary-glow);
+    color: inherit;
+    transition: color 0.2s, background 0.2s;
+    border-radius: 4px;
+    padding: 0 2px;
+}
+.local-file-link:hover {
+    background: rgba(138, 180, 248, 0.1);
+    color: var(--primary-glow);
+}
+.local-file-popover {
+    position: absolute;
+    z-index: 10000;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    padding: 12px;
+    width: max-content;
+    max-width: 350px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.local-file-popover[hidden] {
+    display: none !important;
+}
+.local-file-popover-path {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    word-break: break-all;
+    white-space: pre-wrap;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+.local-file-popover-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.local-file-popover-actions .btn {
+    flex: 1;
+    justify-content: center;
+    font-size: 0.8rem;
+    padding: 4px 8px;
+}
