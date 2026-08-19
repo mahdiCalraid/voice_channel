@@ -731,17 +731,17 @@ polling and later reconciles missed UI state without replaying narration backlog
 
 ### U-12. Message operations
 
-Status: `NOT STARTED`
+Status: `IN PROGRESS`
 
 This is the next user-facing phase after U-11E. It improves the daily conversation
 surface without changing the confirmation-bound sending contract or creating a second
 communication system.
 
-1. **Open local file references in VS Code.** Recognize approved local file paths in
+1. **(COMPLETED) Open local file references in VS Code.** Recognize approved local file paths in
    received messages, render a safe Open in VS Code affordance, and use a narrow
    Gateway endpoint/allowlist to open the exact existing file. Never treat an arbitrary
    URL, shell fragment, or path outside approved project roots as an editor target.
-2. **Read an incoming message aloud.** Add a Read aloud control beside Copy for each
+2. **(COMPLETED) Read an incoming message aloud.** Add a Read aloud control beside Copy for each
    normal received message. It uses the existing Fast/browser voice first, is entirely
    click-initiated, supports stop, and leaves the optional Nice voice untouched.
 3. **Hide operational noise by default.** Heartbeats, routing trailers, and other
