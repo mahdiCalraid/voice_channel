@@ -74,6 +74,7 @@ const btnRefreshChannels = document.getElementById("btn-refresh-channels");
 const webhookStatusChip = document.getElementById("webhook-status-chip");
 const currentRoomNameEl = document.getElementById("current-room-name");
 const currentRoomStatusEl = document.getElementById("current-room-status");
+const btnToggleSystemNoise = document.getElementById("btn-toggle-system-noise");
 const btnToggleNarrator = document.getElementById("btn-toggle-narrator");
 const btnCloseNarrator = document.getElementById("btn-close-narrator");
 const btnToggleSidebar = document.getElementById("btn-toggle-sidebar");
@@ -1446,6 +1447,7 @@ function init() {
     activeRoomId = localStorage.getItem("activeRoomId");
 
     initNarratorSidebarState();
+    initSystemNoiseState();
     checkStatus();
     loadRooms().then(() => {
         if (activeRoomId) {
@@ -1515,6 +1517,11 @@ function init() {
         channelSearchInput.addEventListener("input", (e) => {
             renderChannelsList(e.target.value);
         });
+    }
+
+    // System Noise Toggle
+    if (btnToggleSystemNoise) {
+        btnToggleSystemNoise.addEventListener("click", toggleSystemNoise);
     }
 
     // Narrator Sidebar Toggles
@@ -4939,3 +4946,34 @@ document.addEventListener("click", (e) => {
         showLocalFilePopover(fileLink);
     }
 });
+
+// 5. System Noise Toggle Logic
+function initSystemNoiseState() {
+    if (!transcriptFeed) return;
+    const showNoise = localStorage.getItem("systemNoiseVisible") === "true";
+    if (showNoise) {
+        transcriptFeed.classList.add("show-system-noise");
+        if (btnToggleSystemNoise) btnToggleSystemNoise.classList.add("active");
+    } else {
+        transcriptFeed.classList.remove("show-system-noise");
+        if (btnToggleSystemNoise) btnToggleSystemNoise.classList.remove("active");
+    }
+}
+
+function toggleSystemNoise() {
+    if (!transcriptFeed) return;
+    const isShowing = transcriptFeed.classList.contains("show-system-noise");
+    if (isShowing) {
+        transcriptFeed.classList.remove("show-system-noise");
+        if (btnToggleSystemNoise) btnToggleSystemNoise.classList.remove("active");
+        localStorage.setItem("systemNoiseVisible", "false");
+    } else {
+        transcriptFeed.classList.add("show-system-noise");
+        if (btnToggleSystemNoise) btnToggleSystemNoise.classList.add("active");
+        localStorage.setItem("systemNoiseVisible", "true");
+    }
+    
+    if (typeof updateJumpToLatestButton === "function") {
+        updateJumpToLatestButton();
+    }
+}

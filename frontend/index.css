@@ -3622,3 +3622,11 @@ body[data-theme="quiet-light"] #model-modal-active-summary {
     font-size: 0.8rem;
     padding: 4px 8px;
 }
+
+/* Hide operational noise by default */
+.transcript-feed:not(.show-system-noise) .system-event-chip.routing,
+.transcript-feed:not(.show-system-noise) .system-event-chip.heartbeat,
+.transcript-feed:not(.show-system-noise) .system-event-chip.model_selected,
+.transcript-feed:not(.show-system-noise) .system-event-chip.system_startup {
+    display: none;
+}
