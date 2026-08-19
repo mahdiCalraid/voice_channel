@@ -54,6 +54,7 @@ function element() {
         getAttribute: name => attributes[name] ?? null,
         querySelector: () => element(),
         querySelectorAll: () => [],
+        removeAttribute: name => { delete attributes[name]; },
         scrollIntoView: () => {},
         setAttribute: (name, value) => { attributes[name] = String(value); },
     };
@@ -112,6 +113,8 @@ function loadFrontend(options = {}) {
         window: {
             VoiceChannelHistoryState: historyState,
             confirm: options.confirm || (() => true),
+            location: { hostname: options.hostname || "localhost" },
+            scrollY: 0,
             speechSynthesis: {
                 cancel: () => {},
                 getVoices: () => [],
@@ -141,6 +144,76 @@ test("the channel rail is never refreshed on a timer", () => {
         app.intervals.map(interval => interval.delay),
         [5000, 4000]
     );
+});
+
+test("local file references normalize only to safe Mac user paths", () => {
+    const app = loadFrontend();
+
+    assert.equal(
+        app.sandbox.normalizeLocalFileHref("file:///Users/ed/King/clawd_2/voice_channel/README.md:12"),
+        "/Users/ed/King/clawd_2/voice_channel/README.md:12"
+    );
+    assert.equal(
+        app.sandbox.normalizeLocalFileHref("vscode://file/Users/ed/King/clawd_2/voice_channel/NORTH_STAR.md"),
+        "/Users/ed/King/clawd_2/voice_channel/NORTH_STAR.md"
+    );
+    assert.equal(
+        app.sandbox.normalizeLocalFileHref("/Users/ed/King/My%20Notes.md"),
+        "/Users/ed/King/My Notes.md"
+    );
+    assert.equal(app.sandbox.normalizeLocalFileHref("vscode://extension/install/something"), null);
+    assert.equal(app.sandbox.normalizeLocalFileHref("file://remote-host/Users/ed/private.md"), null);
+    assert.equal(app.sandbox.normalizeLocalFileHref("/etc/passwd"), null);
+});
+
+test("VS Code file opening is local-only and safely encoded", () => {
+    const app = loadFrontend();
+
+    assert.equal(app.sandbox.isLocalConsoleHostname("localhost"), true);
+    assert.equal(app.sandbox.isLocalConsoleHostname("127.0.0.1"), true);
+    assert.equal(app.sandbox.isLocalConsoleHostname("::1"), true);
+    assert.equal(app.sandbox.isLocalConsoleHostname("voice.example.com"), false);
+    assert.equal(
+        app.sandbox.buildVSCodeFileHref("/Users/ed/King/My Notes.md:7"),
+        "vscode://file/Users/ed/King/My%20Notes.md:7"
+    );
+    assert.equal(app.sandbox.buildVSCodeFileHref("vscode://extension/install/something"), null);
+});
+
+test("fallback message rendering still exposes plaintext local paths", () => {
+    const app = loadFrontend();
+    const rendered = app.sandbox.renderMarkdown(
+        "Open `/Users/ed/King/clawd_2/voice_channel/README.md:1` in the editor."
+    );
+
+    assert.match(rendered, /class="local-file-link"/);
+    assert.match(rendered, /data-path="\/Users\/ed\/King\/clawd_2\/voice_channel\/README\.md:1"/);
+    assert.match(rendered, /<code><span class="local-file-link"/);
+});
+
+test("file popover offers VS Code locally and copy-only remotely", () => {
+    const local = loadFrontend({ hostname: "localhost" });
+    const localTarget = element();
+    localTarget.setAttribute("data-path", "/Users/ed/King/clawd_2/voice_channel/README.md");
+    localTarget.getBoundingClientRect = () => ({ bottom: 20, left: 30 });
+    local.sandbox.showLocalFilePopover(localTarget);
+
+    const localOpen = local.sandbox.document.getElementById("btn-local-file-open");
+    const localCopy = local.sandbox.document.getElementById("btn-local-file-copy");
+    assert.equal(localOpen.style.display, "");
+    assert.equal(localOpen.href, "vscode://file/Users/ed/King/clawd_2/voice_channel/README.md");
+    assert.equal(typeof localCopy.onclick, "function");
+
+    const remote = loadFrontend({ hostname: "console.example.com" });
+    const remoteTarget = element();
+    remoteTarget.setAttribute("data-path", "/Users/ed/King/clawd_2/voice_channel/README.md");
+    remoteTarget.getBoundingClientRect = () => ({ bottom: 20, left: 30 });
+    remote.sandbox.showLocalFilePopover(remoteTarget);
+
+    const remoteOpen = remote.sandbox.document.getElementById("btn-local-file-open");
+    const remoteCopy = remote.sandbox.document.getElementById("btn-local-file-copy");
+    assert.equal(remoteOpen.style.display, "none");
+    assert.equal(typeof remoteCopy.onclick, "function");
 });
 
 test("the channels refresh button re-pulls the room list on demand", async () => {
